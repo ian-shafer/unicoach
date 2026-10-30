@@ -71,6 +71,8 @@ import io.ktor.client.request.get
 import io.ktor.client.statement.bodyAsText
 import io.ktor.http.HttpStatusCode
 import io.ktor.server.testing.testApplication
+import org.jsoup.Jsoup
+import org.jsoup.nodes.Element
 import java.math.BigDecimal
 import java.time.LocalDate
 import java.time.Month
@@ -332,10 +334,14 @@ class CostReportPageTest {
 
     assertTrue(body.contains("living at home"), "the way of living must be named")
     assertTrue(body.contains("Housing and food"), "living at home now carries a food-and-housing line")
-    assertTrue(
-      body.contains("\$0<span class=\"report-note\">our assumption, not a figure this school published</span>"),
-      "the zero must print WITH the note that says whose number it is: [$body]",
-    )
+    // Whose number the zero is, said in the column it stands in (brief 0016,
+    // glance/02): the header, and the cell's own `data-label` a phone prints.
+    val zero =
+      requireNotNull(
+        Jsoup.parse(body).select("tr.report-row-component td.report-value").firstOrNull { it.text() == "\$0" },
+      ) { "the at-home zero must print as a figure: [$body]" }
+    assertEquals(AT_HOME_HEADER, zero.attr("data-label"), "the zero must be labelled with whose number it is: [$zero]")
+    assertEquals("\$0", zero.html(), "and the cell is the bare zero, the note said once in the header: [$zero]")
     // This school is one part short of an at-home TOTAL (it publishes no books
     // allowance) -- and the sentence is said ANYWAY, because the `$0` is
     // printed anyway. The gate follows the LINE, not the total: a zero on the
@@ -354,7 +360,7 @@ class CostReportPageTest {
       withAtHomeTotal.contains(AT_HOME_ASSUMPTION_STATEMENT),
       "the assumption must be stated in full above the table, in the domain's own words",
     )
-    // The one thing the note exists to prevent: the zero read as a school's
+    // The one thing the header exists to prevent: the zero read as a school's
     // silence, or as a figure the school reported.
     assertFalse(
       body.contains("\$0<span class=\"report-blank\""),
@@ -369,6 +375,74 @@ class CostReportPageTest {
       emptyList(),
       noAtHomeFigures.arrangements.map { it.arrangement.label }.filter { it == "living at home" },
       "an arrangement whose only line is our assumption is not an arrangement this school prices",
+    )
+  }
+
+  /**
+   * The at-home note, moved (brief 0016, glance/02): said ONCE per table, in the
+   * living-at-home column header, and not in the cell. The header is also every
+   * cell's `data-label` in that column -- the phone layout hides the header row
+   * and prints that label instead -- so the assumption is still beside the zero
+   * and beside the total summed over it.
+   */
+  @Test
+  fun `the at-home assumption is said once per table, in the living-at-home column header`() {
+    val body = renderedReportOf(costProfile(listOf(verboseState(), verboseCampus(), verbosePrivate()), answeredMoney()))
+    val page = Jsoup.parse(body)
+
+    val tables = page.select("table.report-price-table")
+    assertEquals(3, tables.size, "every school has its own price table")
+    tables.forEach { table ->
+      val headers = table.select("thead th").map { it.text() }
+      assertEquals(
+        listOf("Per year", "living on campus", "renting off campus", AT_HOME_HEADER),
+        headers,
+        "the at-home column is headed by its assumption, and no other column claims one: [$table]",
+      )
+      // Every figure in that column -- the zero, the other expenses, the total
+      // summed over the zero -- is labelled with the same words on a phone.
+      val atHomeColumn = headers.indexOf(AT_HOME_HEADER)
+      val atHomeCells =
+        table.select("tbody tr").mapNotNull { row ->
+          row.select("td").takeIf { it.size == headers.size - 1 }?.get(atHomeColumn - 1)
+        }
+      assertTrue(atHomeCells.isNotEmpty(), "the fixture must vary some row by way of living: [$table]")
+      atHomeCells.forEach { assertEquals(AT_HOME_HEADER, it.attr("data-label"), "an at-home cell lost its label: [$it]") }
+      assertTrue(atHomeCells.any { it.text() == "\$0" }, "the zero is in the column the header heads: [$table]")
+      // Said once as a header: the cells print figures, never the note.
+      assertEquals(1, countOf(table.text(), "our assumption"), "the assumption is said once per table: [$table]")
+      assertTrue(table.select(".report-note").none { it.text().contains("assumption") }, "no cell carries the old note")
+    }
+    // The page's own statement of the assumption still stands above the tables.
+    assertEquals(1, countOf(body, AT_HOME_ASSUMPTION_STATEMENT), "the assumption-list bullet stays, once: [$body]")
+  }
+
+  @Test
+  fun `our assumed zero never collapses into a published zero beside it`() {
+    // A school that publishes a $0 for housing and food on campus: the row then
+    // prints two equal amounts, and only one of them is the school's. Collapsing
+    // the two into one spanning cell would drop the at-home `data-label` that
+    // says which zero is ours.
+    val zeroHousing =
+      costFixture(
+        name = "Zero Housing College",
+        tuitionInState = 20000,
+        housingAndFoodOnCampus = 0,
+        otherExpensesOnCampus = 2000,
+        otherExpensesWithFamily = 3000,
+      )
+    val body = renderedReportOf(costProfile(listOf(zeroHousing), answeredMoney()))
+
+    val housing =
+      requireNotNull(
+        Jsoup.parse(body).select("tr.report-row-component").firstOrNull { it.selectFirst("th")?.text() == "Housing and food" },
+      ) {
+        "the fixture must print a housing and food row: [$body]"
+      }
+    assertEquals(
+      listOf("living on campus", AT_HOME_HEADER),
+      housing.select("td").map { it.attr("data-label") },
+      "the published zero and our zero stay two cells, each under its own column: [$housing]",
     )
   }
 
@@ -1018,23 +1092,132 @@ class CostReportPageTest {
     assertEquals(1, countOf(mixed, BLENDED_IN_STATE_CLAUSE), "one public school on the page is one clause")
   }
 
+  /** One school's section, found by its own heading, so a caption or sentence is asserted at the school it belongs to. */
+  private fun schoolSectionOf(
+    body: String,
+    name: String,
+  ): Element =
+    requireNotNull(Jsoup.parse(body).select("section.report-school").firstOrNull { it.selectFirst("h2")?.text() == name }) {
+      "no school section for [$name]: [$body]"
+    }
+
+  /** A table's one caption, asserted to OPEN the table -- where a caption has to stand to label it. */
+  private fun captionOf(table: Element): String {
+    assertEquals(1, table.children().count { it.tagName() == "caption" }, "a table carries one caption: [$table]")
+    assertEquals("caption", table.child(0).tagName(), "the caption must open the table: [$table]")
+    return table.child(0).text()
+  }
+
+  /** The caption of [name]'s own price table. */
+  private fun priceCaptionAt(
+    body: String,
+    name: String,
+  ): String = captionOf(requireNotNull(schoolSectionOf(body, name).selectFirst("table.report-price-table")) { "no price table at [$name]" })
+
+  /** The domain's own residency sentence for [school] on a compared [profile] -- never a typed copy of it. */
+  private fun residencyStatementOf(
+    profile: CollegeCostProfile,
+    school: CollegeCost,
+  ): String =
+    requireNotNull(profile.comparisonBasis) { "two colleges must carry a comparison basis" }
+      .residency.byCollege
+      .single { it.collegeId == school.collegeId }
+      .statement
+
   @Test
-  fun `the residency sentence is said once on a one-school report, and once per school on three`() {
+  fun `the side-by-side table's caption carries the unit, once`() {
+    val body = renderedReportOf(costProfile(listOf(stateSchool(), campusSchool()), answeredMoney()))
+
+    val summary = requireNotNull(Jsoup.parse(body).selectFirst("table.report-summary-table")) { "no summary table: [$body]" }
+    assertEquals(PER_YEAR, captionOf(summary), "every figure in the comparison is a yearly one, said once")
+    assertFalse(
+      summary.select("thead th").any { it.text().lowercase().contains("per year") },
+      "and no column header says it again: [$summary]",
+    )
+  }
+
+  @Test
+  fun `the residency sentence is said once on a one-school report, and in each caption on three`() {
     val one = renderedReportOf(costProfile(listOf(stateSchool()), answeredMoney()))
     val statement =
       "Riverside State University is a public school, and the tuition and fees figure that applies to this " +
         "family is its in-state one."
 
     // The single-school assumption block IS this school's basis and already
-    // states it; the section under it used to state the same sentence again.
+    // states it; the section under it used to state the same sentence again,
+    // and its caption now says only the unit (brief 0009 D1: a restatement may go).
     assertEquals(1, countOf(one, statement), "a one-school report states its residency once: [$one]")
     assertFalse(one.contains("class=\"report-school-residency\""), "the duplicate line is the one that goes")
+    assertEquals(PER_YEAR, priceCaptionAt(one, "Riverside State University"), "the caption still says the unit")
 
-    // With two or more schools the per-school line is the ONLY place a SPECIFIC
-    // school's basis is stated, so it stays.
+    // With two or more schools each table's CAPTION is the only place a
+    // SPECIFIC school's basis is stated -- and none of these three is an
+    // absence, so no residency sentence is printed above any table.
     val three = renderedReportOf(costProfile(listOf(stateSchool(), campusSchool(), privateSchool()), answeredMoney()))
-    assertEquals(3, countOf(three, "class=\"report-school-residency\""), "every school states its own basis")
-    assertTrue(three.contains(statement), "including the public one")
+    assertEquals(IN_STATE_CAPTION, priceCaptionAt(three, "Riverside State University"), "the public school's basis")
+    assertEquals(ONE_PRICE_CAPTION, priceCaptionAt(three, "Northgate University"), "a private school's basis")
+    assertEquals(ONE_PRICE_CAPTION, priceCaptionAt(three, "Ashford College"), "a private school's basis")
+    assertEquals(0, countOf(three, "class=\"report-school-residency\""), "the caption replaced the sentence: [$three]")
+    assertFalse(three.contains(statement), "the in-state basis is the caption's now, not a second sentence: [$three]")
+  }
+
+  @Test
+  fun `an out-of-state family's price table says so in its caption`() {
+    val body =
+      renderedReportOf(
+        costProfile(
+          listOf(ucSanDiego(TuitionApplicable.OUT_OF_STATE), campusSchool()),
+          answeredMoney(band = IncomeBand.OVER_110K, state = "WA"),
+        ),
+      )
+
+    assertEquals(OUT_OF_STATE_CAPTION, priceCaptionAt(body, "UC San Diego"), "the totals are on out-of-state tuition and fees")
+  }
+
+  /**
+   * The two arms whose basis is an ABSENCE (brief 0016, glance/02): no figure
+   * is this family's, or we cannot say which is. Those keep the domain's own
+   * sentence as a `<p>` above the table -- it is what explains the blanks below
+   * it -- and their caption says the unit alone.
+   */
+  @Test
+  fun `a residency basis that states an absence stays a sentence above the table, verbatim`() {
+    val noState = ucSanDiego(TuitionApplicable.UNKNOWN)
+    val unrecognised =
+      costFixture(
+        name = "Mystery Institute",
+        control = CollegeControl.Unrecognized(9),
+        tuitionInState = 15000,
+        housingAndFoodOnCampus = 9000,
+      )
+    val state = stateSchool()
+    val profile = costProfile(listOf(noState, unrecognised, state), answeredMoney())
+
+    val body = renderedReportOf(profile)
+
+    listOf(noState, unrecognised).forEach { school ->
+      val section = schoolSectionOf(body, school.name)
+      val sentence = requireNotNull(section.selectFirst("p.report-school-residency")) { "no sentence at [${school.name}]: [$section]" }
+      assertEquals(residencyStatementOf(profile, school), sentence.text(), "the domain's sentence, verbatim")
+      val table = requireNotNull(section.selectFirst("table.report-price-table"))
+      assertTrue(sentence.siblingIndex() < table.siblingIndex(), "the sentence stands above the table it explains")
+      assertEquals(PER_YEAR, captionOf(table), "an absence names no basis in the caption: [${school.name}]")
+    }
+    // The one school with a basis to name keeps it in its caption alone.
+    assertEquals(IN_STATE_CAPTION, priceCaptionAt(body, state.name))
+    assertEquals(2, countOf(body, "class=\"report-school-residency\""), "one sentence per absence, and no more: [$body]")
+  }
+
+  @Test
+  fun `a one-school report whose basis is an absence says it once, in the assumption list`() {
+    val body = renderedReportOf(costProfile(listOf(ucSanDiego(TuitionApplicable.UNKNOWN)), answeredMoney()))
+    val statement =
+      "UC San Diego is a public school that publishes two tuition and fees figures, and the state the family " +
+        "lives in is not on file, so neither figure can be shown as theirs."
+
+    assertEquals(1, countOf(body, statement), "the assumption list above already states it: [$body]")
+    assertFalse(body.contains("class=\"report-school-residency\""), "the section does not say it again")
+    assertEquals(PER_YEAR, priceCaptionAt(body, "UC San Diego"), "and the caption says the unit")
   }
 
   @Test
@@ -1824,27 +2007,65 @@ class CostReportPageTest {
     )
   }
 
+  /**
+   * The narrowed [ResidencyTierBasis.SINGLE_PUBLISHED_PRICE], and brief 0016
+   * D7: at a public school whose out-of-state price we do not hold, the ONE
+   * tier is an in-state figure. Its generic sentence was a reading instruction
+   * about the tuition row's own label and is dropped; WHOSE price it is stays
+   * on the page as the residency basis -- the assumption list on a one-school
+   * report, the caption on a compared one.
+   */
   @Test
-  fun `a school with one tuition price is not told the price applies to every student`() {
-    // The narrowed [ResidencyTierBasis.SINGLE_PUBLISHED_PRICE]: at a public
-    // school whose out-of-state price we do not hold, the ONE tier is an
-    // in-state figure, and `tuition_applicable` beside it says so.
+  fun `a school with one tuition price is told whose it is, and not told the price applies to every student`() {
     val oneTier =
       costFixture(
         name = "One Price College",
         control = CollegeControl.Public(TuitionApplicable.IN_STATE),
         tuitionInState = 9000,
       )
-    val body = renderedReportOf(costProfile(listOf(oneTier), answeredMoney()))
+    assertEquals(ResidencyTierBasis.SINGLE_PUBLISHED_PRICE, oneTier.residencyTiers, "the fixture must hold one tier")
 
+    val body = renderedReportOf(costProfile(listOf(oneTier), answeredMoney()))
+    assertFalse(body.contains(ResidencyTierBasis.SINGLE_PUBLISHED_PRICE.statement), "the reading instruction is dropped")
+    assertFalse(body.contains("report-school-tuition-tiers"), "and no tier paragraph stands in its place: [$body]")
     assertTrue(
-      body.contains(ResidencyTierBasis.SINGLE_PUBLISHED_PRICE.statement),
-      "the one price we hold is still stated: [$body]",
+      body.contains(
+        "One Price College is a public school, and the tuition and fees figure that applies to this family is its in-state one.",
+      ),
+      "the one price is still said to be this family's in-state figure: [$body]",
     )
-    assertFalse(
-      body.contains("whoever the student is"),
-      "but never as a price that applies to every student: [$body]",
-    )
+    assertFalse(body.contains("whoever the student is"), "never as a price that applies to every student: [$body]")
+
+    val compared = renderedReportOf(costProfile(listOf(oneTier, campusSchool()), answeredMoney()))
+    assertEquals(IN_STATE_CAPTION, priceCaptionAt(compared, "One Price College"), "on a compared page the caption says it")
+    assertFalse(compared.contains(ResidencyTierBasis.SINGLE_PUBLISHED_PRICE.statement), "dropped there too")
+  }
+
+  /**
+   * Which tier sentences the page still prints (brief 0016 D7), asserted over
+   * EVERY basis rather than a sample: the four that state what a school's price
+   * list does or does not separate stay verbatim, and the two with nothing to
+   * add -- a reading instruction, and an absence the tuition row's own blank
+   * already says -- print no paragraph at all.
+   */
+  @Test
+  fun `the tier sentences that say what a price list separates stay, and the other two go`() {
+    val kept =
+      setOf(
+        ResidencyTierBasis.THREE_TIERS_PUBLISHED,
+        ResidencyTierBasis.TWO_TIERS_PUBLISHED,
+        ResidencyTierBasis.PUBLISHER_DOES_NOT_SEPARATE_IN_DISTRICT,
+        ResidencyTierBasis.IN_DISTRICT_AND_ONE_OTHER_TIER,
+      )
+    ResidencyTierBasis.entries.forEach { tier ->
+      // The basis is the DOMAIN's decision about a school's price list; set
+      // directly, because the question here is only what the page does with it.
+      val school = stateSchool().copy(residencyTiers = tier)
+      val section = schoolSectionOf(renderedReportOf(costProfile(listOf(school, campusSchool()), answeredMoney())), school.name)
+      val printed = section.select("p.report-school-tuition-tiers").map { it.text() }
+      val expected = if (tier in kept) listOf(tier.statement) else emptyList()
+      assertEquals(expected, printed, "[${tier.name}] the tier paragraph: [$section]")
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -2996,5 +3217,17 @@ class CostReportPageTest {
     /** The corpus's own shape: a school's scholarship name and its sentence both say "award", and both are quoted. */
     const val MERIT_SCHOOL_NAME = "National Merit Finalist Award"
     const val MERIT_SCHOOL_WORDS = "Finalists will be awarded full tuition for four years."
+
+    /**
+     * The glance/02 copy (brief 0016), pinned HERE and not imported for
+     * [AWARD_KIND_SENTENCE]'s reason: the unit, the three caption bases, and
+     * the living-at-home header that carries our assumption beside its zero.
+     */
+    const val PER_YEAR = "Per year"
+    const val IN_STATE_CAPTION = "Per year, at the in-state tuition and fees this family would pay at this public school"
+    const val OUT_OF_STATE_CAPTION =
+      "Per year, at the out-of-state tuition and fees this family would pay at this public school"
+    const val ONE_PRICE_CAPTION = "Per year, at the one tuition and fees price this school publishes for everyone"
+    const val AT_HOME_HEADER = "living at home (housing and food counted as \$0, our assumption)"
   }
 }

@@ -11,6 +11,7 @@ import ed.unicoach.coaching.costs.CollegeCost
 import ed.unicoach.coaching.costs.CollegeCostProfile
 import ed.unicoach.coaching.costs.CollegeResidencyBasis
 import ed.unicoach.coaching.costs.CollegeSubjectReturn
+import ed.unicoach.coaching.costs.ComparedTuition
 import ed.unicoach.coaching.costs.ComparisonBasis
 import ed.unicoach.coaching.costs.ComponentRole
 import ed.unicoach.coaching.costs.CostField
@@ -38,6 +39,7 @@ import ed.unicoach.coaching.costs.canonical.FilingLink
 import ed.unicoach.coaching.costs.canonical.MeritMeasure
 import ed.unicoach.coaching.costs.canonical.MoneySourceCopy
 import ed.unicoach.coaching.costs.canonical.SpokenTierGroup
+import ed.unicoach.coaching.costs.spokenLabel
 import ed.unicoach.coaching.testing.AutomaticAwardAnswer
 import ed.unicoach.coaching.testing.CorruptAwardResidencyBasisException
 import ed.unicoach.coaching.testing.NationalMeritPublishedAnswer
@@ -324,17 +326,19 @@ private const val TOTALS_IN_SCHOOL_TABLE_BELOW = "the totals in this school's ow
 private const val NOT_PART_OF_ARRANGEMENT = "Not a part of this way of living"
 
 /**
- * The note beside the ONE amount on this page that is not a school's figure (RFC
- * 166 §7, gate-2 D17): the `$0` food-and-housing line of living at home.
+ * Whose number the ONE amount on this page that is not a school's figure is
+ * (RFC 166 §7, gate-2 D17): the `$0` food-and-housing line of living at home.
  *
- * Short, because the cell is a cell -- the whole sentence, and the reason the
- * zero is honest, arrives above the table through the domain's own
+ * It closes that column's HEADER ([columnHeaderOf]), said once per table rather
+ * than in the cell (brief 0016, glance/02): the header is the figure's label,
+ * and it is also every cell's `data-label` in the column, so a phone still
+ * prints it beside the zero. The whole sentence, and the reason the zero is
+ * honest, arrives above the table through the domain's own
  * `AtHomeAssumptionBasis` statement, which this page renders verbatim with every
  * other basis fact. This is the pointer that stops a parent reading the zero off
- * the row as something the school published, and it says whose number it is in
- * its own words: OURS, never theirs.
+ * the row as something the school published: OURS, never theirs.
  */
-private const val ASSUMED_BY_US = "our assumption, not a figure this school published"
+private const val OUR_ASSUMPTION = "our assumption"
 
 /** No partial sum is ever printed as a total; this says so where the total would have been. */
 private const val NO_TOTAL = "No total \u2014 a part of this price is missing"
@@ -343,14 +347,25 @@ private const val NO_TOTAL = "No total \u2014 a part of this price is missing"
 private const val ASSUMPTIONS_HEADING = "What these figures assume"
 
 /**
- * "Per year" in TWO roles, deliberately one string: the CORNER header over the
- * row labels — every figure in this table is a yearly one — and the fallback
- * column header at a school that publishes no component, where there is no way
- * of living to head a column. Both say the same thing about the same figures,
- * so a school with no component prints "Per year | Per year" by design, not by
- * copy-paste.
+ * The page's ONE unit, "Per year", in three roles, deliberately one string: the
+ * CAPTION of both kinds of price table -- alone over the side-by-side table, and
+ * leading each school's own caption ([priceCaptionOf]) -- the CORNER header
+ * over a school table's row labels, and the fallback column header at a school
+ * that publishes no component, where there is no way of living to head a
+ * column. All three say the same thing about the same figures, so a school with
+ * no component prints "Per year | Per year" by design, not by copy-paste.
  */
-private const val SINGLE_COLUMN_HEADER = "Per year"
+private const val PER_YEAR = "Per year"
+
+// What a school table's caption says after the unit: WHICH tuition and fees its
+// figures are at (brief 0016, glance/02). Table labels, not the domain's
+// sentence -- [CollegeResidencyBasis.statement] is still the coach's, and the
+// assumption list's, unchanged. Only the arms that name a figure have words
+// here; an arm whose basis is an ABSENCE keeps that sentence ([residencyPlacementOf]).
+private const val IN_STATE_CAPTION_BASIS = "at the in-state tuition and fees this family would pay at this public school"
+private const val OUT_OF_STATE_CAPTION_BASIS =
+  "at the out-of-state tuition and fees this family would pay at this public school"
+private const val ONE_PRICE_CAPTION_BASIS = "at the one tuition and fees price this school publishes for everyone"
 
 /** That fallback is exactly ONE column wide, and the whole-school rows span it. Named beside the header it matches. */
 private const val SINGLE_COLUMN_COUNT = 1
@@ -821,6 +836,10 @@ private fun FlowContent.summaryTable(
     h2 { +SUMMARY_HEADING }
     p("report-hint") { +heldArrangementHint(held) }
     table("$DATA_TABLE_CLASS report-table report-summary-table") {
+      // The unit, said once for every figure in the table (brief 0016,
+      // glance/02): no column header carries it, and the table compares only
+      // yearly figures. No residency here -- each school's own table says its.
+      caption { +PER_YEAR }
       thead { summaryHeaderRow(held) }
       tbody { profile.colleges.forEach { summaryRow(it, held, bandSaidAbove) } }
     }
@@ -926,14 +945,15 @@ private fun schoolWideTuition(cost: CollegeCost): SchoolFigure {
   }
 }
 
-/** One school: its own residency line, its price table, its merit practice, and its debt context. */
+/** One school: its own residency basis, its price table, its merit practice, and its debt context. */
 private fun FlowContent.schoolSection(
   cost: CollegeCost,
   residency: CollegeResidencyBasis,
   /**
    * Whether the assumption block ABOVE is this one school's own basis -- one
-   * fact, in one sense, deciding both of the sentences this section may stop
-   * saying. Two parameters ("say the residency line", "here is your hint") could
+   * fact, in one sense, deciding both of the things this section may stop
+   * saying: its residency basis (in the caption or as a sentence) and the
+   * hint. Two parameters ("say the residency line", "here is your hint") could
    * be handed a combination that is not a page: a section that both states its
    * own residency AND prints the one-school hint says the residency twice again.
    */
@@ -946,16 +966,23 @@ private fun FlowContent.schoolSection(
     h2 { +cost.name }
     // The city and state, and nothing else. The kind of school is NOT printed
     // here: `CollegeControl.label` is a wire label ("private_nonprofit"), and the
-    // residency line below already says in English whether this school prices by
-    // where the family lives, which is the only thing the control decides here.
+    // residency basis below (the table's caption, or the sentence above it)
+    // already says in English whether this school prices by where the family
+    // lives, which is the only thing the control decides here.
     p("report-school-where") { +"${cost.city}, ${cost.state}" }
-    // On a one-school report the assumption block above IS this school's basis
-    // and already states the residency sentence ([SingleSchoolBasis]). Anywhere
-    // else this line is the only place a SPECIFIC school's basis is stated, so
-    // it stays.
-    if (!basisIsThisSchool) p("report-school-residency") { +residency.statement }
+    // WHERE this school's residency basis is said is decided once, so the
+    // caption and the sentence can never both say it or both drop it. On a
+    // one-school report the assumption block above IS this school's basis and
+    // already states the sentence ([SingleSchoolBasis]), so neither repeats it.
+    // Anywhere else the caption carries a basis that names a figure, and an
+    // ABSENCE -- no figure is this family's, or we cannot say which is -- stays
+    // the domain's own sentence: it explains blanks, and a caption is a label.
+    val placement = residencyPlacementOf(residency.tuition)
+    if (!basisIsThisSchool && placement == ResidencyPlacement.AsSentence) {
+      p("report-school-residency") { +residency.statement }
+    }
     tuitionTierLine(cost)
-    priceTable(cost, bandSaidAbove)
+    priceTable(cost, priceCaptionOf(placement, basisIsThisSchool), bandSaidAbove)
     // ...and the same fact says the hint here, because a one-school page has no
     // summary table above to have said it.
     if (basisIsThisSchool) p("report-hint") { +schoolBlendedHint(cost) }
@@ -965,6 +992,71 @@ private fun FlowContent.schoolSection(
     debtBlock(cost, subjects)
   }
 }
+
+/**
+ * Where a school table says its residency basis: after the unit in its caption,
+ * or as the domain's sentence above it.
+ *
+ * A sealed vocabulary rather than a boolean beside a nullable string: the
+ * caption's words exist exactly when the basis goes in the caption, so a
+ * caption basis with nothing to say, or a sentence arm carrying caption words,
+ * cannot be built.
+ */
+private sealed interface ResidencyPlacement {
+  /** A basis that names the figure the table is at; [words] follow the unit in the caption. */
+  data class InCaption(
+    val words: String,
+  ) : ResidencyPlacement
+
+  /** A basis that is an ABSENCE, said as [CollegeResidencyBasis.statement] in its own `<p>` above the table. */
+  data object AsSentence : ResidencyPlacement
+}
+
+/**
+ * One school's residency arm, placed (brief 0016, glance/02).
+ *
+ * EXHAUSTIVE over [ComparedTuition] and [TuitionApplicable], with no `else`: an
+ * arm added to either must decide here whether it names a figure or states an
+ * absence, rather than fall silently into a caption with no basis in it.
+ */
+private fun residencyPlacementOf(tuition: ComparedTuition): ResidencyPlacement =
+  when (tuition) {
+    is ComparedTuition.Public -> {
+      when (tuition.tuitionApplicable) {
+        TuitionApplicable.IN_STATE -> ResidencyPlacement.InCaption(IN_STATE_CAPTION_BASIS)
+
+        TuitionApplicable.OUT_OF_STATE -> ResidencyPlacement.InCaption(OUT_OF_STATE_CAPTION_BASIS)
+
+        // Two published figures and no state on file: neither is shown, and
+        // the sentence is what explains the blanks in the table below.
+        TuitionApplicable.UNKNOWN -> ResidencyPlacement.AsSentence
+      }
+    }
+
+    ComparedTuition.SinglePublishedPrice -> {
+      ResidencyPlacement.InCaption(ONE_PRICE_CAPTION_BASIS)
+    }
+
+    // We cannot say which published price applies: there is no basis to name.
+    is ComparedTuition.PublishedPriceUnknown -> {
+      ResidencyPlacement.AsSentence
+    }
+  }
+
+/**
+ * A school table's caption: always the unit, and the residency basis after it
+ * where [placement] puts it there -- except on a one-school report, where the
+ * assumption list directly above already states this school's basis verbatim
+ * and the caption would only restate it (brief 0009 D1).
+ */
+private fun priceCaptionOf(
+  placement: ResidencyPlacement,
+  basisIsThisSchool: Boolean,
+): String =
+  when (placement) {
+    is ResidencyPlacement.InCaption -> if (basisIsThisSchool) PER_YEAR else "$PER_YEAR, ${placement.words}"
+    ResidencyPlacement.AsSentence -> PER_YEAR
+  }
 
 /**
  * WHICH tuition prices this school publishes, in the domain's own sentence (RFC
@@ -991,12 +1083,17 @@ private fun FlowContent.tuitionTierLine(cost: CollegeCost) {
       ResidencyTierBasis.TWO_TIERS_PUBLISHED,
       ResidencyTierBasis.PUBLISHER_DOES_NOT_SEPARATE_IN_DISTRICT,
       ResidencyTierBasis.IN_DISTRICT_AND_ONE_OTHER_TIER,
-      ResidencyTierBasis.SINGLE_PUBLISHED_PRICE,
       -> cost.residencyTiers.statement
 
       // No tier to name: the tuition row's own blank says why, in the school's
       // own status words.
       ResidencyTierBasis.NO_PUBLISHED_TUITION -> return
+
+      // Dropped (brief 0016 D7): one price is a reading instruction about the
+      // tuition row's own label, which is on the page, and WHOSE price it is
+      // is already said by the residency basis -- in the caption, or in the
+      // assumption list on a one-school report. The coach still says it.
+      ResidencyTierBasis.SINGLE_PUBLISHED_PRICE -> return
     }
   p("report-school-tuition-tiers") { +statement }
 }
@@ -1011,17 +1108,22 @@ private fun FlowContent.tuitionTierLine(cost: CollegeCost) {
  * publishes no component at all has no way of living to head a column and gets
  * one plain column instead -- its tuition, published price and price after aid
  * are still true and still shown.
+ *
+ * [tableCaption] is [priceCaptionOf]'s: the unit, and the residency basis
+ * where the caption is the place that says it.
  */
 private fun FlowContent.priceTable(
   cost: CollegeCost,
+  tableCaption: String,
   bandSaidAbove: IncomeBand?,
 ) {
   val arrangements = cost.breakdown?.arrangements.orEmpty()
   val columnCount = if (arrangements.isEmpty()) SINGLE_COLUMN_COUNT else arrangements.size
-  // Its own class so the caption rule can name it (RFC 260): this is the one
-  // table on the page that carries a total row, and until `glance/02` captions
-  // it, the one the rule exempts by name.
+  // Its own class so the shape test's no-total rule (RFC 260) can name it: this
+  // is the one table on the page allowed a total row, because its columns are
+  // ways of living and a total belongs to exactly one of them.
   table("$DATA_TABLE_CLASS report-table report-price-table") {
+    caption { +tableCaption }
     thead { priceTableHeaderRow(arrangements) }
     tbody {
       tuitionRow(cost, arrangements)
@@ -1039,14 +1141,49 @@ private fun FlowContent.priceTable(
  */
 private fun THEAD.priceTableHeaderRow(arrangements: List<ArrangementCost>) {
   tr {
-    th(scope = ThScope.col) { +SINGLE_COLUMN_HEADER }
+    th(scope = ThScope.col) { +PER_YEAR }
     if (arrangements.isEmpty()) {
-      th(scope = ThScope.col) { +SINGLE_COLUMN_HEADER }
+      th(scope = ThScope.col) { +PER_YEAR }
       return@tr
     }
-    arrangements.forEach { th(scope = ThScope.col) { +it.arrangement.label } }
+    arrangements.forEach { th(scope = ThScope.col) { +columnHeaderOf(it) } }
   }
 }
+
+/**
+ * A way of living's column header -- the ONE home of a column's words, because
+ * they are printed twice: as the `<th>` here, and as the `data-label` of every
+ * cell under it ([tuitionRow], [componentRows], [totalRow]), which is what the
+ * phone layout prints once the header row is hidden.
+ *
+ * The header also says WHOSE number an amount in the column is, where that is
+ * ours rather than the school's (brief 0016, glance/02): living at home reads
+ * "living at home (housing and food counted as $0, our assumption)". Said here,
+ * once per table, instead of in the cell -- and, through the `data-label`,
+ * still beside the zero on a phone.
+ *
+ * DERIVED from the arrangement's own lines, never from which arrangement it is
+ * or a typed "$0": the domain decides which amounts are ours
+ * ([CostLine.origin]), names the field ([spokenLabel]) and fixes the amount, so
+ * a renamed role, a different assumed amount, or an assumed line under another
+ * arrangement reaches this header without an edit here.
+ */
+private fun columnHeaderOf(arrangement: ArrangementCost): String {
+  val ours = arrangement.lines.filter { isAssumedByUs(it.origin) }
+  if (ours.isEmpty()) return arrangement.arrangement.label
+  val counted = ours.joinToString(", ") { "${it.field.spokenLabel} counted as ${WholeDollars.spoken(it.amountUsd)}" }
+  return "${arrangement.arrangement.label} ($counted, $OUR_ASSUMPTION)"
+}
+
+/**
+ * Whether an amount is ours rather than a publisher's (RFC 166 §7). EXHAUSTIVE,
+ * no `else`: a third origin must decide here whether a column header owns it.
+ */
+private fun isAssumedByUs(origin: LineOrigin): Boolean =
+  when (origin) {
+    LineOrigin.PUBLISHED -> false
+    LineOrigin.ASSUMED_BY_UNICOACH -> true
+  }
 
 /** The tuition and fees row: the stable block, above everything estimated. */
 private fun TBODY.tuitionRow(
@@ -1058,13 +1195,10 @@ private fun TBODY.tuitionRow(
   // differs between the two shapes, which is why the row is written once.
   val cells =
     if (arrangements.isEmpty()) {
-      listOf(GridCell(SINGLE_COLUMN_HEADER, figureOf(amountUsd = null, blank = tuitionBlankFor(cost))))
+      listOf(GridCell(PER_YEAR, line = null, blank = tuitionBlankFor(cost)))
     } else {
       arrangements.map { arrangement ->
-        GridCell(
-          arrangement.arrangement.label,
-          figureOf(amountUsd = arrangement.tuitionLine?.amountUsd, blank = tuitionBlankFor(cost)),
-        )
+        GridCell(columnHeaderOf(arrangement), arrangement.tuitionLine, tuitionBlankFor(cost))
       }
     }
   gridRow("report-row-tuition", TUITION_COLUMN, cells)
@@ -1108,7 +1242,7 @@ private fun TBODY.gridRow(
       spanningValueCell(schoolWide, cells.size)
       return@tr
     }
-    cells.forEach { (columnLabel, figure) -> valueCell(columnLabel, figure) }
+    cells.forEach { valueCell(it.columnLabel, it.figure) }
   }
 }
 
@@ -1122,23 +1256,52 @@ private fun TBODY.gridRow(
  *
  * Structural equality is load-bearing: [SchoolFigure] is a `data class` pair, so
  * `distinct()` compares the amount, the blank label and the basis note, and two
- * cells that differ in any of the three are two different figures. A cell with
- * an assumed-zero note therefore never collapses into a bare zero beside it.
+ * cells that differ in any of the three are two different figures. The cell's
+ * [GridCell.origin] is compared beside it, because the at-home zero no longer
+ * carries a note to tell it apart (its column header says whose it is): our
+ * assumed zero therefore never collapses into a published zero beside it, which
+ * would drop the `data-label` that says so on a phone.
  */
 private fun schoolWideFigureOf(cells: List<GridCell>): SchoolFigure? =
-  if (cells.size > 1) cells.map { it.figure }.distinct().singleOrNull() else null
+  if (cells.size > 1) {
+    cells
+      .map { it.figure to it.origin }
+      .distinct()
+      .singleOrNull()
+      ?.first
+  } else {
+    null
+  }
 
 /**
- * One cell of the arrangement grid: the figure, and the column it stands under.
+ * One cell of the arrangement grid: the figure, the column it stands under, and
+ * whose number it is.
  *
- * A named pair rather than `Pair<String, SchoolFigure>`, because the String is
- * not any string -- it is the way of living the phone layout restores beside the
- * figure as its `data-label`, and `it.second` said none of that.
+ * A named record rather than a `Pair<String, SchoolFigure>`, because the String
+ * is not any string -- it is the column header ([columnHeaderOf]) the phone
+ * layout restores beside the figure as its `data-label`, and `it.second` said
+ * none of that.
+ *
+ * Built from the [CostLine] itself, never from a figure and an origin passed
+ * side by side: [figure] and [origin] are both READ OFF the one line, so an
+ * amount without an origin, or a blank with one, cannot be constructed.
+ * [schoolWideFigureOf] depends on that pairing -- an amount whose origin went
+ * missing would let our assumed zero collapse into a published zero and drop
+ * the `data-label` that says it is ours. [origin] is null exactly where there is
+ * no line (a blank): there is no number, so there is nobody's number.
+ *
+ * Not a [SchoolFigure.Amount] field, because every other figure on the page --
+ * the totals, the published and net prices, the summary -- has no [CostLine]
+ * behind it, and would have to invent an origin to be built at all.
  */
-private data class GridCell(
+private class GridCell(
   val columnLabel: String,
-  val figure: SchoolFigure,
-)
+  line: CostLine?,
+  blank: String,
+) {
+  val figure: SchoolFigure = figureOf(amountUsd = line?.amountUsd, blank = blank)
+  val origin: LineOrigin? = line?.origin
+}
 
 /**
  * Why a school's tuition and fees figure is absent, said as itself.
@@ -1252,36 +1415,24 @@ private fun TBODY.componentRows(
           val field = role.fieldOf(arrangement.arrangement)
           val line = arrangement.componentLines.firstOrNull { it.field == field }
           val blank = if (field == null) NOT_PART_OF_ARRANGEMENT else blankFor(cost, field, NOT_REPORTED)
-          GridCell(
-            arrangement.arrangement.label,
-            // A note belongs to a figure that EXISTS, which is exactly the
-            // assumed at-home zero: [figureOf] attaches it to the amount and
-            // drops it with the blank, so the sentence can never end up
-            // describing a cell with no number in it.
-            figureOf(amountUsd = line?.amountUsd, blank = blank, note = assumedNoteFor(line)),
-          )
+          // No note on the assumed at-home zero: whose number it is is said by
+          // the column header, which is also this cell's `data-label`.
+          GridCell(columnHeaderOf(arrangement), line, blank)
         },
       )
     }
 }
 
 /**
- * Whose number this line carries, said beside the number -- for the one line in
- * this domain whose amount is not a publisher's (RFC 166 §7).
- *
- * Read off [CostLine.origin] rather than off the field: the domain decides which
- * amounts are ours, and a renderer testing for a field name would be a second
- * rule free to disagree with the type that refuses every other assumed line at
- * construction.
+ * The per-arrangement total, or the blank that says a part is missing -- never a
+ * partial sum. Labelled with the column header, assumption and all: the at-home
+ * total is summed over our zero.
  */
-private fun assumedNoteFor(line: CostLine?): String? = if (line?.origin == LineOrigin.ASSUMED_BY_UNICOACH) ASSUMED_BY_US else null
-
-/** The per-arrangement total, or the blank that says a part is missing -- never a partial sum. */
 private fun TBODY.totalRow(arrangements: List<ArrangementCost>) {
   tr("report-row-total") {
     rowHeader(TOTAL_ROW_LABEL)
     arrangements.forEach {
-      valueCell(it.arrangement.label, figureOf(amountUsd = it.totalPerYearUsd, blank = NO_TOTAL))
+      valueCell(columnHeaderOf(it), figureOf(amountUsd = it.totalPerYearUsd, blank = NO_TOTAL))
     }
   }
 }
