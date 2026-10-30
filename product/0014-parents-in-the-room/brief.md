@@ -417,6 +417,53 @@ Status:
     passing hook ran 413s; 4,455 server and 824 iOS tests green, 128 snapshot
     scenes with 0 moved, fuzz 3,524/3,524. Rollback: revert; the migration is
     additive.
+  - `family/07/the-money-plan` LANDED as RFC 261 (`main@782b297b`, 2026-10-29) —
+    a parent's coach now writes a four-year money plan for the student's list
+    and a conversation for the parent to have with the student this week. Door:
+    the iPhone parent home → "Talk to your coach about <name>" → "New
+    conversation" → the new starter "Write our four-year money plan for
+    <name>'s list" (or asking in words). The plan is retrievable as that
+    conversation, which the Coach screen lists under the starter's words. **The
+    numbers are the server's, not the model's:** a new read-only, subject-scoped
+    parent tool, `family_money_plan`, multiplies each school's one-year figures
+    from the cost picture by four. It gives the published price for the way the
+    student plans to live, or every way of living the school prices when no plan
+    is chosen, and the price after grants. Each total carries the published
+    one-year figure it came from, with its year and source, and is labelled as
+    ours. It never sums schools, never subtracts grants from a price (RFC 149
+    D-F), and never projects a rise. Schools that are not four-year, or whose
+    level we do not hold, get a reason and no number (brief 0011 bar); so does a
+    missing or withheld net price, under the store's own status code. Prompt
+    `parent-coach` v2 (hand-written seed
+    `seed-parent-coach-system-prompt-v2.sql`, pin
+    `parentCoaching.systemPromptVersion = "v2"`) leads the first answer with the
+    all-years totals. It scripts the week's conversation on all-years cost, what
+    graduates of the student's field earned four years after starting college
+    (never "starting salary"; said as unshared when the student has not shared
+    their field), and grants and scholarships. **Ian's gate (all five
+    defaults):** no table, the conversation is the record; four-year schools
+    only; every way of living when none is chosen; the v2 sentences as written;
+    the second starter. No DDL. Review: 36 lenses over four tiers, 0 blocking.
+    The real catches were an unknown school-level code silently read as
+    two-year, and a suppressed net price mislabelled "not reported". Gate:
+    full-scope hook, 13 shell harnesses and the Gradle suite green; 825 iOS
+    tests, with 2 snapshot scenes re-recorded (`supporter-coach-starter`,
+    `supporter-coach-list-unavailable`). Rollback:
+    `PARENT_COACHING_SYSTEM_PROMPT_VERSION=v1`; the tool is harmless untold.
+- **Next slices re-checked against RFC 261 (2026-10-29).** The code wins over
+  the slice text; nothing below rewrites a slice.
+  - **The first beat is complete** (D16: it ends at this slice). No `family`
+    slice is READY. What remains is DEFERRED by D13/D4:
+    `family/11/the-parent-deadline-track`, `family/12/the-plus-guardrail` and
+    `family/13/the-private-entry`. Starting any of them is a /chart decision.
+  - For whoever specs the next beat: `family_money_plan` is parent-only. The
+    student's own coach has no all-years total. The parent prompt's "what you
+    can see" paragraph does not name the new tool; the plan paragraph does. Only
+    a scripted-model end-to-end test covers whether a live model calls the tool
+    and writes the conversation, with no live-model check yet.
+  - Still open from earlier re-checks, unchanged by this slice: the student
+    coach's spoken ceiling and the RFC 240 nudge (Ian's decision 7 at RFC 258),
+    and `convos.student_id ON DELETE CASCADE` against D9 for the erasure slice.
 - **Next slices re-checked against RFC 258 (2026-10-26).** The code wins over
   the slice text; nothing below rewrites a slice.
   - `family/07/the-money-plan` is now unblocked (its BLOCKS edge was this slice;
