@@ -7,6 +7,7 @@ import ed.unicoach.db.models.CohortResidencyScope
 import ed.unicoach.db.models.CohortStatAddress
 import ed.unicoach.db.models.College
 import ed.unicoach.db.models.CollegeId
+import ed.unicoach.db.models.CollegeLevel
 import ed.unicoach.db.models.CollegeMatch
 import ed.unicoach.db.models.CollegeProgram
 import ed.unicoach.db.models.CollegeProgramId
@@ -2517,21 +2518,6 @@ object CollegesDao :
     ) { "WHEN ${it.code} THEN '${it.value}'" }
 
   /**
-   * `HD.ICLEVEL` = 1, "four or more years": the one `college_ipeds.inst_level`
-   * code that makes a college four-year, named rather than typed as a bare `1`
-   * in the SELECT below.
-   *
-   * Every other coded axis in that statement is GENERATED from an enum
-   * ([CONTROL_CASE], [SECTOR_CASE]) precisely so a raw publisher code cannot be
-   * hand-written into SQL; this one axis was the exception, and `= 1` beside
-   * `= 2` (two-year) and `= 3` (less than two years) is one keystroke from
-   * dropping every four-year school out of the default universe. The domain is
-   * the 0055 `college_ipeds_inst_level_domain_check`, which `IpedsLoader` bounds
-   * the ingest against.
-   */
-  private const val INST_LEVEL_FOUR_OR_MORE_YEARS = 1
-
-  /**
    * The output column carrying the ACTIVE price ruler's value for one row (RFC
    * 169): computed once in the page statement's subquery, sorted on, and read
    * back as [CollegeMatch.rulerPriceUsd].
@@ -3241,7 +3227,7 @@ object CollegesDao :
           -- unreported level stays NULL -- unknown, never "no" -- which is why
           -- the default universe reads it as `IS NOT FALSE`.
           (coalesce(ci.cy_active, TRUE) AND ci.death_year IS NULL AND ci.closed_at IS NULL),
-          (ci.inst_level = $INST_LEVEL_FOUR_OR_MORE_YEARS),
+          (ci.inst_level = ${CollegeLevel.FOUR_OR_MORE_YEARS_CODE}),
           -- `HD.UGOFFER` ("offers undergraduate awards") -> `is_degree_granting`:
           -- the one column D60 carries that nothing filters, sorts or indexes on
           -- today. Kept because brief 0004 D2 mandates the three universe flags

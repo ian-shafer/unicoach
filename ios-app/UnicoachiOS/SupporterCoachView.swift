@@ -11,7 +11,7 @@ import os
 /// state (brief 0014 D14).
 ///
 /// **Value before ask.** A parent with no conversation about this student
-/// lands straight on an empty thread whose one offer is the starter, so the
+/// lands straight on an empty thread whose offers are the two starters, so the
 /// first session is two taps from the home to the cost answer; nothing is
 /// asked of the parent first. A first list read that fails still opens the
 /// same thread — starting a conversation never waits on reading old ones — but
@@ -76,7 +76,7 @@ struct SupporterCoachView: View {
                 .accessibilityIdentifier("supporterCoachLoading")
         case .loaded(let conversations) where conversations.isEmpty:
             // No conversation about this student yet: the thread itself, with
-            // its starter, rather than an empty list with a button to reach it.
+            // its starters, rather than an empty list with a button to reach it.
             starterThread(listUnavailable: false)
         case .loaded(let conversations):
             list(conversations)
@@ -153,7 +153,7 @@ struct SupporterCoachView: View {
 /// one list read. Re-read on every call, so a conversation started since the
 /// last read appears. A failed read is logged; with no list yet it is
 /// [State.unavailable] — distinct from "no conversations", though the screen
-/// still offers the starter — and with a list already on screen it keeps that
+/// still offers the starters — and with a list already on screen it keeps that
 /// list. A cancelled read (the screen went away) records nothing.
 @MainActor
 final class SupporterCoachListing: ObservableObject {
@@ -249,9 +249,16 @@ struct SupporterThreadView: View {
         _viewModel = StateObject(wrappedValue: viewModel)
     }
 
-    /// The one starter the empty thread offers, which sends itself.
-    static func starter(for student: LinkedStudent) -> String {
-        String(localized: "What would \(student.name)'s list cost our family?")
+    /// The starters the empty thread offers, each of which sends itself: what
+    /// the list would cost (RFC 258), and the four-year money plan (RFC 261).
+    /// The conversation is named after its first message, so a plan
+    /// conversation is found again on the Coach screen by the second one's
+    /// words.
+    static func starters(for student: LinkedStudent) -> [String] {
+        [
+            String(localized: "What would \(student.name)'s list cost our family?"),
+            String(localized: "Write our four-year money plan for \(student.name)'s list"),
+        ]
     }
 
     var body: some View {
@@ -298,37 +305,44 @@ struct SupporterThreadView: View {
         }
     }
 
-    /// The empty thread's one offer: the question a parent came to ask, as a
+    /// The empty thread's offers: the questions a parent came to ask, each a
     /// tappable bubble that sends itself. Nothing else is asked of them.
     @ViewBuilder
     private var starterArea: some View {
         if viewModel.isDisconnected {
             Color.clear.frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
-            VStack {
+            VStack(spacing: DSSpacing.sm) {
                 Spacer()
-                Button(action: sendStarter) {
-                    Text(Self.starter(for: student))
-                        .font(.dsBody)
-                        .foregroundStyle(Color.dsTextPrimary)
-                        .multilineTextAlignment(.leading)
-                        .padding(DSSpacing.md)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(Color.dsSurface)
-                        .clipShape(RoundedRectangle(cornerRadius: DSRadius.control, style: .continuous))
-                        .overlay(
-                            RoundedRectangle(cornerRadius: DSRadius.control, style: .continuous)
-                                .stroke(Color.dsFieldBorder, lineWidth: DSControl.borderWidth)
-                        )
-                        .contentShape(Rectangle())
+                ForEach(Array(Self.starters(for: student).enumerated()), id: \.offset) { index, starter in
+                    starterButton(starter)
+                        .accessibilityIdentifier("supporterCoachStarter\(index)")
                 }
-                .buttonStyle(.plain)
-                .disabled(viewModel.isStreaming)
-                .accessibilityIdentifier("supporterCoachStarter")
             }
             .padding(DSSpacing.md)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
+    }
+
+    /// One starter as a tappable bubble that sends exactly its own words.
+    private func starterButton(_ starter: String) -> some View {
+        Button { sendStarter(starter) } label: {
+            Text(starter)
+                .font(.dsBody)
+                .foregroundStyle(Color.dsTextPrimary)
+                .multilineTextAlignment(.leading)
+                .padding(DSSpacing.md)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(Color.dsSurface)
+                .clipShape(RoundedRectangle(cornerRadius: DSRadius.control, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: DSRadius.control, style: .continuous)
+                        .stroke(Color.dsFieldBorder, lineWidth: DSControl.borderWidth)
+                )
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(viewModel.isStreaming)
     }
 
     @ViewBuilder
@@ -378,8 +392,8 @@ struct SupporterThreadView: View {
         Task { await viewModel.send() }
     }
 
-    private func sendStarter() {
-        viewModel.messageText = Self.starter(for: student)
+    private func sendStarter(_ starter: String) {
+        viewModel.messageText = starter
         send()
     }
 }

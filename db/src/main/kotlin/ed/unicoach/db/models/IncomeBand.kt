@@ -93,5 +93,8 @@ enum class IncomeBand(
  */
 fun JsonObjectBuilder.putIncomeBand(band: IncomeBand) {
   put("income_band", band.value)
-  put("income_band_label", band.bracket)
+  put(INCOME_BAND_LABEL_KEY, band.bracket)
 }
+
+/** The key [putIncomeBand] writes the band's dollar range under, for a legend that names it. */
+const val INCOME_BAND_LABEL_KEY = "income_band_label"

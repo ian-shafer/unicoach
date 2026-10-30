@@ -234,9 +234,10 @@ object CoachingTestDb {
    * neither of them asserts, which is a difference that can only ever become a
    * defect.
    *
-   * [offersHousing] and [testPolicy] are the two columns a test actually reads,
-   * and both default to NULL -- the third state each read must keep apart from
-   * an absent row: a school we HAVE a row for that does not report that column.
+   * [offersHousing], [testPolicy] and [instLevel] are the columns a test
+   * actually reads, and all default to NULL -- the third state each read must
+   * keep apart from an absent row: a school we HAVE a row for that does not
+   * report that column.
    * A school with no row at all is seeded by not calling this.
    *
    * Every other column is NULL or its empty value. `NewCollegeIpeds` has no
@@ -250,6 +251,7 @@ object CoachingTestDb {
     surveyYear: Int = 2023,
     offersHousing: Boolean? = null,
     testPolicy: Int? = null,
+    instLevel: Int? = null,
   ) = CollegeIpedsDao
     .upsert(
       sqlSession,
@@ -260,7 +262,7 @@ object CoachingTestDb {
         deathYear = null,
         closedAt = null,
         newIpedsUnitId = null,
-        instLevel = null,
+        instLevel = instLevel,
         ugOffer = null,
         sector = null,
         carnegieBasic = null,

@@ -162,3 +162,4 @@ supporter-link-requests.sql
 seed-coach-system-prompt-v51.sql
 convos-party.sql
 seed-parent-coach-system-prompt-v1.sql
+seed-parent-coach-system-prompt-v2.sql

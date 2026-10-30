@@ -1,6 +1,7 @@
 package ed.unicoach.db.dao
 
 import ed.unicoach.db.models.CollegeId
+import ed.unicoach.db.models.CollegeLevel
 import ed.unicoach.db.models.CollegeTestPolicyRow
 import ed.unicoach.db.models.NewCollege
 import ed.unicoach.db.models.NewCollegeIpeds
@@ -384,6 +385,47 @@ class CollegeIpedsDaoTest {
   @Test
   fun `housingFlagsByIpedsUnitId asks nothing of an empty id list`() {
     assertEquals(emptyMap(), CollegeIpedsDao.housingFlagsByIpedsUnitId(session, emptyList()).getOrThrow())
+  }
+
+  @Test
+  fun `levelsByCollegeId reads four-year, not four-year and not held`() {
+    // RFC 261. A two-year school is a level IPEDS REPORTED; a school with no
+    // `college_ipeds` row, and one whose row leaves the level unreported, are
+    // both our silence -- and neither may read as "not four-year".
+    val fourYear = seedCollege(186131)
+    val twoYear = seedCollege(166027)
+    val lessThanTwoYear = seedCollege(110635)
+    val noRow = seedCollege(100690)
+    val unreported = seedCollege(130794)
+    CollegeIpedsDao.upsert(session, ipeds(186131, instLevel = 1)).getOrThrow()
+    CollegeIpedsDao.upsert(session, ipeds(166027, instLevel = 2)).getOrThrow()
+    CollegeIpedsDao.upsert(session, ipeds(110635, instLevel = 3)).getOrThrow()
+    CollegeIpedsDao.upsert(session, ipeds(130794, instLevel = null)).getOrThrow()
+    val noSuchCollege = CollegeId(java.util.UUID.randomUUID())
+
+    val levels =
+      CollegeIpedsDao
+        .levelsByCollegeId(session, listOf(fourYear, twoYear, lessThanTwoYear, noRow, unreported, noSuchCollege))
+        .getOrThrow()
+
+    assertEquals(
+      mapOf(
+        fourYear to CollegeLevel.FOUR_YEAR,
+        twoYear to CollegeLevel.NOT_FOUR_YEAR,
+        lessThanTwoYear to CollegeLevel.NOT_FOUR_YEAR,
+        noRow to CollegeLevel.NOT_HELD,
+        unreported to CollegeLevel.NOT_HELD,
+      ),
+      levels,
+      "an id that names no college has no key",
+    )
+  }
+
+  @Test
+  fun `levelsByCollegeId asks nothing of an empty id list`() {
+    val counting = CountingSqlSession(session)
+    assertEquals(emptyMap(), CollegeIpedsDao.levelsByCollegeId(counting, emptyList()).getOrThrow())
+    assertEquals(emptyList(), counting.prepared, "an empty id list must short-circuit without a query")
   }
 
   @Test

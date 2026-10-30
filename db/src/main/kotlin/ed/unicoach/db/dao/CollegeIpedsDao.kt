@@ -1,6 +1,7 @@
 package ed.unicoach.db.dao
 
 import ed.unicoach.db.models.CollegeId
+import ed.unicoach.db.models.CollegeLevel
 import ed.unicoach.db.models.CollegeTestPolicyRow
 import ed.unicoach.db.models.NewCollegeIpeds
 import ed.unicoach.db.models.NewCollegeProgramsCensus
@@ -297,6 +298,48 @@ object CollegeIpedsDao {
             code?.let { CollegeTestPolicyRow(code = it, surveyYear = rs.getInt("survey_year")) }
         },
       ).map { it.toMap() }
+
+  /**
+   * Each college's level -- four-year, not four-year, or not held -- keyed by
+   * its surface id (RFC 261): the money plan gives an all-years figure only at
+   * a four-year school, and it holds the list's [CollegeId]s, not their IPEDS
+   * unit ids.
+   *
+   * Every requested id that names a college has a key. A college with no
+   * `college_ipeds` row and one whose row leaves `inst_level` NULL both read
+   * [CollegeLevel.NOT_HELD]: neither tells us how long the school's programs
+   * run, and neither may be read as "not four-year". An id that names no
+   * college has no key.
+   *
+   * The code is read by [CollegeLevel.of], whose four-year code
+   * ([CollegeLevel.FOUR_OR_MORE_YEARS_CODE]) is the one home college search's
+   * default universe reads too. A code outside the published set fails the
+   * whole read rather than being guessed into a level.
+   *
+   * Batch by construction: one query for the whole list, and an empty
+   * [collegeIds] short-circuits without a query at all.
+   */
+  fun levelsByCollegeId(
+    session: SqlSession,
+    collegeIds: Collection<CollegeId>,
+  ): Result<Map<CollegeId, CollegeLevel>> {
+    val ids = IdList(collegeIds.map { it.value })
+    if (ids.isEmpty) return Result.success(emptyMap())
+    return session
+      .queryList(
+        """
+        SELECT c.id, ci.inst_level
+        FROM colleges c
+        LEFT JOIN college_ipeds ci ON ci.ipeds_unit_id = c.ipeds_unit_id
+        WHERE c.id IN (${ids.placeholders})
+        """.trimIndent(),
+        bind = { stmt -> ids.bindFrom(stmt, 1) },
+        map = { rs ->
+          val college = CollegeId(UUID.fromString(rs.getString("id")))
+          college to CollegeLevel.of(rs.getIntOrNull("inst_level"), college)
+        },
+      ).map { it.toMap() }
+  }
 
   /**
    * Every `college_ipeds` column [nonNullCounts] may count — the closed

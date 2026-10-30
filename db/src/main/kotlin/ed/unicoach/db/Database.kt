@@ -3,6 +3,7 @@ package ed.unicoach.db
 import com.zaxxer.hikari.HikariConfig
 import com.zaxxer.hikari.HikariDataSource
 import ed.unicoach.db.dao.SqlSession
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -47,6 +48,25 @@ class Database(
         conn.autoCommit = originalAutoCommit
         conn.close()
       }
+    }
+
+  /**
+   * [withConnection] as a [Result]: anything the block or the connection
+   * throws is returned as a failure carrying that exception unaltered, and
+   * cancellation still propagates -- it is the caller unwinding, not a read
+   * that failed, and folding it into a failure would let a cancelled coroutine
+   * carry on as if it had merely seen an error.
+   *
+   * A block that reads through a `Result`-returning DAO unwraps it with
+   * `getOrThrow()`, so the DAO's own failure arrives here as the same failure.
+   */
+  suspend fun <T> withConnectionCatching(block: (SqlSession) -> T): Result<T> =
+    try {
+      Result.success(withConnection(block))
+    } catch (e: CancellationException) {
+      throw e
+    } catch (e: Exception) {
+      Result.failure(e)
     }
 
   fun createRawConnection(): java.sql.Connection =

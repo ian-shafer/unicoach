@@ -114,8 +114,38 @@ final class SupporterCoachTests: XCTestCase {
         XCTAssertEqual(unavailable.state, .unavailable, "a cancelled retry leaves the notice up")
     }
 
-    func testTheStarterNamesTheStudent() {
-        XCTAssertEqual(SupporterThreadView.starter(for: ava), "What would Ava's list cost our family?")
+    /// The empty thread offers two starters, both naming the student: the cost
+    /// question (RFC 258) and the four-year money plan (RFC 261).
+    func testTheEmptyThreadOffersBothStartersNamingTheStudent() {
+        XCTAssertEqual(
+            SupporterThreadView.starters(for: ava),
+            ["What would Ava's list cost our family?", "Write our four-year money plan for Ava's list"]
+        )
+    }
+
+    /// The plan starter goes out as a new conversation about the student, in
+    /// exactly its own words — the words the conversation is then named after.
+    func testThePlanStarterSendsItsExactText() async {
+        let mock = MockSupporterConversationClient()
+        let convo = Conversation(id: UUID(), name: "Plan", createdAt: Date(), updatedAt: Date(), lastActivityAt: nil, archivedAt: nil)
+        mock.scripts = [
+            .init(events: [
+                .conversation(convo, userMessage: Message(id: "u_1", role: .user, content: "q", createdAt: Date())),
+                .completed(Message(id: "c_2", role: .coach, content: "Here is the plan.", createdAt: Date())),
+            ]),
+        ]
+        let viewModel = ConversationViewModel(
+            conversationClient: SupporterThreadClient(client: mock, studentId: ava.studentId),
+            onProfileRequired: {},
+            onBudgetExhausted: {},
+            onTurnFinished: {}
+        )
+
+        viewModel.messageText = SupporterThreadView.starters(for: ava)[1]
+        await viewModel.send()
+
+        XCTAssertEqual(mock.startRequests.map(\.studentId), [ava.studentId])
+        XCTAssertEqual(mock.startRequests.map(\.message), ["Write our four-year money plan for Ava's list"])
     }
 
     /// The first session: the starter goes out as a NEW conversation about the
@@ -141,7 +171,7 @@ final class SupporterCoachTests: XCTestCase {
             onTurnFinished: { turnsFinished += 1 }
         )
 
-        viewModel.messageText = SupporterThreadView.starter(for: ava)
+        viewModel.messageText = SupporterThreadView.starters(for: ava)[0]
         await viewModel.send()
         viewModel.messageText = "And what do I do next?"
         await viewModel.send()

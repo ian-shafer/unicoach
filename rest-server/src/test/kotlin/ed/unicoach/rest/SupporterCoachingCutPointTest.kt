@@ -135,7 +135,9 @@ class SupporterCoachingCutPointTest {
 
       // Every tool the parent's coach advertises, called in one round.
       val advertised = parentCoach.coach.requests.size
-      parentCoach.coach.enqueue(ScriptedCoach.toolUse("family_cost_picture", "fafsa_deadlines", "fafsa_process", "find_college"))
+      parentCoach.coach.enqueue(
+        ScriptedCoach.toolUse("family_cost_picture", "family_money_plan", "fafsa_deadlines", "fafsa_process", "find_college"),
+      )
       val first = parentCoach.startParentConvo(linked.parent.cookie, linked.studentId)
       assertEquals("message", first.frames.last().first, first.body)
       val toolsOffered =
@@ -143,7 +145,7 @@ class SupporterCoachingCutPointTest {
           .tools
           .map { it["name"].toString().trim('"') }
           .toSet()
-      assertEquals(setOf("family_cost_picture", "fafsa_deadlines", "fafsa_process", "find_college"), toolsOffered)
+      assertEquals(setOf("family_cost_picture", "family_money_plan", "fafsa_deadlines", "fafsa_process", "find_college"), toolsOffered)
       // And a second turn in the same conversation.
       val second = parentCoach.postParentMessage(linked.parent.cookie, parentCoach.startedConvoId(first), "And then what?")
       assertEquals("message", second.frames.last().first, second.body)

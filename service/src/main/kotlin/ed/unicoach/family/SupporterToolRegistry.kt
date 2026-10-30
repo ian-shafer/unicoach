@@ -7,6 +7,7 @@ import ed.unicoach.coaching.ReadOnlyChatTool
 import ed.unicoach.coaching.aid.FafsaDeadlineService
 import ed.unicoach.coaching.aid.FafsaProcessChatTool
 import ed.unicoach.college.FindCollegeTool
+import ed.unicoach.db.Database
 
 /**
  * The supporter coach's registry (RFC 258, brief 0014 D15): a SEPARATE
@@ -42,10 +43,12 @@ class SupporterToolRegistry private constructor(
     private fun isPermitted(tool: ChatTool): Boolean = tool is SubjectScopedChatTool || tool is ReadOnlyChatTool
 
     /**
-     * The production registry: the tools RFC 258 §5 names, and nothing that
-     * writes.
+     * The production registry: the tools RFC 258 §5 and RFC 261 name, and
+     * nothing that writes.
      *
      * - `family_cost_picture` — the shared cost picture, through the subject seam.
+     * - `family_money_plan` — that picture over all the years (RFC 261), with
+     *   the school levels it reads from reference data over [database].
      * - `fafsa_deadlines` — the FAFSA calendar, with the linked student's state.
      * - `fafsa_process` — the cited federal rulebook; it takes no subject.
      * - `find_college` — which school a named college is; it takes no subject.
@@ -54,10 +57,12 @@ class SupporterToolRegistry private constructor(
       subjects: SubjectReadService,
       fafsaDeadlines: FafsaDeadlineService,
       findCollege: FindCollegeTool,
+      database: Database,
     ): SupporterToolRegistry =
       of(
         listOf(
           FamilyCostPictureChatTool(subjects),
+          FamilyMoneyPlanChatTool(subjects, database),
           SubjectFafsaDeadlineChatTool(fafsaDeadlines, subjects),
           FafsaProcessChatTool(),
           FindCollegeChatTool(findCollege),

@@ -577,6 +577,7 @@ fun Application.appModule(
         subjectReadService,
         fafsaDeadlineService,
         ed.unicoach.college.FindCollegeTool(collegeSearchService),
+        database,
       ),
     )
   val subscriptionService = SubscriptionService(database, appStoreServerApi, subscriptionPlans)

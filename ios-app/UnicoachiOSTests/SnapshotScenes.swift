@@ -1063,7 +1063,7 @@ enum SnapshotCatalogue {
                 AnyView(SnapshotSeed.supporterHome(students: SnapshotSeed.oneLinkedStudent))
             },
             // A first session: no conversation about this student yet, so the
-            // coach opens on the empty thread and its one starter.
+            // coach opens on the empty thread and its two starters.
             SnapshotScene(name: "supporter-coach-starter") {
                 let coaching = await SnapshotSeed.supporterCoaching(
                     kind: .freeAllowance,

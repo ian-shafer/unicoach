@@ -81,7 +81,12 @@ sealed interface NetPriceBasis {
   data class YourIncomeBand(
     val band: IncomeBand,
   ) : NetPriceBasis {
-    override val value: String get() = "your_income_band"
+    override val value: String get() = VALUE
+
+    companion object {
+      /** [value] for every band: the label names the case, not the band, so a legend can name it with no band in hand. */
+      const val VALUE = "your_income_band"
+    }
   }
 
   /** The band is unanswered or declined; the figure is the all-family average. */

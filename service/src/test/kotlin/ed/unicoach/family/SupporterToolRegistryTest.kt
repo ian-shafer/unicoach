@@ -21,7 +21,7 @@ import kotlin.test.assertTrue
 
 /**
  * The supporter coach's registry (RFC 258 §5): read-only by construction, and
- * exactly the four tools the RFC names.
+ * exactly the tools RFC 258 and RFC 261 name.
  */
 class SupporterToolRegistryTest {
   /** A student-scoped tool that would write: the kind the registry must refuse. */
@@ -66,17 +66,18 @@ class SupporterToolRegistryTest {
   }
 
   @Test
-  fun `the production registry holds exactly the four parent tools`() {
+  fun `the production registry holds exactly the five parent tools, each one admitted by of`() {
     val database = CostsTestDb.database
     val subjects =
       SubjectReadService(database, CollegeListService(database), CollegeCostService(database), SharingPermissionService(database))
 
     val registry =
-      SupporterToolRegistry.standard(subjects, FafsaDeadlineService(database), FindCollegeTool(CollegeSearchService(database)))
+      SupporterToolRegistry.standard(subjects, FafsaDeadlineService(database), FindCollegeTool(CollegeSearchService(database)), database)
 
-    assertEquals(
-      listOf("family_cost_picture", "fafsa_deadlines", "fafsa_process", "find_college"),
-      registry.registry.definitions().map { it["name"]!!.jsonPrimitive.content },
-    )
+    val names = registry.registry.definitions().map { it["name"]!!.jsonPrimitive.content }
+    assertEquals(listOf("family_cost_picture", "family_money_plan", "fafsa_deadlines", "fafsa_process", "find_college"), names)
+    // Each tool on its own through the allowlist: `standard` builds through
+    // `of`, and this says no tool rides in only because a sibling was vetted.
+    names.forEach { name -> SupporterToolRegistry.of(listOf(registry.registry.get(name)!!)) }
   }
 }

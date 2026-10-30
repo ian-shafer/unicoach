@@ -3,6 +3,7 @@ package ed.unicoach.coaching.costs
 import ed.unicoach.coaching.MoneyProfileChatTool
 import ed.unicoach.coaching.StudentScopedChatTool
 import ed.unicoach.coaching.admissions.MeritAidWire
+import ed.unicoach.coaching.costs.canonical.ChosenLivingPlanCopy
 import ed.unicoach.coaching.costs.canonical.FigureGapOwner
 import ed.unicoach.coaching.costs.canonical.FigureStatusCopy
 import ed.unicoach.coaching.costs.canonical.MoneySourceCopy
@@ -13,6 +14,7 @@ import ed.unicoach.db.models.AssuranceTier
 import ed.unicoach.db.models.FigureStatus
 import ed.unicoach.db.models.IncomeBand
 import ed.unicoach.db.models.LivingArrangement
+import ed.unicoach.db.models.MoneySource
 import ed.unicoach.db.models.ProgramMoneyMeasure
 import ed.unicoach.db.models.ResidencyTierBasis
 import ed.unicoach.db.models.StudentId
@@ -402,7 +404,7 @@ class CollegeCostChatTool(
      * Exhaustive, so a fourth outcome must say what boolean it ships rather than
      * falling through to silence.
      */
-    private fun JsonObjectBuilder.putBlendedFiguresApply(applies: BlendedFigureApplicability) {
+    internal fun JsonObjectBuilder.putBlendedFiguresApply(applies: BlendedFigureApplicability) {
       // The state ITSELF, always present: three outcomes cannot ride on a boolean
       // plus an absence, and an absent key has two causes (an open residency
       // question, an unrecognised control) that a reader cannot tell apart.
@@ -830,7 +832,24 @@ class CollegeCostChatTool(
       basis: String,
       statement: String,
     ) {
-      putJsonObject(BORROWING_AVAILABILITY_KEY) {
+      putAvailability(BORROWING_AVAILABILITY_KEY, basis, statement)
+    }
+
+    /**
+     * An availability fact under [key]: the code that says why a figure is
+     * absent ([BASIS_KEY]) and the sentence the coach may say for it
+     * ([STATEMENT_KEY]), always together.
+     *
+     * The one keyed emitter of that pair: the borrowing section says its absence
+     * through it, and `family_money_plan` (RFC 261) says each missing all-years
+     * figure through it, so the two tools cannot shape one fact two ways.
+     */
+    internal fun JsonObjectBuilder.putAvailability(
+      key: String,
+      basis: String,
+      statement: String,
+    ) {
+      putJsonObject(key) {
         put(BASIS_KEY, basis)
         put(STATEMENT_KEY, statement)
       }
@@ -920,11 +939,25 @@ class CollegeCostChatTool(
      * [AssuranceTierCopy]'s own, never re-worded here and never ranked or scored
      * (RFC 179 D10).
      */
-    private fun figureProvenanceObject(default: FigureProvenanceDefault): JsonObject =
+    private fun figureProvenanceObject(default: FigureProvenanceDefault): JsonObject = provenanceObjectOf(default.assurance, default.source)
+
+    /**
+     * ONE figure's provenance as this payload says it: the tier, the tier's own
+     * sentence, and the publisher -- the three keys, always together.
+     *
+     * The one home of that shape: [figureProvenanceObject] says the
+     * college-wide default through it, and `family_money_plan` (RFC 261) says
+     * each figure it multiplies through it, so the two tools cannot describe one
+     * figure two ways.
+     */
+    internal fun provenanceObjectOf(
+      assurance: SpokenAssurance,
+      source: MoneySource,
+    ): JsonObject =
       buildJsonObject {
-        put(ASSURANCE_KEY, default.assurance.tier.value)
-        put(ASSURANCE_STATEMENT_KEY, default.assurance.statement)
-        put(FIGURE_SOURCE_KEY, default.source.value)
+        put(ASSURANCE_KEY, assurance.tier.value)
+        put(ASSURANCE_STATEMENT_KEY, assurance.statement)
+        put(FIGURE_SOURCE_KEY, source.value)
       }
 
     /**
@@ -1067,14 +1100,14 @@ class CollegeCostChatTool(
             // No total, because this school has none for it -- and the statement
             // says so, so the key never ships a plan with a silent blank where
             // its number should be.
-            put(STATEMENT_KEY, statementOf(chosen))
+            put(STATEMENT_KEY, ChosenLivingPlanCopy.statementOf(chosen))
           }
         }
 
         is ChosenLivingPlan.NotPricedHere -> {
           putJsonObject(CHOSEN_ARRANGEMENT_KEY) {
             putChosenLivingPlan(chosen)
-            put(STATEMENT_KEY, statementOf(chosen))
+            put(STATEMENT_KEY, ChosenLivingPlanCopy.statementOf(chosen))
           }
         }
 
@@ -1102,63 +1135,6 @@ class CollegeCostChatTool(
             "record it as this school's own plan. The other ways of living are still here and still true."
         }
       }
-
-    /**
-     * The sentence for a resolved plan this school shows but cannot total.
-     *
-     * One sentence per [NoTotalReason], because the causes are not one fact: a gap
-     * of OURS says so and says what would close it, and only the school's own
-     * silence is stated as the school's. Saying "this school has no total for that
-     * way of living" because WE have not asked which state the student lives in
-     * would blame a price list for our own question (RFC 149 D-B).
-     *
-     * Every case ends the same way: quote the parts that are here, and never add
-     * up what is there and call it the total.
-     */
-    private fun statementOf(chosen: ChosenLivingPlan.NoTotalHere): String =
-      when (chosen.reason) {
-        NoTotalReason.AWAITING_RESIDENCY_ANSWER -> {
-          "The student plans on ${chosen.plan.label}, and this school's published price depends on which state " +
-            "the student is a resident of - which we have not been told, so the gap is ours and not this " +
-            "school's. Ask where the student is a resident and the total follows; meanwhile quote the parts " +
-            "that are here and never add up what is there and call it the total."
-        }
-
-        NoTotalReason.TUITION_APPLICABILITY_UNKNOWN -> {
-          "The student plans on ${chosen.plan.label}, but we cannot tell which of this school's published " +
-            "prices applies to this student, so the missing total is ours and not this school's. Quote the " +
-            "parts that are here and never add up what is there and call it the total."
-        }
-
-        NoTotalReason.PART_NOT_PUBLISHED -> {
-          "The student plans on ${chosen.plan.label}, but this school does not publish every part of what that " +
-            "way of living costs, so there is no total for it. Quote the parts of it that are here, say which " +
-            "part is missing, and never add up what is there and call it the total."
-        }
-
-        // OURS. The school is not named, because it may publish the part
-        // perfectly well and we are the ones who do not hold it for the year the
-        // rest of this school's price is quoted at (RFC 166 §3, §6).
-        NoTotalReason.PART_NOT_COLLECTED_BY_US -> {
-          "The student plans on ${chosen.plan.label}, but we have not collected every part of what that way of " +
-            "living costs at this school, so there is no total for it. The gap is ours, not this school's - " +
-            "never say the school does not publish it. Quote the parts of it that are here and never add up " +
-            "what is there and call it the total."
-        }
-      }
-
-    /**
-     * The sentence for a resolved plan this school is not priced for. Two
-     * reasons, two sentences (the [ArrangementGap] split RFC 151 landed): a
-     * school with no residence halls has ANSWERED, and a school that published no
-     * figure has stayed silent. Neither becomes a substituted arrangement.
-     */
-    private fun statementOf(chosen: ChosenLivingPlan.NotPricedHere): String {
-      // The gap's own spoken phrase ([ArrangementGap.phrase]), never a second
-      // wording of it: the comparison says the same silence the same way.
-      return "The student plans on ${chosen.plan.label}, but this school has ${chosen.reason.phrase}. Say that " +
-        "plainly, and never quote another way of living in its place or carry a figure across from another school."
-    }
 
     /**
      * The no-dorms answer (RFC 149 D-B), emitted whenever IPEDS ANSWERED -- true
@@ -1308,7 +1284,7 @@ class CollegeCostChatTool(
      * ([AT_HOME_ASSUMPTION_STATEMENT]): a model reading this payload can never
      * report the zero as something the school published or failed to publish.
      */
-    private fun JsonObjectBuilder.putAssumedByUnicoach(arrangement: ArrangementCost) {
+    internal fun JsonObjectBuilder.putAssumedByUnicoach(arrangement: ArrangementCost) {
       val assumed = arrangement.lines.filter { it.origin == LineOrigin.ASSUMED_BY_UNICOACH }
       if (assumed.isEmpty()) return
       putJsonArray(ASSUMED_BY_UNICOACH_KEY) { assumed.forEach { add(JsonPrimitive(it.field.wireName)) } }

@@ -50,6 +50,12 @@ class ParentCoachPromptTest {
     /** How many sentences, one per line from that opener, the two prompts share verbatim. */
     private const val SHARED_MONEY_SENTENCES = 4
 
+    /** The line the first-answer sentence (RFC 261 §3a) follows. */
+    private const val FIRST_ANSWER_OPENER = "When the student has schools on their list, open the first conversation with"
+
+    /** The line the money-plan paragraph (RFC 261 §3b) follows. */
+    private const val MONEY_CONVERSATION_OPENER = "You may help this person plan the money conversation with the student"
+
     /** The opening words of the inversion paragraph (brief 0014 D3). */
     private const val INVERSION_OPENER = "When this person asks you to push the student toward a school"
 
@@ -87,19 +93,51 @@ class ParentCoachPromptTest {
   private fun servedCoach(): String = served(coach.systemPromptName, coach.systemPromptVersion)
 
   @Test
-  fun `the pin resolves to the parent-coach v1 row`() {
+  fun `the pin resolves to the parent-coach v2 row`() {
     assertEquals("parent-coach", parent.systemPromptName)
-    assertEquals("v1", parent.systemPromptVersion)
+    assertEquals("v2", parent.systemPromptVersion)
     assertTrue(servedParent().isNotBlank())
   }
 
   @Test
-  fun `the served parent-coach v1 body equals the prompt file byte for byte`() {
-    assertEquals(authoredBody(), served("parent-coach", "v1"))
+  fun `the served parent-coach v2 body equals the prompt file byte for byte`() {
+    assertEquals(authoredBody(), served("parent-coach", "v2"))
   }
 
+  /**
+   * RFC 261 §3: v2 changes v1 in exactly two places -- one sentence after the
+   * first-answer line, and one new paragraph after the money-conversation line
+   * -- and every other line is byte-identical. The v1 row is still served, so a
+   * rollback to it lands on exactly what RFC 258 shipped.
+   */
   @Test
-  fun `the four money-vocabulary sentences are byte-identical in the served coach and parent-coach pins`() {
+  fun `the served v1 row is v2 with exactly the RFC 261 insertions taken out`() {
+    val v1 = served("parent-coach", "v1").lines()
+    val v2 = served("parent-coach", "v2").lines()
+
+    val inserted = v2.filterNot { it in v1 }
+    assertEquals(v1, v2.filter { it in v1 }.distinctBlankRuns(), "every v1 line is in v2, in order, unchanged")
+    assertEquals(10, inserted.size, "one first-answer sentence and a nine-sentence paragraph: $inserted")
+    assertTrue(inserted.all { it.isNotBlank() })
+    assertTrue(v1.none { "family_money_plan" in it }, "v1 does not mention the tool")
+
+    val firstAnswer = v2.indexOfFirst { it.startsWith(FIRST_ANSWER_OPENER) }
+    assertEquals(inserted.first(), v2[firstAnswer + 1], "the first insertion follows the first-answer line")
+    val conversation = v2.indexOfFirst { it.startsWith(MONEY_CONVERSATION_OPENER) }
+    assertEquals("", v2[conversation + 1], "the plan is a paragraph of its own")
+    assertEquals(inserted.drop(1), v2.subList(conversation + 2, conversation + 2 + inserted.size - 1))
+    assertEquals("", v2[conversation + 1 + inserted.size], "and the paragraph after it is unchanged")
+  }
+
+  /**
+   * [filter] keeps the blank line v2 adds before its new paragraph, which v1
+   * has only one of; collapsing a run of blanks to one gives back the v1 shape.
+   */
+  private fun List<String>.distinctBlankRuns(): List<String> =
+    filterIndexed { i, line -> !(line.isBlank() && i > 0 && this[i - 1].isBlank()) }
+
+  @Test
+  fun `the four money-vocabulary sentences are byte-identical in the served coach and both parent-coach rows`() {
     val coachLines = servedCoach().lines()
     val start = coachLines.indexOfFirst { it.startsWith(MONEY_VOCABULARY_OPENER) }
     assertTrue(start >= 0, "the served coach pin must still open its money vocabulary with [$MONEY_VOCABULARY_OPENER]")
@@ -109,9 +147,11 @@ class ParentCoachPromptTest {
     assertTrue(shared[2].startsWith("Grants and scholarships"), shared[2])
     assertTrue(shared[3].startsWith("Every time you mention a loan"), shared[3])
 
-    val parentLines = servedParent().lines()
-    shared.forEach { sentence ->
-      assertTrue(sentence in parentLines, "the parent-coach pin must carry, as a line of its own, byte for byte: [$sentence]")
+    listOf("v1", "v2").forEach { version ->
+      val parentLines = served(parent.systemPromptName, version).lines()
+      shared.forEach { sentence ->
+        assertTrue(sentence in parentLines, "parent-coach $version must carry, as a line of its own, byte for byte: [$sentence]")
+      }
     }
   }
 

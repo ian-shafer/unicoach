@@ -16,4 +16,16 @@ import java.util.Locale
 object WholeCount {
   /** `1000` -> `"1,000"`. */
   fun spoken(count: Int): String = "%,d".format(Locale.US, count)
+
+  /**
+   * A count as a sentence's words say it: zero through nine spelled out
+   * (`4` -> `"four"`), and every other count as [spoken] -- the usual rule for
+   * a small number in running prose, so a sentence built around a constant
+   * reads the same as one typed by hand and still follows the constant when
+   * it changes.
+   */
+  fun inWords(count: Int): String = SMALL_COUNT_WORDS.getOrNull(count) ?: spoken(count)
+
+  private val SMALL_COUNT_WORDS =
+    listOf("zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine")
 }
