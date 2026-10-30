@@ -20,7 +20,7 @@ what that lets a slice do. Ranked:
 | X3 | Tests pin sentences the conversion must keep                                           | `CostReportPageTest.kt:1393-1398, 1486-1490` assert every `block.sentences` string in wire order; `:2255-2258, 2316, 2384, 2433, 2639-2660` assert exact `<li>` strings; `:2731, 2757` count `<li>`; `:2673-2674` asserts a words-only National Merit row carries no `report-merit-figure`                                                                                                                                      | These tests are **rewritten to assert rows, cells and captions**; none is deleted without its fact being asserted in the new shape                                                                      |
 | X4 | A caption can name the filing in plain text                                            | The citation-in-link sweep (`CostReportPageTest.kt:1893-1909`) fails any `"<College>'s 2024-25 Common Data Set"` outside an `<a>`, and anchor counts are exact (`:1952` six; `CostReportProgramReturnTest.kt:320-327` three)                                                                                                                                                                                                    | **The caption is the one place a table links its filing**, through `sourceLink(citation)`; the body never links it again                                                                                |
 | X5 | Column headers are free copy                                                           | The `"award"` sweep (`:664-676, 2505-2515, 2837-2850`) forbids the word outside the school's quoted words; `figureComparisonWordsIn` (`CostReportProgramReturnTest.kt:303`) forbids "gap", "higher", "lower", "more often", "less often", "worse odds"; the kinds block forbids digits inside a scope span and "rank", "score", "rating" (`:1763-1778`)                                                                         | Header words are chosen under those sweeps ("Scholarship", not "Award"; "Test score" is a column header outside the kinds block). A new once-per-page kinds sentence carries no digit in its scope span |
-| X6 | The page already styles a caption                                                      | No report table has a `<caption>`; `.guide-table caption` (`site.css:483-487`) is scoped to `/fafsa`; stacking is `thead { display: none }` for every `.data-table` (`site.css:649-679`); the report sets `data-label` on every value cell (`CostReportPage.kt:1375, 787`) and `scope` on every `th`                                                                                                                            | `glance/01` adds the caption rule for `.report-table`; `glance/05` reworks the shared stacking rule and must verify `/fafsa` too                                                                        |
+| X6 | The page already styles a caption                                                      | No report table has a `<caption>`; `.guide-table caption` (`site.css:483-487`) is scoped to `/fafsa`; stacking is `thead { display: none }` for every `.data-table` (`site.css:649-679`); the report sets `data-label` on every value cell (`CostReportPage.kt:1375, 787`) and `scope` on every `th`                                                                                                                            | `glance/01` adds the caption style for `.report-table`; `glance/05` reworks the shared stacking rule and must verify `/fafsa` too                                                                       |
 
 Two more facts no slice may re-litigate: **no live branch touches the page, its
 CSS, its tests or the three copy seams**; `pipeline/rfc-258` rewrites
@@ -51,9 +51,11 @@ agree.
 ## Conventions every slice uses (decided in `glance/01`, inherited after)
 
 - **Caption.** Every `<table>` the report renders opens with a `<caption>`
-  naming the publisher(s) and cohort (D2, D3b), and carries one `data-publisher`
-  attribute per publisher it holds. A Common Data Set caption contains the
-  filing's `sourceLink` (X4).
+  naming the publisher(s) and cohort (D2, D3b). A Common Data Set caption
+  contains the filing's `sourceLink` (X4). Each slice pins its own captions in
+  its own table's tests; there is no page-wide caption assertion and no
+  `data-publisher` attribute (both landed in `glance/01` and were removed at
+  Ian's call, `main@76380078`, 2026-10-29).
 - **Hedges hoisted.** A hedge that applies to every figure of a kind is said
   once per page in "What kind of numbers these are" (`tierKindsSection`), as a
   page-authored sentence with no digit in its scope span (X5). The slice that
@@ -67,9 +69,9 @@ agree.
   one named class, D4), and a **named set of unconverted block classes**
   (`report-award-grid`, `report-national-merit`, `report-program-return`) that
   each later slice removes its own entry from. The slice that empties the set
-  deletes the mechanism. The markup rules (caption first, `data-publisher`, no
-  total row outside the price table, no table naming both "College Scorecard"
-  and "Common Data Set") assert from `glance/01` on, over every table.
+  deletes the mechanism. The markup rules (no total row outside the price table,
+  no table naming both "College Scorecard" and "Common Data Set") assert from
+  `glance/01` on, over every table.
 - **Blank cells.** A cell with no figure holds its status sentence verbatim (X1)
   — the frozen `FigureStatusCopy` sentence where the status is one of the six,
   the block's own absence sentence otherwise. Never empty, never a dash.
@@ -172,9 +174,8 @@ school's own filing named once above them.
 
 **Needs:**
 
-- BLOCKS glance/01/borrowing-and-merit-in-rows — the caption and
-  `data-publisher` conventions, the caption CSS and the rule's exemption
-  mechanism are landed there; this slice adds captions to the two tables that
+- BLOCKS glance/01/borrowing-and-merit-in-rows — the caption convention and the
+  caption CSS are landed there; this slice adds captions to the two tables that
   exist today and must not re-decide them.
 
 **What and why.** D1's two top-of-page defects and D7's drops around the price
@@ -192,8 +193,7 @@ the one-school hint test (`:979`).
 
 **Decided here.**
 
-- The side-by-side table gains a caption carrying the unit once ("Per year") and
-  `data-publisher` for the Scorecard.
+- The side-by-side table gains a caption carrying the unit once ("Per year").
 - Each price table gains a caption that carries the unit and the residency basis
   ("Per year, at the in-state tuition and fees this family would pay at this
   public school"); the separate residency `<p>` goes. On a one-school report,
@@ -306,9 +306,9 @@ the amount in a column, the source and the deadline above it.
 
 **Needs:**
 
-- BLOCKS glance/01/borrowing-and-merit-in-rows — the caption and
-  `data-publisher` conventions and the rule's exemption set; this slice removes
-  `report-program-return`, the last entry, and deletes the mechanism (D9).
+- BLOCKS glance/01/borrowing-and-merit-in-rows — the caption convention and the
+  rule's exemption set; this slice removes `report-program-return`, the last
+  entry, and deletes the mechanism (D9).
 - CONFLICTS glance/02/the-price-table-says-its-basis — same two files.
 - CONFLICTS glance/03/scholarships-in-rows — same two files, and both add a
   kinds sentence.
@@ -337,12 +337,11 @@ sweep `:303`, cohort assertions `:179-189`).
 **Decided here.**
 
 - One table per (school, subject), caption = the subject lead's facts ("Biology
-  programs at Lakeshore State University, which your student wants to study"),
-  `data-publisher` for both publishers. Columns: program (row header, the
-  published title), median earnings a year four years after finishing (header
-  names the U.S. Treasury), median federal loan debt at finishing (header names
-  the federal student loan system), median monthly payment on a standard 10-year
-  plan (same). No total row.
+  programs at Lakeshore State University, which your student wants to study").
+  Columns: program (row header, the published title), median earnings a year
+  four years after finishing (header names the U.S. Treasury), median federal
+  loan debt at finishing (header names the federal student loan system), median
+  monthly payment on a standard 10-year plan (same). No total row.
 - K5 once per page in the kinds section: the two cohort ranges and the inflation
   base year, from `ProgramFigureProvenance`, never typed. The existing coverage
   sentence, tier scope and sources paragraph stay.
@@ -390,7 +389,7 @@ the page which years those figures describe.
   could land first, checked only on the price table, and we would rather check
   it on the tables it was written for.
 - CONFLICTS glance/01/borrowing-and-merit-in-rows — both edit `site.css`
-  (`glance/01` adds the caption rule).
+  (`glance/01` adds the caption style).
 
 **What and why.** D6: today every `.data-table` becomes one card per row below
 640px with `thead { display: none }`, which over-stacks a two-column table and

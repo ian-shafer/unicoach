@@ -38,6 +38,10 @@
     needed its own exemption set (`UNCAPTIONED_TABLES`, RFC 260 D-B) until
     `glance/02` captions those two tables. 36 lenses, 12 should-fix findings
     fixed; full-scope hook passed.
+  - Follow-up `main@76380078` (2026-10-29, Ian's call): the page-wide caption
+    assertion, its `UNCAPTIONED_TABLES` exemption set and the `data-publisher`
+    attribute are removed. Captions stay, each pinned by its own table's tests;
+    `glance/02` no longer has an exemption set to empty.
 
 ## The question
 
