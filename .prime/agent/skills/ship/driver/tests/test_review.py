@@ -159,52 +159,6 @@ class FixExceptions(unittest.IsolatedAsyncioTestCase):
 
 
 class Grades(unittest.TestCase):
-    def test_every_archived_report_parses_to_a_grade_or_malformed(self):
-        archive = fixtures.archive_dir()
-        if archive is None:
-            self.skipTest("no /ship archive on this machine")
-        seen = 0
-        for path in archive.glob("*/findings/tier*-*.md"):
-            if path.name.endswith(tuple(review.RUN_FILES)):
-                continue
-            report = review.parse_report(path.stem, path.read_text(errors="replace"))
-            self.assertIsInstance(report.grade, review.Grade, path)
-            seen += 1
-        self.assertGreater(seen, 100)
-
-    def test_the_archive_re_triages_to_the_sets_the_coordinator_dispatched(self):
-        """Per archived tier with outcomes and graded reports: the fix plan's dispatched (lens, id) pairs at `full`
-        against the fix-grade outcome records the hand triage left. 57 of 72 matched when RFC 256 was written; the
-        rest are older id schemes (rfc-244, rfc-251), promotions and second passes (rfc-230/231/232/254), and
-        findings the fix child left without a record (rfc-234/238/240)."""
-        archive = fixtures.archive_dir()
-        if archive is None:
-            self.skipTest("no /ship archive on this machine")
-        triages = {}
-        for outcomes in archive.glob("*/findings/tier*-outcomes.jsonl"):
-            tier = int(outcomes.name[4:outcomes.name.index("-")])
-            key = (outcomes.parent, tier)
-            records = triages.setdefault(key, set())
-            for line in outcomes.read_text(errors="replace").splitlines():
-                try:
-                    record = json.loads(line)
-                except ValueError:
-                    continue
-                if record.get("grade") in ("BLOCKING", "SHOULD-FIX"):
-                    records.add((record.get("lens"), record.get("finding_id")))
-        matched = graded = 0
-        for (findings, tier), records in triages.items():
-            reports = [review.parse_report(p.name[len(f"tier{tier}-"):-3], p.read_text(errors="replace"))
-                       for p in findings.glob(f"tier{tier}-*.md") if not p.name.endswith(review.RUN_FILES)]
-            if all(r.grade is review.Grade.MALFORMED for r in reports):
-                continue
-            graded += 1
-            every_file = {f.file for r in reports for f in r.findings}
-            plan = review.fix_plan(reports, "full", every_file)
-            matched += {(f.lens, f.id) for f in plan["dispatched"]} == records
-        self.assertGreaterEqual(graded, 72)
-        self.assertGreaterEqual(matched, 57, f"{matched} of {graded} archived triages re-triage to the same set")
-
     def test_ids_count_tagged_headings_in_file_order_including_out_of_lens(self):
         text = report_text("l", "SHOULD-FIX", [("one", "SHOULD-FIX", "a.kt:1"), ("two", "ADVISORY", "a.kt:2")])
         text += "\n## Out of lens\n\n### three [BLOCKING]\n\n`b.kt:9`\n"

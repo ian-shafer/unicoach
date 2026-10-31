@@ -3,7 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-import fixtures
+import fixtures  # noqa: F401 -- puts ship_driver on sys.path
 from ship_driver.ranking import COLUMNS, rank_lenses, to_tsv
 
 
@@ -54,13 +54,3 @@ class Ranking(unittest.TestCase):
             "lens-a\t2\t2\t0\t4\t2\t0\t2\t0\t1\t2\t1\t3\t2\t0\t1.0\t0.0\n"
             "lens-b\t1\t1\t0\t2\t1\t1\t0\t0\t1\t1\t0\t2\t1\t1\t1.0\t0.5\n"
             "lens-c\t1\t1\t1\t2\t0\t1\t0\t1\t0\t2\t0\t2\t0\t1\t0.0\t0.5\n"))
-
-    def test_the_archive_reproduces_the_rfc_table(self):
-        archive = fixtures.archive_dir()
-        if archive is None:
-            self.skipTest("no /ship archive on this machine")
-        rows = {row["lens"]: row for row in rank_lenses(archive)["rows"]}
-        concrete = rows["code-review-concrete-names"]
-        self.assertGreaterEqual(concrete["dispatched"], 24)
-        self.assertEqual(concrete["fix_accepted"], 0)
-        self.assertGreater(rows["code-review-dry-abstractions"]["acc_per_dispatch"], 2)

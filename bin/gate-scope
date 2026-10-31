@@ -39,13 +39,20 @@ bin/pre-commit is its caller.
 
 Writes exactly four key=value lines to stdout:
 
-  scope=<name>              full | markdown-docs | product-docs | prime-scripts
-                            | ios-app | module-source
+  scope=<name>              full | full-gated | markdown-docs | product-docs
+                            | prime-scripts | ios-app | module-source
   gradle=yes|no             whether bin/check's Gradle half must run
   harnesses=ALL|<names>|    which bin/shell-tests harnesses must run; ALL means
                             "whatever bin/shell-tests runs", so a newly added
                             harness is covered with no edit here; an empty value
-                            means none
+                            means none. The path-gated harnesses (the
+                            PATH_GATED_HARNESSES table in this script names them
+                            and their inputs) are then dropped from that set
+                            unless a staged path is one of their inputs,
+                            whatever the scope. A `full` set that loses one is
+                            `full-gated` instead, with the remaining harnesses
+                            named explicitly instead of ALL. An empty index is
+                            the exception: it stays `full` and ALL.
   fuzz=yes|no               whether bin/test-fuzz must run: yes when any staged
                             path is one of its inputs (the REST contract, the
                             harness, its uv project, its config). Independent of
@@ -53,7 +60,8 @@ Writes exactly four key=value lines to stdout:
 
 The reason for the classification is written to stderr, in words.
 
-Anything not recognised, any mixed set, and an empty index are all `full`. A
+Anything not recognised, any mixed set, and an empty index are all `full`
+(`full-gated` when a path-gated harness was dropped). A
 bin/*scripts-tests that this script's table does not name is a fatal error,
 whatever the diff.
 
@@ -197,6 +205,74 @@ FUZZ_INPUTS=(
   .env.fuzz
 )
 
+# The path-gated harnesses: each one paired with the paths whose change can
+# change its answer, as `<harness>:<input>` -- one entry per pair, so the table
+# stays ONE flat array that bash 3.2 can hold (it has no associative arrays) and
+# that bin/gate-scope-scripts-tests reads the way it reads FUZZ_INPUTS. An input
+# ending in `/` matches everything under it; any other input is an exact path.
+#
+# Like FUZZ_INPUTS this is independent of scope, and it is a FILTER, never an
+# addition: a gated harness runs only when ANY staged path is one of its inputs
+# (the fuzz quantifier, for the fuzz reason -- one input in a mixed set is enough
+# to change its answer), and it is dropped from whatever list the scope row
+# emitted otherwise, `full` included -- and a `full` that loses one is renamed
+# `full-gated` (see the fallback row at the bottom). Ian, 2026-10-31: these harnesses "should
+# not run unless the code that they test changes". Before this table, every
+# mixed commit -- a Kotlin change with its RFC, say -- paid for both of them while
+# changing nothing either one can observe.
+#
+# EVIDENCE for each input, and why the inputs are DIRECTORIES:
+#
+#  * the skill directory. bin/ship-scripts-tests drives
+#    .prime/agent/skills/ship/scripts/* and the python suite under
+#    .prime/agent/skills/ship/driver/tests; bin/docs-scripts-tests drives
+#    .prime/agent/skills/chart/scripts/*. Neither skill's scripts call the
+#    other's (read, not counted: every `ship` in the chart scripts is a comment),
+#    so a ship change does not run the docs harness or the reverse.
+#  * bin/, WHOLESALE, not the exact files each harness drives. The ship and chart
+#    scripts source and execute bin/functions, bin/common, bin/env,
+#    bin/file-lock, bin/gate-scope, bin/pre-commit, bin/format and more, and the
+#    two harness files themselves live there. An exact-file list would be one
+#    more correctness claim to go stale; directory membership is fail-closed.
+#  * flake.nix and flake.lock: the toolchain (python, bash, git) both run on.
+#  * .claude/skills/review-fix/tiers.md, for ship only: the driver suite's
+#    test_applicability reads the REAL tier manifest and fails when a lens there
+#    has no applicability row. Listing it keeps a mixed commit that adds a lens
+#    from landing green over that failure. (A tiers.md-only commit is
+#    markdown-docs and runs no harness at all, which this filter cannot change:
+#    it only ever removes.)
+#
+# THE RESIDUE, stated rather than glossed: ship-scripts-tests reads beyond these
+# inputs. The driver suite's test_every_irreversible_glob_matches_a_tracked_path
+# (.prime/agent/skills/ship/driver/tests/test_dials.py) runs `git ls-files` over
+# the WHOLE tree and fails when an IRREVERSIBLE_GLOBS entry matches no tracked
+# path. So a commit that renames or deletes the last file such a glob matches --
+# PRODUCT.md, a public-web HomePage, the budget package -- stages no input here,
+# skips the harness, and lands green; the failure surfaces on the next commit
+# that does stage a ship or bin/ path. Accepted, not overlooked: Ian decided on
+# 2026-10-31 that these harnesses run only when the code they test changes, and
+# listing every glob's owner as an input would be a second copy of
+# IRREVERSIBLE_GLOBS that runs the harness on most commits anyway.
+#
+# THE EMPTY INDEX IS NOT FILTERED. Rule 3 says an empty set is `full` because it
+# states nothing about what changed, and "nothing staged is an input" would be
+# reading a claim into that silence -- the vacuous pass rule 3 refuses.
+#
+# bin/gate-scope-scripts-tests holds this table to the tree: every harness named
+# here must be in KNOWN_HARNESSES and executable, every input must exist, and
+# each harness's own file must be one of its inputs.
+PATH_GATED_HARNESSES=(
+  ship-scripts-tests:.prime/agent/skills/ship/
+  ship-scripts-tests:bin/
+  ship-scripts-tests:flake.nix
+  ship-scripts-tests:flake.lock
+  ship-scripts-tests:.claude/skills/review-fix/tiers.md
+  docs-scripts-tests:.prime/agent/skills/chart/
+  docs-scripts-tests:bin/
+  docs-scripts-tests:flake.nix
+  docs-scripts-tests:flake.lock
+)
+
 # ---------------------------------------------------------------------------
 # Rule 5: the anti-orphan sweep. Runs BEFORE any classification, so a repository
 # with an undeclared harness fails whatever the diff is -- including a `full`
@@ -268,38 +344,122 @@ is_module_source() {
   return 1
 }
 
-# Is $1 one of FUZZ_INPUTS?
-is_fuzz_input() {
-  local path="$1" input
-  for input in "${FUZZ_INPUTS[@]}"; do
-    case "$input" in
-    */) case "$path" in "$input"*) return 0 ;; esac ;;
-    *) [ "$path" = "$input" ] && return 0 ;;
-    esac
+# Is the staged path $1 the input $2 names? The one matching rule both input
+# tables use: an input ending in `/` is a directory and matches everything under
+# it, any other input is an exact path. A prefix without the slash would let
+# tools/fuzzer/ pass for tools/fuzz/, and bin-old/ for bin/.
+path_is_input() { # <staged path> <input>
+  local path="$1" input="$2"
+  case "$input" in
+  */) case "$path" in "$input"*) return 0 ;; esac ;;
+  *) [ "$path" = "$input" ] && return 0 ;;
+  esac
+  return 1
+}
+
+# The first staged path that is one of the inputs given, printed on stdout; exit
+# 1 when no staged path is. The ONE quantifier both input tables use: a check
+# must run when ANY staged path is one of its inputs -- the opposite quantifier
+# to the scope rows, which need EVERY path to qualify, and for the same
+# fail-closed reason: one input in a mixed set is enough to change that check's
+# answer. Deletes count (deleting uv.lock breaks fuzzing), and --no-renames above
+# means a rename into or out of an input counts on both sides.
+first_staged_input() { # <input...>
+  local staged_path input
+  for staged_path in ${STAGED[@]+"${STAGED[@]}"}; do
+    for input in "$@"; do
+      if path_is_input "$staged_path" "$input"; then
+        printf '%s\n' "$staged_path"
+        return 0
+      fi
+    done
   done
   return 1
 }
 
-# Fuzzing runs when ANY staged path is an input -- the opposite quantifier to the
-# scope rows, which need EVERY path to qualify, and for the same fail-closed
-# reason: one input in a mixed set is enough to change the fuzz answer. Deletes
-# count (deleting uv.lock breaks fuzzing), and --no-renames above means a rename
-# into or out of tools/fuzz/ counts on both sides. An empty index stages nothing
-# that could change the answer, so it is `no`.
+# Fuzzing. An empty index stages nothing that could change the answer, so it is
+# `no`.
 FUZZ=no
 FUZZ_REASON="no staged path is a contract-fuzzing input"
-for staged_path in ${STAGED[@]+"${STAGED[@]}"}; do
-  if is_fuzz_input "$staged_path"; then
-    FUZZ=yes
-    FUZZ_REASON="[$staged_path] is a contract-fuzzing input"
-    break
+if fuzz_trigger="$(first_staged_input "${FUZZ_INPUTS[@]}")"; then
+  FUZZ=yes
+  FUZZ_REASON="[$fuzz_trigger] is a contract-fuzzing input"
+fi
+
+# The path-gated harnesses, each named once, in table order.
+GATED=()
+for gated_entry in "${PATH_GATED_HARNESSES[@]}"; do
+  gated_name="${gated_entry%%:*}"
+  name_in "$gated_name" ${GATED[@]+"${GATED[@]}"} || GATED+=("$gated_name")
+done
+
+# The staged path that is one of $1's inputs, printed on stdout; exit 1 when no
+# staged path is -- first_staged_input over that harness's rows of the table.
+gated_trigger() { # <gated harness>
+  local harness="$1" entry inputs=()
+  for entry in "${PATH_GATED_HARNESSES[@]}"; do
+    if [ "${entry%%:*}" = "$harness" ]; then
+      inputs+=("${entry#*:}")
+    fi
+  done
+  first_staged_input ${inputs[@]+"${inputs[@]}"}
+}
+
+# SKIPPED_GATED: the gated harnesses this staged set cannot affect, which every
+# emitted harness list drops. GATED_REASONS: one line per gated harness for the
+# stderr log, so a hook run says which of them ran and what triggered it. An
+# empty index skips none (rule 3, stated at the table).
+SKIPPED_GATED=()
+GATED_REASONS=()
+for gated_name in ${GATED[@]+"${GATED[@]}"}; do
+  if [ "${#STAGED[@]}" -eq 0 ]; then
+    GATED_REASONS+=("$gated_name: runs -- the index is empty, and an empty set is not a narrow one")
+  elif trigger="$(gated_trigger "$gated_name")"; then
+    GATED_REASONS+=("$gated_name: runs if the scope does -- [$trigger] is one of its inputs")
+  else
+    SKIPPED_GATED+=("$gated_name")
+    GATED_REASONS+=("$gated_name: skipped -- no staged path is one of its inputs")
   fi
 done
 
+# <harness...> minus SKIPPED_GATED, space-separated on stdout, order kept.
+without_skipped_gated() { # <harness...>
+  local harness kept=()
+  for harness in "$@"; do
+    name_in "$harness" ${SKIPPED_GATED[@]+"${SKIPPED_GATED[@]}"} || kept+=("$harness")
+  done
+  printf '%s' "${kept[*]+"${kept[*]}"}"
+}
+
+# Every scope's harness list passes through here, so no row can forget the
+# filter. ALL stays ALL when nothing is skipped -- "whatever bin/shell-tests
+# runs" is the stronger answer and keeps a new harness covered with no edit here
+# -- and otherwise becomes KNOWN_HARNESSES spelled out minus the skipped ones.
+# That explicit list is complete because rule 5 has already held KNOWN_HARNESSES
+# to the filesystem, and a stale name in it fails bin/shell-tests' own -n check
+# loudly rather than shrinking the run.
+filter_gated() { # <harnesses value as a row emits it>
+  local harnesses="$1"
+  if [ "${#SKIPPED_GATED[@]}" -eq 0 ]; then
+    printf '%s' "$harnesses"
+  elif [ "$harnesses" = "ALL" ]; then
+    without_skipped_gated "${KNOWN_HARNESSES[@]}"
+  else
+    # Unquoted on purpose: a row's list is space-separated names, and an empty
+    # one must become zero arguments.
+    # shellcheck disable=SC2086
+    without_skipped_gated $harnesses
+  fi
+}
+
 emit() {
-  local scope="$1" gradle="$2" harnesses="$3" reason="$4"
+  local scope="$1" gradle="$2" harnesses reason="$4" gated_reason
+  harnesses="$(filter_gated "$3")"
   log-info "gate scope: $scope -- $reason"
   log-info "contract fuzzing: $FUZZ -- $FUZZ_REASON"
+  for gated_reason in ${GATED_REASONS[@]+"${GATED_REASONS[@]}"}; do
+    log-info "path-gated harness $gated_reason"
+  done
   echo "scope=$scope"
   echo "gradle=$gradle"
   echo "harnesses=$harnesses"
@@ -416,4 +576,17 @@ if [ "$ALL_MODULE_SOURCE" -eq 1 ]; then
 fi
 
 # Rules 1, 2 and 4 all land here.
-emit full yes ALL "the staged set is mixed or contains a path no narrow scope recognises"
+#
+# Scope `full-gated`: the same fallback with a path-gated harness filtered out.
+# It is NOT `full`, because the name is what ship-verified records: a `full`
+# marker is the bare tree, "the whole gate passed here", accepted with no
+# condition, while any other scope name is recorded against the parent tree and
+# accepted at land only on a parent already on the base branch. A filtered full
+# is "green if the parent was" for the harnesses it skipped -- a --no-verify WIP
+# commit on the branch may have changed a skill script that this commit's staged
+# set never shows -- so it must carry that condition. Naming it is the whole fix;
+# ship-verified already handles every non-`full` name that way.
+if [ "${#SKIPPED_GATED[@]}" -eq 0 ]; then
+  emit full yes ALL "the staged set is mixed or contains a path no narrow scope recognises"
+fi
+emit full-gated yes ALL "the staged set is mixed or contains a path no narrow scope recognises, and a path-gated harness was skipped (${SKIPPED_GATED[*]}), so the pass is conditional on the parent tree"

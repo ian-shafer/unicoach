@@ -2,7 +2,6 @@
 import asyncio
 import dataclasses
 import json
-import os
 import re
 import shutil
 import subprocess
@@ -24,16 +23,6 @@ TOOLS = Toolchain(original=REPO_ROOT, scripts=REAL_SCRIPTS, prefix=(), poll_seco
 
 def tools(**fields) -> Toolchain:
     return dataclasses.replace(TOOLS, **fields)
-
-
-def archive_dir():
-    """The /ship archive of this machine, if any: gitignored, so tests that read it skip without it."""
-    path = os.environ.get("SHIP_ARCHIVE")
-    if not path:
-        common = subprocess.run(["git", "-C", str(REPO_ROOT), "rev-parse", "--path-format=absolute",
-                                 "--git-common-dir"], capture_output=True, text=True).stdout.strip()
-        path = Path(common).parent / ".scratch" / "ship-archive" if common else ""
-    return Path(path) if path and Path(path).is_dir() else None
 
 
 def git(cwd, *args):

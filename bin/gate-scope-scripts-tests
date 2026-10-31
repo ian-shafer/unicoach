@@ -10,7 +10,9 @@
 #    through the REAL bin/gate-scope, asserting its four stdout lines. Every row
 #    of the table, plus the five fail-closed directions the header of
 #    bin/gate-scope names: unrecognised path, mixed set, empty index, a rename
-#    across a scope boundary, and an undeclared harness.
+#    across a scope boundary, and an undeclared harness -- and the
+#    PATH_GATED_HARNESSES filter, which drops ship- and docs-scripts-tests from
+#    any row unless a staged path is one of their inputs.
 #  * CROSS-SWEEPS. Assertions over the REAL bin/*scripts-tests files, no fixture.
 #    These are what keep the map honest as the harnesses change: a harness that
 #    starts reading .prime/ and is not named in PRIME_HARNESSES fails the build,
@@ -89,6 +91,7 @@ rootProject.name = "fixture"
 include("service")
 include("db")
 include("rest-server")
+include("public-web")
 EOF
 }
 
@@ -175,7 +178,42 @@ gs_module_case() { # <scope> <gradle> <harnesses> <relpath...>
   gs_expect "$repo" "$scope" "$gradle" "$harnesses"
 }
 
-PRIME_SCOPE_HARNESSES="ship-scripts-tests docs-scripts-tests db-scripts-tests"
+# The declared lists, read out of bin/gate-scope's source. Defined up here
+# because the classification cases below derive their expected `full` list from
+# KNOWN_HARNESSES; the cross-sweeps further down assert each read found
+# something.
+declared_value() { # <variable name>
+  sed -n 's/^'"$1"'="\(.*\)"$/\1/p' "$GATE_SCOPE"
+}
+
+declared_array() { # <variable name>
+  sed -n '/^'"$1"'=(/,/^)/p' "$GATE_SCOPE" | sed -e '1d' -e '$d' -e 's/[[:space:]]//g' -e '/^$/d'
+}
+
+DECLARED_KNOWN=()
+while IFS= read -r line; do
+  [ -n "$line" ] && DECLARED_KNOWN+=("$line")
+done < <(declared_array KNOWN_HARNESSES)
+
+# KNOWN_HARNESSES minus the named harnesses, space-separated, in declared order:
+# what a filtered full (`full-gated`) emits. DERIVED rather than
+# typed out, because the assertion is about the FILTER -- which names it drops
+# and that it keeps every other one -- not about KNOWN_HARNESSES' contents; a
+# hand-typed copy would have to change with every new harness for no gain.
+known_without() { # <harness...>
+  local harness kept=()
+  for harness in "${DECLARED_KNOWN[@]}"; do
+    list_contains "$harness" "$@" || kept+=("$harness")
+  done
+  printf '%s' "${kept[*]}"
+}
+
+# The two harnesses PATH_GATED_HARNESSES gates, and `full` with each of them
+# dropped. The commonest `full-gated` answer below is FULL_UNGATED: a mixed set that
+# touches no skill directory, no bin/ and no flake runs neither.
+FULL_UNGATED="$(known_without ship-scripts-tests docs-scripts-tests)"
+FULL_WITH_SHIP="$(known_without docs-scripts-tests)"
+FULL_WITH_DOCS="$(known_without ship-scripts-tests)"
 
 # The module-source row's harnesses. web-assets-scripts-tests joined it at
 # RFC 225: public-web's client-side TypeScript and its COMMITTED bundle both sit
@@ -190,13 +228,16 @@ PRODUCT_PATH="product/0001-brief/research/table.csv"
 echo "==== classification: the empty index and the docs rows ===="
 
 # Rule 3. A universal test over an empty set passes vacuously, and a vacuous pass
-# is the silent green this whole script exists to prevent.
+# is the silent green this whole script exists to prevent. Rule 3 also wins over
+# PATH_GATED_HARNESSES: an empty index says nothing about what changed, so it is
+# not read as "no gated input was staged", and the answer stays ALL.
 test_empty_index() {
   local repo
   repo="$(gs_repo)"
   gs_expect "$repo" full yes ALL
 }
-assert_success "an empty index is full/yes/ALL, not a vacuous narrow pass" test_empty_index
+assert_success "an empty index is full/yes/ALL, not a vacuous narrow pass, gated harnesses included" \
+  test_empty_index
 
 # A NON-Markdown product/ path, and that is not an accident. Every path the
 # /chart layer actually writes is a .md, so the markdown-docs row above matches
@@ -259,11 +300,13 @@ assert_success "a .md inside a module src/ tree is NOT markdown-docs and keeps g
 
 echo "==== classification: prime-scripts ===="
 
-assert_success "one .prime script is prime-scripts, with the three observing harnesses" \
-  gs_case prime-scripts no "$PRIME_SCOPE_HARNESSES" ".prime/agent/skills/ship/scripts/ship-lock"
+# The three observing harnesses, minus docs-scripts-tests: a ship script is not
+# one of its inputs (PATH_GATED_HARNESSES), so prime-scripts drops it.
+assert_success "one .prime ship script is prime-scripts: ship- and db-scripts-tests, not docs" \
+  gs_case prime-scripts no "ship-scripts-tests db-scripts-tests" ".prime/agent/skills/ship/scripts/ship-lock"
 
 assert_success "a .prime Markdown file plus a .prime script is prime-scripts, not markdown-docs" \
-  gs_case prime-scripts no "$PRIME_SCOPE_HARNESSES" \
+  gs_case prime-scripts no "ship-scripts-tests db-scripts-tests" \
   ".prime/agent/skills/ship/SKILL.md" ".prime/agent/skills/ship/scripts/ship-lock"
 
 # A .prime .md AND a product/ .md: every path is Markdown, so the markdown-docs
@@ -295,32 +338,32 @@ assert_success "files in two different modules' src trees are module-source" \
 # settings.gradle.kts is the source of truth for what a module is. A src/ path
 # under a directory it does not name falls back to full, which is the safe
 # direction.
-assert_success "a src/ path under a directory settings.gradle.kts does not name is full" \
-  gs_module_case full yes ALL "nope/src/main/kotlin/X.kt"
+assert_success "a src/ path under a directory settings.gradle.kts does not name is full-gated" \
+  gs_module_case full-gated yes "$FULL_UNGATED" "nope/src/main/kotlin/X.kt"
 
 assert_success "one bin/ path is full" \
   gs_case full yes ALL "bin/gate-scope"
 
 # db IS a module in the fixture, but db/schema/ is not db/src/: a migration is a
 # build input no narrow row claims.
-assert_success "one db/schema/ path is full" \
-  gs_module_case full yes ALL "db/schema/add-thing.sql"
+assert_success "one db/schema/ path is full-gated" \
+  gs_module_case full-gated yes "$FULL_UNGATED" "db/schema/add-thing.sql"
 
 # NOT a narrow row, and the absence is the assertion. An `infra` scope was
 # proposed and removed: bin/scripts-tests really does observe infra/ -- it greps
 # infra/files/deploy-on-instance.sh, loops over infra/files/unicoach-*.service,
 # seds infra/rds.tf, and runs infra/files/render-env.sh and `bash -n` over
 # infra/files/*.sh. Removing the tofu assertions did not make infra/ unobserved.
-assert_success "one infra/ path alone is full -- bin/scripts-tests observes infra/" \
-  gs_case full yes ALL "infra/rds.tf"
+assert_success "one infra/ path alone is full-gated -- bin/scripts-tests observes infra/" \
+  gs_case full-gated yes "$FULL_UNGATED" "infra/rds.tf"
 
 # Rule 2: the diff is judged AS A WHOLE. Two narrow paths from different rows are
 # not two narrow commits.
-assert_success "infra/ plus a .kt is full" \
-  gs_module_case full yes ALL "infra/rds.tf" "service/src/main/kotlin/X.kt"
+assert_success "infra/ plus a .kt is full-gated" \
+  gs_module_case full-gated yes "$FULL_UNGATED" "infra/rds.tf" "service/src/main/kotlin/X.kt"
 
-assert_success "a .kt plus a Markdown file is full" \
-  gs_module_case full yes ALL "service/src/main/kotlin/X.kt" "CLAUDE.md"
+assert_success "a .kt plus a Markdown file is full-gated" \
+  gs_module_case full-gated yes "$FULL_UNGATED" "service/src/main/kotlin/X.kt" "CLAUDE.md"
 
 # Scope `ios-app`. None of the harnesses bin/shell-tests runs mentions ios-app,
 # it is not a Gradle module, and bin/ios-scripts-tests -- the one thing that does
@@ -332,8 +375,8 @@ assert_success "one ios-app Swift file is ios-app, no Gradle, no harnesses" \
 assert_success "two ios-app paths are ios-app" \
   gs_case ios-app no "" "ios-app/UnicoachiOS/A.swift" "ios-app/env/prod.env"
 
-assert_success "an ios-app path plus a .kt is full" \
-  gs_module_case full yes ALL "ios-app/UnicoachiOS/A.swift" "service/src/main/kotlin/X.kt"
+assert_success "an ios-app path plus a .kt is full-gated" \
+  gs_module_case full-gated yes "$FULL_UNGATED" "ios-app/UnicoachiOS/A.swift" "service/src/main/kotlin/X.kt"
 
 # ios-app/DESIGN.md ALONE is markdown-docs, not ios-app: the markdown row is
 # checked FIRST, and where two rows both match the weaker claim wins. Both rows
@@ -363,14 +406,15 @@ assert_success "a rename from .prime/x/SKILL.md to bin/x is full, not markdown-d
 
 # The same mechanism the other way: both sides are inside .prime/, so the set is
 # still all-.prime -- but no longer all-Markdown, because the destination is a
-# script. prime-scripts, and the three observing harnesses run.
+# script. prime-scripts -- and of the three observing harnesses only
+# db-scripts-tests, because .prime/x/ is neither gated harness's input.
 test_rename_inside_prime_md_to_script() {
   local repo
   repo="$(gs_repo)"
   gs_stage "$repo" ".prime/x/SKILL.md"
   gs_commit "$repo" base
   git -C "$repo" mv -- ".prime/x/SKILL.md" ".prime/x/tool"
-  gs_expect "$repo" prime-scripts no "$PRIME_SCOPE_HARNESSES"
+  gs_expect "$repo" prime-scripts no "db-scripts-tests"
 }
 assert_success "a rename inside .prime/ from a .md to a script is prime-scripts" \
   test_rename_inside_prime_md_to_script
@@ -388,16 +432,156 @@ test_newline_in_a_path() {
     < <(git -C "$repo" diff --cached --name-only -z --no-renames)
   [ "${#staged[@]}" -eq 1 ] && [ "${staged[0]}" = "$path" ] ||
     { log-error "the fixture staged [${#staged[@]}] path(s), expected the one newline-bearing path"; return 1; }
-  gs_expect "$repo" prime-scripts no "$PRIME_SCOPE_HARNESSES"
+  gs_expect "$repo" prime-scripts no "db-scripts-tests"
 }
 assert_success "a path containing a newline is classified whole, not split in two" \
   test_newline_in_a_path
 
 # A top-level directory whose name has a LEADING SPACE is not .prime/, and the
 # `case` must not treat it as one. This is a demonstrated defect shape in this
-# repo, not a hypothetical.
-assert_success "a top-level directory named ' .prime' (leading space) is full, not prime-scripts" \
-  gs_case full yes ALL " .prime/agent/skills/ship/scripts/ship-lock"
+# repo, not a hypothetical. The same space keeps it from matching the ship
+# harness's .prime/agent/skills/ship/ input, so neither gated harness runs.
+assert_success "a top-level directory named ' .prime' (leading space) is full-gated, not prime-scripts" \
+  gs_case full-gated yes "$FULL_UNGATED" " .prime/agent/skills/ship/scripts/ship-lock"
+
+echo "==== path-gated harnesses: ship- and docs-scripts-tests run only on their inputs ===="
+
+# PATH_GATED_HARNESSES is a filter over every row: a gated harness stays in a
+# scope's list only when ANY staged path is one of its inputs. These cases pin
+# both directions -- dropped when nothing it reads changed, kept the moment one
+# thing it reads did -- across `full` and `prime-scripts`, the two rows whose
+# lists ever name a gated harness.
+
+# The commit that prompted the table (RFC 262's shape): Kotlin, its RFC, and a
+# public-web resource. Mixed, so `full`, and nothing in it is a skill directory,
+# bin/ or the flake -- so neither workflow harness runs, and every other one
+# still does.
+test_rfc_262_shape_skips_both_workflow_harnesses() {
+  local repo
+  repo="$(gs_repo)"
+  gs_modules "$repo"
+  gs_stage "$repo" "service/src/main/kotlin/X.kt" "rfc/262-money-plan.md" \
+    "public-web/src/main/resources/static/css/site.css"
+  gs_expect "$repo" full-gated yes "$FULL_UNGATED" || return 1
+  case " $GS_HARNESSES " in
+  *" ship-scripts-tests "* | *" docs-scripts-tests "*)
+    log-error "a workflow harness survived: [$GS_HARNESSES]"; return 1 ;;
+  esac
+  case " $GS_HARNESSES " in
+  *" scripts-tests "*) ;;
+  *) log-error "scripts-tests went missing: [$GS_HARNESSES]"; return 1 ;;
+  esac
+}
+assert_success "Kotlin + rfc/*.md + public-web resources is full-gated without ship- or docs-scripts-tests" \
+  test_rfc_262_shape_skips_both_workflow_harnesses
+
+assert_success "a mixed set with one .prime/agent/skills/ship/ path runs ship-scripts-tests, not docs" \
+  gs_module_case full-gated yes "$FULL_WITH_SHIP" \
+  "service/src/main/kotlin/X.kt" ".prime/agent/skills/ship/scripts/ship-lock"
+
+assert_success "a mixed set with one .prime/agent/skills/chart/ path runs docs-scripts-tests, not ship" \
+  gs_module_case full-gated yes "$FULL_WITH_DOCS" \
+  "service/src/main/kotlin/X.kt" ".prime/agent/skills/chart/scripts/docs-land"
+
+# The ship driver's test_applicability reads the real tier manifest, so a mixed
+# commit that touches it runs ship-scripts-tests.
+assert_success "a mixed set with .claude/skills/review-fix/tiers.md runs ship-scripts-tests, not docs" \
+  gs_module_case full-gated yes "$FULL_WITH_SHIP" \
+  "service/src/main/kotlin/X.kt" ".claude/skills/review-fix/tiers.md"
+
+# bin/ and the flake are inputs of BOTH, and with nothing skipped `full` is ALL
+# again rather than a list that happens to name everything.
+assert_success "a mixed set with one bin/ path is full with harnesses=ALL" \
+  gs_module_case full yes ALL "service/src/main/kotlin/X.kt" "bin/test"
+
+assert_success "a mixed set with flake.lock is full with harnesses=ALL" \
+  gs_module_case full yes ALL "service/src/main/kotlin/X.kt" "flake.lock"
+
+assert_success "flake.nix alone is full with harnesses=ALL" \
+  gs_case full yes ALL "flake.nix"
+
+# The scope NAME is the verdict ship-verified records, not a label. `full` is
+# recorded as the bare tree -- "the whole gate passed here", no condition --
+# and any other name against the parent tree, accepted at land only on a parent
+# already on the base branch. A filtered full skipped harnesses a --no-verify
+# WIP commit below it may have broken, so it is "green if the parent was" and
+# must not be called `full`. This pins both halves side by side: the same
+# fallback, one path apart, is `full-gated` with a gated harness dropped and
+# `full` with nothing dropped.
+test_filtered_full_is_full_gated_and_unfiltered_full_is_full() {
+  local repo
+  repo="$(gs_repo)"
+  gs_modules "$repo"
+  gs_stage "$repo" "service/src/main/kotlin/X.kt" "CLAUDE.md"
+  gs_expect "$repo" full-gated yes "$FULL_UNGATED" || return 1
+  gs_stage "$repo" "bin/test"
+  gs_expect "$repo" full yes ALL
+}
+assert_success "a filtered full is full-gated (parent-conditional); an unfiltered full is full" \
+  test_filtered_full_is_full_gated_and_unfiltered_full_is_full
+
+# prime-scripts: the three observing harnesses, each gated one kept only for its
+# own skill. db-scripts-tests is not gated -- it executes ship-order, and that
+# claim is PRIME_HARNESSES', not this table's.
+assert_success "a .prime chart script alone is prime-scripts: docs- and db-scripts-tests only" \
+  gs_case prime-scripts no "docs-scripts-tests db-scripts-tests" ".prime/agent/skills/chart/scripts/docs-land"
+
+assert_success "a .prime slice script alone is prime-scripts: db-scripts-tests only" \
+  gs_case prime-scripts no "db-scripts-tests" ".prime/agent/skills/slice/scripts/slice-board"
+
+assert_success "a ship script and a chart script together are prime-scripts with all three" \
+  gs_case prime-scripts no "ship-scripts-tests docs-scripts-tests db-scripts-tests" \
+  ".prime/agent/skills/ship/scripts/ship-lock" ".prime/agent/skills/chart/scripts/docs-land"
+
+# The near misses: a sibling directory whose name STARTS with the input's, and a
+# top-level directory whose name starts with `bin`. Each would run a harness
+# under a match without the trailing slash.
+assert_success "a .prime/agent/skills/shipper/ script does not run ship-scripts-tests" \
+  gs_case prime-scripts no "db-scripts-tests" ".prime/agent/skills/shipper/scripts/x"
+
+assert_success "a binary/ path in a mixed set runs neither workflow harness" \
+  gs_module_case full-gated yes "$FULL_UNGATED" "service/src/main/kotlin/X.kt" "binary/x"
+
+# A delete is a staged path, and deleting a script the harness drives breaks it.
+test_deleted_chart_script_runs_docs() {
+  local repo
+  repo="$(gs_repo)"
+  gs_stage "$repo" ".prime/agent/skills/chart/scripts/docs-land"
+  gs_commit "$repo" base
+  git -C "$repo" rm -q -- ".prime/agent/skills/chart/scripts/docs-land"
+  gs_expect "$repo" prime-scripts no "docs-scripts-tests db-scripts-tests"
+}
+assert_success "deleting a chart script runs docs-scripts-tests" test_deleted_chart_script_runs_docs
+
+# --no-renames: a rename OUT of the chart skill counts on its source side.
+test_rename_out_of_chart_runs_docs() {
+  local repo
+  repo="$(gs_repo)"
+  gs_stage "$repo" ".prime/agent/skills/chart/scripts/docs-land"
+  gs_commit "$repo" base
+  mkdir -p "$repo/.prime/agent/skills/slice/scripts"
+  git -C "$repo" mv -- ".prime/agent/skills/chart/scripts/docs-land" \
+    ".prime/agent/skills/slice/scripts/docs-land"
+  gs_expect "$repo" prime-scripts no "docs-scripts-tests db-scripts-tests"
+}
+assert_success "a rename out of .prime/agent/skills/chart/ runs docs-scripts-tests" \
+  test_rename_out_of_chart_runs_docs
+
+# The decision reaches stderr by name, for each gated harness, so a hook log says
+# which ran and which staged path made it run.
+test_gated_reason_on_stderr() {
+  local repo
+  repo="$(gs_repo)"
+  gs_modules "$repo"
+  gs_stage "$repo" "service/src/main/kotlin/X.kt" ".prime/agent/skills/ship/scripts/ship-lock"
+  gs_expect "$repo" full-gated yes "$FULL_WITH_SHIP" || return 1
+  grep -q 'path-gated harness ship-scripts-tests: runs .*\[\.prime/agent/skills/ship/scripts/ship-lock\]' "$GS_ERR" ||
+    { log-error "stderr does not name the ship trigger: [$(cat "$GS_ERR")]"; return 1; }
+  grep -q 'path-gated harness docs-scripts-tests: skipped' "$GS_ERR" ||
+    { log-error "stderr does not say docs-scripts-tests was skipped: [$(cat "$GS_ERR")]"; return 1; }
+}
+assert_success "each gated harness's run-or-skip decision and its trigger are logged to stderr" \
+  test_gated_reason_on_stderr
 
 echo "==== fail-closed: rule 5, the anti-orphan sweep ===="
 
@@ -503,21 +687,22 @@ echo "==== cross-sweeps over the real bin/*scripts-tests ===="
 # by exact name, so it cannot swallow any other harness.
 SWEEP_EXCLUSIONS=(gate-scope-scripts-tests)
 
-# The declared lists, read out of bin/gate-scope's source.
-declared_value() { # <variable name>
-  sed -n 's/^'"$1"'="\(.*\)"$/\1/p' "$GATE_SCOPE"
-}
-
-declared_array() { # <variable name>
-  sed -n '/^'"$1"'=(/,/^)/p' "$GATE_SCOPE" | sed -e '1d' -e '$d' -e 's/[[:space:]]//g' -e '/^$/d'
-}
-
+# DECLARED_KNOWN, and the declared_value / declared_array readers, are defined
+# above the classification cases, which derive their expected `full` list from it.
 DECLARED_PRIME="$(declared_value PRIME_HARNESSES)"
 DECLARED_MODULE_SOURCE="$(declared_value MODULE_SOURCE_HARNESSES)"
-DECLARED_KNOWN=()
+
+# PATH_GATED_HARNESSES, as `<harness>:<input>` pairs, and the harness names it
+# gates, each once.
+DECLARED_GATED_PAIRS=()
 while IFS= read -r line; do
-  [ -n "$line" ] && DECLARED_KNOWN+=("$line")
-done < <(declared_array KNOWN_HARNESSES)
+  [ -n "$line" ] && DECLARED_GATED_PAIRS+=("$line")
+done < <(declared_array PATH_GATED_HARNESSES)
+DECLARED_GATED=()
+for pair in ${DECLARED_GATED_PAIRS[@]+"${DECLARED_GATED_PAIRS[@]}"}; do
+  list_contains "${pair%%:*}" ${DECLARED_GATED[@]+"${DECLARED_GATED[@]}"} ||
+    DECLARED_GATED+=("${pair%%:*}")
+done
 
 # Each derivation must actually have found something. A sed that stopped matching
 # would otherwise turn every sweep below into a loop over nothing.
@@ -525,9 +710,58 @@ test_declarations_were_read() {
   [ -n "$DECLARED_PRIME" ] || { log-error "could not read PRIME_HARNESSES out of bin/gate-scope"; return 1; }
   [ -n "$DECLARED_MODULE_SOURCE" ] || { log-error "could not read MODULE_SOURCE_HARNESSES"; return 1; }
   [ "${#DECLARED_KNOWN[@]}" -ge 2 ] || { log-error "could not read KNOWN_HARNESSES"; return 1; }
+  [ "${#DECLARED_GATED[@]}" -ge 2 ] || { log-error "could not read PATH_GATED_HARNESSES"; return 1; }
 }
-assert_success "the three declarations are readable out of bin/gate-scope" \
+assert_success "the four declarations are readable out of bin/gate-scope" \
   test_declarations_were_read
+
+# PATH_GATED_HARNESSES is a filter over KNOWN_HARNESSES. A gated name KNOWN does
+# not hold gates nothing -- the harness it meant would run on every commit, or
+# never, depending on the typo -- so every key must be a known harness.
+test_every_gated_harness_is_known() {
+  local harness unknown=()
+  for harness in ${DECLARED_GATED[@]+"${DECLARED_GATED[@]}"}; do
+    list_contains "$harness" "${DECLARED_KNOWN[@]}" || unknown+=("$harness")
+  done
+  [ "${#unknown[@]}" -eq 0 ] ||
+    { log-error "PATH_GATED_HARNESSES gates name(s) absent from KNOWN_HARNESSES: ${unknown[*]}"; return 1; }
+}
+assert_success "every PATH_GATED_HARNESSES harness is in KNOWN_HARNESSES" \
+  test_every_gated_harness_is_known
+
+# An input that no longer exists is a rename the table missed: the renamed
+# path's changes would then run the harness nowhere.
+test_every_gated_input_exists() {
+  local pair missing=()
+  for pair in ${DECLARED_GATED_PAIRS[@]+"${DECLARED_GATED_PAIRS[@]}"}; do
+    [ -e "$PROJECT_ROOT/${pair#*:}" ] || missing+=("$pair")
+  done
+  [ "${#missing[@]}" -eq 0 ] ||
+    { log-error "PATH_GATED_HARNESSES names input(s) absent from this checkout: ${missing[*]}"; return 1; }
+}
+assert_success "every PATH_GATED_HARNESSES input exists in this checkout" \
+  test_every_gated_input_exists
+
+# A harness's own file is the first thing that can change its answer. bin/
+# covers both today; this holds that if the bin/ entry is ever narrowed.
+test_every_gated_harness_file_is_its_own_input() {
+  local harness pair covered uncovered=()
+  for harness in ${DECLARED_GATED[@]+"${DECLARED_GATED[@]}"}; do
+    covered=0
+    for pair in "${DECLARED_GATED_PAIRS[@]}"; do
+      [ "${pair%%:*}" = "$harness" ] || continue
+      case "${pair#*:}" in
+      */) case "bin/$harness" in "${pair#*:}"*) covered=1 ;; esac ;;
+      *) [ "bin/$harness" = "${pair#*:}" ] && covered=1 ;;
+      esac
+    done
+    [ "$covered" -eq 1 ] || uncovered+=("$harness")
+  done
+  [ "${#uncovered[@]}" -eq 0 ] ||
+    { log-error "gated harness(es) whose own bin/ file is not one of their inputs: ${uncovered[*]}"; return 1; }
+}
+assert_success "every gated harness's own bin/<name> is one of its PATH_GATED_HARNESSES inputs" \
+  test_every_gated_harness_file_is_its_own_input
 
 # FUZZ_INPUTS mirrors bin/test-fuzz by hand, so hold it to the real tree from
 # both sides that can be derived. An entry that no longer exists is a rename the
@@ -604,17 +838,19 @@ test_no_harness_names_a_prime_markdown_path() {
 assert_success "no bin/*scripts-tests names a literal path under .prime/ ending .md" \
   test_no_harness_names_a_prime_markdown_path
 
-# A declared name that does not exist, or is not executable, is a narrow scope
-# promising to run something the gate cannot run.
+# A declared name that does not exist, or is not executable, is a scope promising
+# to run something the gate cannot run. KNOWN_HARNESSES is included because a
+# filtered `full` spells it out as an explicit -n list.
 test_declared_harnesses_exist_and_run() {
   local harness broken=()
-  for harness in $DECLARED_PRIME $DECLARED_MODULE_SOURCE; do
+  for harness in $DECLARED_PRIME $DECLARED_MODULE_SOURCE "${DECLARED_KNOWN[@]}" \
+    ${DECLARED_GATED[@]+"${DECLARED_GATED[@]}"}; do
     [ -x "$PROJECT_ROOT/bin/$harness" ] || broken+=("$harness")
   done
   [ "${#broken[@]}" -eq 0 ] ||
     { log-error "declared harness(es) missing or not executable in bin/: ${broken[*]}"; return 1; }
 }
-assert_success "every name in PRIME_HARNESSES and MODULE_SOURCE_HARNESSES is an executable in bin/" \
+assert_success "every name in PRIME, MODULE_SOURCE, KNOWN and PATH_GATED harnesses is an executable in bin/" \
   test_declared_harnesses_exist_and_run
 
 # The static half of rule 5, over the REAL bin/: gate-scope fatals at run time,

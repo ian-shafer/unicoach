@@ -93,12 +93,17 @@ not a flag.
 **And the hook now runs only the harnesses a diff can break** (RFC 214).
 `bin/gate-scope` classifies the staged set as a whole and `bin/pre-commit` obeys
 it: a Markdown-only commit outside a module `src/` tree runs `bin/format -c`
-alone; a `.prime/**` script commit runs the three harnesses that observe
-`.prime/`; an `infra/`-only commit runs `bin/format -c` alone; a commit entirely
-inside Gradle modules' `src/` trees runs Gradle plus `bin/scripts-tests`.
-Anything unrecognised, anything mixed, an empty index, and a rename crossing a
-scope boundary all run **everything**. A new `bin/*scripts-tests` the map does
-not name **fails the gate by name** rather than silently never running.
+alone; a `.prime/**` script commit runs the harnesses that observe `.prime/`; an
+`infra/`-only commit runs `bin/format -c` alone; a commit entirely inside Gradle
+modules' `src/` trees runs Gradle plus `bin/scripts-tests`. Anything
+unrecognised, anything mixed, an empty index, and a rename crossing a scope
+boundary all run **everything** — except that the /ship and /chart workflow
+harnesses (`ship-scripts-tests`, `docs-scripts-tests`) run only when a staged
+path is one of their inputs (`PATH_GATED_HARNESSES` in `bin/gate-scope` owns the
+list), whatever the scope; only an empty index runs them unconditionally. A
+mixed set that drops one is scope `full-gated`, whose marker is
+parent-conditional like any other narrow scope's. A new `bin/*scripts-tests` the
+map does not name **fails the gate by name** rather than silently never running.
 
 That map is a correctness claim, not a config table, and it lives in ONE script
 with its own harness — never a second copy, because a wrong map that something

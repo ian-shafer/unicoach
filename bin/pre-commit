@@ -13,11 +13,12 @@ ktlint + deno fmt avenue).
 WHAT the test half runs is decided by bin/gate-scope, which classifies the
 staged set as a whole and says whether Gradle is needed and which shell
 harnesses can observe those paths (RFC 214). A Markdown-only commit runs
-bin/format -c alone; a .prime/ script commit runs the three harnesses that
-observe .prime/; a commit inside a Gradle module's src/ tree runs Gradle and
+bin/format -c alone; a .prime/ script commit runs the harnesses that observe
+.prime/; a commit inside a Gradle module's src/ tree runs Gradle and
 bin/scripts-tests; anything unrecognised, mixed, or an empty index runs
-everything. bin/format -c runs on EVERY path -- it is the only Markdown gate in
-the repo.
+everything -- less the /ship and /chart workflow harnesses, which run only when
+a staged path is one of their inputs (an empty index runs them too).
+bin/format -c runs on EVERY path -- it is the only Markdown gate in the repo.
 
 The chosen scope is logged to stderr by name, so two commits that ran different
 gates are distinguishable from the hook output alone. Every passing commit
