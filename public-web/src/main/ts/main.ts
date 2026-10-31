@@ -8,7 +8,9 @@
  * references the bundle by the name the manifest gives it.
  */
 import { mount as mountBackToTop } from "./backToTop.ts";
+import { mount as mountChat } from "./chat.ts";
 
 // `type="module"` implies defer, so the document is parsed by the time this
 // runs and no DOMContentLoaded dance is needed.
 mountBackToTop(document);
+mountChat(document);

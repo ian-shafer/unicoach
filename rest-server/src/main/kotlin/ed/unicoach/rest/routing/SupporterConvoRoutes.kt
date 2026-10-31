@@ -15,7 +15,6 @@ import ed.unicoach.family.SupporterConvoList
 import ed.unicoach.family.SupporterTurnStart
 import ed.unicoach.family.SupporterTurns
 import ed.unicoach.rest.auth.SessionConfig
-import ed.unicoach.rest.canonicalUuidOrNull
 import ed.unicoach.rest.models.ConversationCreatedEvent
 import ed.unicoach.rest.models.CreateSupporterConversationRequest
 import ed.unicoach.rest.models.MessageListResponse
@@ -30,6 +29,7 @@ import ed.unicoach.rest.respondConvoNotFound
 import ed.unicoach.rest.respondNoSuchStudent
 import ed.unicoach.rest.respondSupporterNotFound
 import ed.unicoach.rest.respondValidationFailed
+import ed.unicoach.web.common.http.canonicalUuidOrNull
 import io.ktor.http.HttpMethod
 import io.ktor.http.HttpStatusCode
 import io.ktor.server.application.call
@@ -165,7 +165,7 @@ class SupporterConvoRoutes(
       is SupporterTurnStart.StudentNotFound -> respondUnreachableStudent(userId, convoId, outcome.reason)
       is SupporterTurnStart.ConvoNotFound -> respondRefusedConvo(userId, convoId, outcome.reason)
       is SupporterTurnStart.BudgetExhausted -> respondBudgetExhausted(userId, outcome.entitlement)
-      is SupporterTurnStart.Started -> streamConversationReply(outcome.reply, { writeOpening(outcome, it) }, onCompleted = {})
+      is SupporterTurnStart.Started -> streamConversationReply(outcome.reply) { writeOpening(outcome, it) }
     }
   }
 

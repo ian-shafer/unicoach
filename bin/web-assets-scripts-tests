@@ -81,6 +81,7 @@ command -v deno > /dev/null 2>&1 ||
 REAL_TS="$PROJECT_ROOT/public-web/src/main/ts"
 TS_RELATIVE="public-web/src/main/ts"
 STATIC_RELATIVE="public-web/src/main/resources/static"
+TEST_RESOURCES_RELATIVE="public-web/src/test/resources"
 MANIFEST_RELATIVE="public-web/src/main/resources/web-assets.properties"
 # The bundle directory, relative to a tree's root: build-web-assets writes into
 # it and the site serves it, and this harness asks both questions about it.
@@ -112,6 +113,13 @@ wa_tree() {
   # without this copy would fail on its option values rather than on the thing
   # each test is asking about.
   cp "$REAL_TS/deno.json" "$root/$TS_RELATIVE/deno.json"
+  # The *_test.ts sources import the contract fixture the Kotlin tests also read
+  # (chat_test.ts -> ../../test/resources/chat-client-contract.json, RFC 262), and
+  # deno check type-checks those imports, so the mirror carries the test
+  # resources too. The whole directory, not the one file: a second shared
+  # fixture must not need an edit here to keep this harness honest.
+  mkdir -p "$root/$TEST_RESOURCES_RELATIVE"
+  cp -R "$PROJECT_ROOT/$TEST_RESOURCES_RELATIVE/." "$root/$TEST_RESOURCES_RELATIVE/"
   printf '%s\n' "$root"
 }
 

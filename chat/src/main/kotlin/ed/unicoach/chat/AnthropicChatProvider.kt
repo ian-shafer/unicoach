@@ -30,8 +30,7 @@ class AnthropicChatProvider(
   private val transport: AnthropicStreamTransport,
   // Backing HttpClient; closed by close().
   private val resource: AutoCloseable,
-) : ChatProvider,
-  AutoCloseable {
+) : CloseableChatProvider {
   override val id: String = PROVIDER_ID
 
   private val logger = LoggerFactory.getLogger(AnthropicChatProvider::class.java)

@@ -182,6 +182,33 @@ class SupporterCoachingServiceTest {
     convoId: ConvoId,
   ): SupporterTurnStart = runBlocking { service().postTurn(userId, convoId, "And the FAFSA?").getOrThrow() }
 
+  /**
+   * The extraction pass records the STUDENT'S facts, and a parent's words are
+   * not the student's (RFC 262): a completed supporter turn, opened and
+   * continued, schedules nothing, although the student's own turn now does
+   * from inside `:service`.
+   */
+  @Test
+  fun `a completed supporter turn enqueues no extraction job`() {
+    val student = CostsTestDb.createStudent()
+    val parent = createUser()
+    link(parent, student)
+    sqlSession.prepareStatement("TRUNCATE TABLE jobs CASCADE").use { it.executeUpdate() }
+
+    val convo = startedConvo(parent, student)
+    val followUp = assertIs<SupporterTurnStart.Started>(post(parent, convo))
+    runBlocking { assertIs<ReplyEvent.Completed>(followUp.reply.toList().last()) }
+
+    val extractionJobs =
+      sqlSession.prepareStatement("SELECT COUNT(*) FROM jobs WHERE job_type = 'EXTRACT_CONVERSATION'").use { stmt ->
+        stmt.executeQuery().use { rs ->
+          rs.next()
+          rs.getInt(1)
+        }
+      }
+    assertEquals(0, extractionJobs)
+  }
+
   @Test
   fun `a caller with no supporter row is NoSupporter on every method`() {
     val student = CostsTestDb.createStudent()

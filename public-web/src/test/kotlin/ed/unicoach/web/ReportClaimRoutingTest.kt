@@ -474,12 +474,12 @@ class ReportClaimRoutingTest {
         assertEquals("/report?token=${ava.token}", response.headers[HttpHeaders.Location], "[$door] keeps the token")
       }
       assertEquals(
-        "/account",
+        "/chat",
         noFollow.get("/register") { header(HttpHeaders.Cookie, cookie) }.headers[HttpHeaders.Location],
         "without a report token the landing is unchanged",
       )
       assertEquals(
-        "/account",
+        "/chat",
         noFollow.get("/register?report=$NOT_MINT_SHAPED") { header(HttpHeaders.Cookie, cookie) }.headers[HttpHeaders.Location],
         "a value the server could not have minted is never turned into a redirect",
       )

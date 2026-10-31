@@ -7,6 +7,7 @@ import ed.unicoach.auth.EmailVerifier
 import ed.unicoach.auth.LoginResult
 import ed.unicoach.auth.RegisterResult
 import ed.unicoach.auth.VerifyEmailResult
+import ed.unicoach.coaching.CoachingService
 import ed.unicoach.common.config.TOKEN_QUERY_PARAM
 import ed.unicoach.db.models.User
 import ed.unicoach.db.models.UserId
@@ -17,9 +18,11 @@ import ed.unicoach.family.InvitePreviewOutcome
 import ed.unicoach.family.SupporterInviteService
 import ed.unicoach.family.SupporterLinkRequestService
 import ed.unicoach.family.SupporterService
+import ed.unicoach.student.StudentService
 import ed.unicoach.web.assets.WebAssets
 import ed.unicoach.web.auth.ACCOUNT_PATH
 import ed.unicoach.web.auth.CHANGE_EMAIL_PATH
+import ed.unicoach.web.auth.CHAT_PATH
 import ed.unicoach.web.auth.HOME_PATH
 import ed.unicoach.web.auth.REGISTER_PATH
 import ed.unicoach.web.auth.RESEND_VERIFICATION_PATH
@@ -29,10 +32,16 @@ import ed.unicoach.web.auth.VERIFY_EMAIL_PATH
 import ed.unicoach.web.auth.WebAccess
 import ed.unicoach.web.auth.WebCaller
 import ed.unicoach.web.auth.clearWebSessionCookie
+import ed.unicoach.web.auth.getSignedIn
+import ed.unicoach.web.auth.getVerified
+import ed.unicoach.web.auth.handleAccess
+import ed.unicoach.web.auth.postSignedIn
+import ed.unicoach.web.auth.postVerified
 import ed.unicoach.web.auth.resolveWebCaller
 import ed.unicoach.web.auth.respondGateRedirect
 import ed.unicoach.web.auth.sessionCookieToken
 import ed.unicoach.web.auth.setWebSessionCookie
+import ed.unicoach.web.chat.chatRoutes
 import ed.unicoach.web.common.http.respondSeeOther
 import ed.unicoach.web.common.http.setContentSecurityPolicy
 import ed.unicoach.web.common.http.setLinkHolderPrivacyHeaders
@@ -43,6 +52,7 @@ import ed.unicoach.web.render.EMAIL_FIELD
 import ed.unicoach.web.render.FAFSA_PATH
 import ed.unicoach.web.render.InviteViewer
 import ed.unicoach.web.render.NAME_FIELD
+import ed.unicoach.web.render.OwnNotFoundBody
 import ed.unicoach.web.render.PASSWORD_FIELD
 import ed.unicoach.web.render.REPORT_FIELD
 import ed.unicoach.web.render.RegisterFormState
@@ -71,6 +81,7 @@ import ed.unicoach.web.render.respondWhoPaysPage
 import ed.unicoach.web.report.CostReportOutcome
 import ed.unicoach.web.report.CostReportSource
 import ed.unicoach.web.report.MissReason
+import ed.unicoach.web.signup.getStartedRoute
 import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.Parameters
@@ -146,12 +157,13 @@ fun reportPagePath(rawToken: String): String = "$REPORT_PATH?$REPORT_TOKEN_PARAM
 
 /**
  * Where a signed-in reader following a signup door in [parameters] lands (RFC
- * 254): back to the ONE report token the door carries, else [ACCOUNT_PATH]. The
+ * 254): back to the ONE report token the door carries, else the chat — the
+ * signed-in root, exactly as the iOS app opens on it (RFC 262). The
  * token is read by [usableReportToken], the rule the doors themselves read it
  * by, so a value not in the mint shape is never turned into a redirect.
  */
 fun signedInDoorLanding(parameters: Parameters): String =
-  presentedToken(parameters.getAll(REPORT_FIELD)).usableReportToken()?.let(::reportPagePath) ?: ACCOUNT_PATH
+  presentedToken(parameters.getAll(REPORT_FIELD)).usableReportToken()?.let(::reportPagePath) ?: CHAT_PATH
 
 /**
  * The user-agent substring that means "iPhone".
@@ -268,9 +280,16 @@ fun Application.installPublicWebRouting(
   supporterInviteService: SupporterInviteService,
   supporterService: SupporterService,
   linkRequestService: SupporterLinkRequestService,
+  coachingService: CoachingService,
+  studentService: StudentService,
 ) {
   install(StatusPages) {
     status(HttpStatusCode.NotFound) { call, _ ->
+      // A 404 a route rendered ITSELF is that route's answer, not a missing
+      // page: the chat's "conversation isn't available" notice is a fragment
+      // the client puts in the transcript (RFC 262 §5), and replacing it with
+      // the whole branded page would paste a page into a page.
+      if (call.attributes.contains(OwnNotFoundBody)) return@status
       call.respondNotFoundPage(call.shellNavOrSignedOut(authService, sessionConfig))
     }
     exception<Throwable> { call, cause ->
@@ -361,6 +380,10 @@ fun Application.installPublicWebRouting(
     reportRoute(costReportSource, authService, sessionConfig, linkRequestService)
 
     inviteRoute(supporterInviteService, authService, sessionConfig)
+
+    chatRoutes(coachingService, studentService, supporterService, authService, sessionConfig)
+
+    getStartedRoute(studentService, authService, sessionConfig)
 
     // ONE name for the classpath package this mount serves, read from
     // [WebAssets] — the same constant [WebAssets] resolves the packaged bundle
@@ -547,16 +570,21 @@ private fun noticeForClaim(
 private fun claimSentNotice(awaitingVerification: Boolean): WebNotice =
   if (awaitingVerification) WebNotice.CLAIM_PENDING else WebNotice.CLAIM_SENT
 
-/** Where a sign-in lands: the invite's notice wins on `/account`; a claim alone lands where its notice can be read. */
+/**
+ * Where a sign-in lands: the invite's notice wins on `/account`; a claim alone
+ * lands where its notice can be read; a plain sign-in lands on the chat, the
+ * signed-in root (RFC 262), because a notice is rendered where it lands and the
+ * chat renders none.
+ */
 private fun signInLandingUrl(
   inviteNotice: WebNotice?,
   claimNotice: WebNotice?,
   user: User,
 ): String =
-  if (inviteNotice == null && claimNotice != null) {
-    claimLandingUrl(claimNotice, verified = user.emailVerifiedAt != null)
-  } else {
-    noticeUrl(ACCOUNT_PATH, inviteNotice)
+  when {
+    inviteNotice != null -> noticeUrl(ACCOUNT_PATH, inviteNotice)
+    claimNotice != null -> claimLandingUrl(claimNotice, verified = user.emailVerifiedAt != null)
+    else -> CHAT_PATH
   }
 
 /**
@@ -878,30 +906,6 @@ private fun noticeUrl(
 ): String = if (notice == null) path else "$path?$NOTICE_QUERY_PARAM=${notice.key}"
 
 /**
- * The submitted form, or `null` when the body was not one.
- *
- * `receiveParameters` throws for a body that is not form-encoded, and an
- * uncaught throw here is answered by the branded 503 — a server fault page for
- * a malformed client request. The CALLER re-renders its own form instead,
- * because which form to show is the route's knowledge and not this helper's.
- */
-private suspend fun ApplicationCall.formParametersOrNull(): Parameters? =
-  runCatching { receiveParameters() }
-    .onFailure { cause -> publicWebErrorLog.debug("unreadable form body on [{}]", request.path(), cause) }
-    .getOrNull()
-
-/**
- * The one value [name] carries in this form body.
- *
- * `null` for a field that is absent OR repeated — neither is a submission of the
- * form this module rendered, and `.orEmpty()` used to make both
- * indistinguishable from a family leaving the box blank. A blank box posts a
- * blank VALUE, which is a real submission and is passed through to `:service`;
- * an absent or repeated key is a request shape, and is re-rendered instead.
- */
-private fun Parameters.formField(name: String): String? = getAll(name)?.singleOrNull()
-
-/**
  * Which header THIS request gets.
  *
  * The sign-out control lives in the shared header (RFC 224), so the header is
@@ -961,100 +965,6 @@ private suspend fun ApplicationCall.respondVerificationHold(
 ) {
   val caller = resolveWebCaller(authService, sessionConfig) ?: return respondGateRedirect(SIGN_IN_PATH)
   respondVerifyEmailHold(caller.user, notice = requestedNotice())
-}
-
-/**
- * Registers a `GET` that only a signed-in caller reaches, and HANDS the handler
- * that caller.
- *
- * The auth gate still runs ahead of routing; this makes the gate's guarantee
- * visible in the handler's TYPE instead of re-asserting it at runtime. Before
- * this, a handler asked for the caller and a helper threw
- * `IllegalStateException` when there was none — so "signed out", the most
- * ordinary state a public web app has, was one mis-typed `mapPathToAccess` entry away
- * from being rendered as the branded 503. Two independent statements of "which
- * routes need a caller" had to agree, and nothing but a test list checked that
- * they did.
- *
- * Now there is no branch to forget: a handler cannot be written without a
- * caller, and a route that needs one cannot be registered without the resolution
- * that produces it. The signed-out arm answers the DOMAIN answer the gate
- * already gives — the sign-in form — rather than an error page.
- *
- * The resolution is free on a gated path: the gate resolved it for this request
- * and `resolveWebCaller` reads it back off `call.attributes`.
- */
-private fun Route.getSignedIn(
-  path: String,
-  authService: AuthService,
-  sessionConfig: WebSessionConfig,
-  handler: suspend RoutingContext.(WebCaller) -> Unit,
-) = get(path) { handleAccess(WebAccess.SIGNED_IN, authService, sessionConfig, handler) }
-
-/** The `POST` half of [getSignedIn]; same contract, same reasoning. */
-private fun Route.postSignedIn(
-  path: String,
-  authService: AuthService,
-  sessionConfig: WebSessionConfig,
-  handler: suspend RoutingContext.(WebCaller) -> Unit,
-) = post(path) { handleAccess(WebAccess.SIGNED_IN, authService, sessionConfig, handler) }
-
-/**
- * [getSignedIn] for a route that also needs a VERIFIED address.
- *
- * This exists because the pre-routing gate cannot be the authority. It
- * classifies `call.request.path()` — the raw bytes — and Ktor routes on
- * something else: empty segments dropped, every segment percent-decoded. So
- * `GET //account` and `GET /%61ccount` reached this very handler while the gate
- * read them as OPEN and skipped the verification check, and the old
- * `getSignedIn` re-asserted only that SOME caller existed. An unverified family
- * rendered the account page, and `POST //account/email` actually changed their
- * address — from the screen this slice promises to hold them at.
- *
- * The fix is not a better normaliser. A string-match against a path you did not
- * resolve is the defect whatever the spelling rules are, so the access class is
- * DECLARED where the route is declared and enforced where Ktor has already said
- * which route this is.
- */
-private fun Route.getVerified(
-  path: String,
-  authService: AuthService,
-  sessionConfig: WebSessionConfig,
-  handler: suspend RoutingContext.(WebCaller) -> Unit,
-) = get(path) { handleAccess(WebAccess.VERIFIED, authService, sessionConfig, handler) }
-
-/** The `POST` half of [getVerified]; same contract, same reasoning. */
-private fun Route.postVerified(
-  path: String,
-  authService: AuthService,
-  sessionConfig: WebSessionConfig,
-  handler: suspend RoutingContext.(WebCaller) -> Unit,
-) = post(path) { handleAccess(WebAccess.VERIFIED, authService, sessionConfig, handler) }
-
-/**
- * The one admission check the four wrappers share: resolve, refuse or hand the
- * handler its caller.
- *
- * Each refusal is the DOMAIN answer the gate gives for the same state — the
- * sign-in form for no session, the hold screen for an unverified one — rather
- * than an error page, so a caller who arrives by an unusual spelling reads
- * exactly what a caller who arrives by the usual one reads.
- *
- * Free on a path the gate already classified: `resolveWebCaller` reads the
- * caller back off `call.attributes`.
- */
-private suspend fun RoutingContext.handleAccess(
-  access: WebAccess,
-  authService: AuthService,
-  sessionConfig: WebSessionConfig,
-  handler: suspend RoutingContext.(WebCaller) -> Unit,
-) {
-  val caller = call.resolveWebCaller(authService, sessionConfig)
-  if (caller == null) return call.respondGateRedirect(SIGN_IN_PATH)
-  if (access == WebAccess.VERIFIED && caller.user.emailVerifiedAt == null) {
-    return call.respondGateRedirect(VERIFY_EMAIL_PATH)
-  }
-  handler(caller)
 }
 
 /**

@@ -4,9 +4,11 @@ import ed.unicoach.auth.AuthService
 import ed.unicoach.auth.EmailVerificationService
 import ed.unicoach.auth.EmailVerifier
 import ed.unicoach.auth.VerifyEmailResult
+import ed.unicoach.coaching.CoachingService
 import ed.unicoach.family.SupporterInviteService
 import ed.unicoach.family.SupporterLinkRequestService
 import ed.unicoach.family.SupporterService
+import ed.unicoach.student.StudentService
 import ed.unicoach.web.assets.WebAssets
 import ed.unicoach.web.common.logging.Detail
 import ed.unicoach.web.common.logging.HeaderSelection
@@ -67,6 +69,8 @@ fun Application.testPublicWebModule(
   supporterInviteService: SupporterInviteService = WebAuthTestSupport.supporterInviteService,
   supporterService: SupporterService = WebAuthTestSupport.supporterService,
   linkRequestService: SupporterLinkRequestService = WebAuthTestSupport.linkRequestService,
+  coachingService: CoachingService = WebAuthTestSupport.defaultCoachingService,
+  studentService: StudentService = WebAuthTestSupport.studentService,
 ) {
   publicWebModule(
     emailVerifier,
@@ -81,6 +85,8 @@ fun Application.testPublicWebModule(
     supporterInviteService,
     supporterService,
     linkRequestService,
+    coachingService,
+    studentService,
   )
 }
 

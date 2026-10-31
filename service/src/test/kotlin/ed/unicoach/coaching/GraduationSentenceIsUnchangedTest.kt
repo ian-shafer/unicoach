@@ -8,6 +8,7 @@ import ed.unicoach.chat.ContentDelta
 import ed.unicoach.chat.TokenUsage
 import ed.unicoach.coaching.budget.generousBudgetService
 import ed.unicoach.coaching.collegelist.CollegeListBlock
+import ed.unicoach.coaching.extraction.disabledExtraction
 import ed.unicoach.db.dao.CodebookReferenceFixture
 import ed.unicoach.db.dao.StudentRowFixture
 import ed.unicoach.db.models.PartialDate
@@ -125,6 +126,7 @@ class GraduationSentenceIsUnchangedTest {
           LlmCallLog(provider, CoachingTestDb.database),
           config,
           generousBudgetService(CoachingTestDb.database),
+          disabledExtraction(CoachingTestDb.database),
           clock = InstantSource.fixed(today),
         )
       val started = service.startConvo(student, "hello", null).getOrThrow() as StartConvoResult.Started

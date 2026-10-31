@@ -54,7 +54,7 @@ class SignInRoutingTest {
     }
 
   @Test
-  fun `a correct password sets the session cookie and redirects to the account page`() =
+  fun `a correct password sets the session cookie and redirects to the chat`() =
     testApplication {
       val email = WebAuthTestSupport.uniqueEmail()
       WebAuthTestSupport.seedUser(email)
@@ -63,7 +63,8 @@ class SignInRoutingTest {
       val response = signIn(email, WebAuthTestSupport.DEFAULT_PASSWORD)
 
       assertEquals(HttpStatusCode.SeeOther, response.status, "a successful POST must answer 303, not 200 or 302")
-      assertEquals("/account", response.headers[HttpHeaders.Location])
+      // The signed-in root is the chat, as the iOS app opens on it (RFC 262).
+      assertEquals("/chat", response.headers[HttpHeaders.Location])
       assertTrue(
         response.headers[HttpHeaders.SetCookie].orEmpty().startsWith(WebAuthTestSupport.sessionConfig.cookieName),
         "no session cookie was set",

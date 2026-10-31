@@ -32,11 +32,21 @@ const val VERIFY_EMAIL_PATH = "/verify-email"
 /** Re-send the verification email. Signed-in, because it acts on the caller's own address. */
 const val RESEND_VERIFICATION_PATH = "/verify-email/resend"
 
-/** The signed-in home. */
+/** The account page: the address, the change-email door and, for a parent, where their product is. */
 const val ACCOUNT_PATH = "/account"
 
 /** The change-email form. */
 const val CHANGE_EMAIL_PATH = "/account/email"
+
+/** The chat (RFC 262): the signed-in root, and the prefix of every conversation's own page. */
+const val CHAT_PATH = "/chat"
+
+/**
+ * The student signup page (RFC 262 D-B): where the chat sends a verified user
+ * with no `students` row. `web/06` builds the form at this path; until then it
+ * renders a placeholder, so the redirect never has to move.
+ */
+const val STUDENT_SIGNUP_PATH = "/get-started"
 
 /** The marketing home. Named like every other path so a rule about it cannot drift from the route. */
 const val HOME_PATH = "/"
@@ -70,7 +80,7 @@ internal enum class WebAccess {
  * `/account` handler while this reads them as OPEN, and no amount of
  * normalising here closes that gap, because the only normaliser that agrees
  * with the router is the router. The authority is the wrapper each route is
- * REGISTERED with — [Route.getVerified] and friends in `Routing.kt` — which
+ * REGISTERED with — [Route.getVerified] and friends in `RouteAccess.kt` — which
  * runs after Ktor has decided which handler this is.
  *
  * What this buys is the cheap early redirect: a signed-out browser asking for
@@ -89,6 +99,8 @@ internal enum class WebAccess {
 internal fun mapPathToAccess(path: String): WebAccess =
   when {
     path == ACCOUNT_PATH || path.startsWith("$ACCOUNT_PATH/") -> WebAccess.VERIFIED
+    path == CHAT_PATH || path.startsWith("$CHAT_PATH/") -> WebAccess.VERIFIED
+    path == STUDENT_SIGNUP_PATH -> WebAccess.VERIFIED
     path == SIGN_OUT_PATH || path == RESEND_VERIFICATION_PATH -> WebAccess.SIGNED_IN
     else -> WebAccess.OPEN
   }
@@ -98,8 +110,8 @@ internal fun mapPathToAccess(path: String): WebAccess =
  *
  * Showing a signed-in family the marketing home page or a second sign-in form
  * is the web equivalent of the iOS app opening on its splash screen: the answer
- * is the app, so this is the closest `web/02` can get to the slice's
- * first-session test before `web/04` exists.
+ * is the app, and since RFC 262 that means the chat — the signed-in root, as
+ * the iOS app opens on it ([signedInDoorLanding]).
  */
 private val SIGNED_IN_REDIRECTS = setOf(HOME_PATH, SIGN_IN_PATH, REGISTER_PATH)
 
@@ -121,7 +133,7 @@ private val SIGNED_IN_REDIRECTS = setOf(HOME_PATH, SIGN_IN_PATH, REGISTER_PATH)
  * And this interceptor is an OPTIMISATION, not the authority — see [mapPathToAccess].
  * It classifies the raw path, which is not the string Ktor routed on, so the
  * enforcement that decides whether a page renders lives on the ROUTE
- * (`getVerified`/`postVerified` in `Routing.kt`) and runs after resolution.
+ * (`getVerified`/`postVerified` in `RouteAccess.kt`) and runs after resolution.
  */
 fun Application.installWebAuthGate(
   authService: AuthService,

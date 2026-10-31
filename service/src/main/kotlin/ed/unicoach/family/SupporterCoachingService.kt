@@ -366,7 +366,9 @@ class SupporterCoachingService(
       SupporterLlmCostsDao.insert(session, request.llmRequestId, supporterId).getOrThrow()
     }
 
-    override suspend fun onSucceeded() {}
+    // A parent's turn is not extracted (RFC 258): the facts the extraction pass
+    // records are the STUDENT'S, and a parent's words are not the student's.
+    override suspend fun onSucceeded(finalRequest: ConvoRequest) {}
   }
 }
 

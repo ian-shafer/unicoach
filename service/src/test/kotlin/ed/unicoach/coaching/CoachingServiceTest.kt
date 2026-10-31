@@ -11,6 +11,7 @@ import ed.unicoach.chat.TokenUsage
 import ed.unicoach.coaching.budget.exhaustedBudgetService
 import ed.unicoach.coaching.budget.generousBudgetService
 import ed.unicoach.coaching.collegelist.CollegeListBlock
+import ed.unicoach.coaching.extraction.disabledExtraction
 import ed.unicoach.common.models.ValidationResult
 import ed.unicoach.db.Database
 import ed.unicoach.db.DatabaseConfig
@@ -147,10 +148,13 @@ class CoachingServiceTest {
 
   private val exhaustedBudget = exhaustedBudgetService(database)
 
+  /** Every suite case not about extraction (RFC 262) runs with it switched off. */
+  private val noExtraction = disabledExtraction(database)
+
   private fun service(
     provider: ChatProvider = LogOnlyChatProvider(),
     clock: InstantSource = InstantSource.system(),
-  ): CoachingService = CoachingService(database, LlmCallLog(provider, database), config, generousBudget, clock = clock)
+  ): CoachingService = CoachingService(database, LlmCallLog(provider, database), config, generousBudget, noExtraction, clock = clock)
 
   /**
    * The same service with today pinned (RFC 186). The pinned value is an
@@ -218,7 +222,7 @@ class CoachingServiceTest {
 
   /** The same service as [service], but with every student's allowance already spent. */
   private fun exhaustedService(provider: ChatProvider = LogOnlyChatProvider()): CoachingService =
-    CoachingService(database, LlmCallLog(provider, database), config, exhaustedBudget)
+    CoachingService(database, LlmCallLog(provider, database), config, exhaustedBudget, noExtraction)
 
   /** A config with the RFC 93 opener injection disabled. */
   private val noSurfaceConfig =
@@ -234,7 +238,7 @@ class CoachingServiceTest {
       ).getOrThrow()
 
   private fun noSurfaceService(provider: ChatProvider): CoachingService =
-    CoachingService(database, LlmCallLog(provider, database), noSurfaceConfig, generousBudget)
+    CoachingService(database, LlmCallLog(provider, database), noSurfaceConfig, generousBudget, noExtraction)
 
   /** A config with the RFC 98 fit-lens opener contribution disabled (commitments still on). */
   private val noSurfaceFitConfig =
@@ -250,7 +254,7 @@ class CoachingServiceTest {
       ).getOrThrow()
 
   private fun noSurfaceFitService(provider: ChatProvider): CoachingService =
-    CoachingService(database, LlmCallLog(provider, database), noSurfaceFitConfig, generousBudget)
+    CoachingService(database, LlmCallLog(provider, database), noSurfaceFitConfig, generousBudget, noExtraction)
 
   private var ipedsUnitIdCounter = 800000
 
@@ -470,7 +474,7 @@ class CoachingServiceTest {
     provider: ChatProvider,
     tools: ed.unicoach.chat.ToolRegistry,
     cfg: CoachingConfig = config,
-  ): CoachingService = CoachingService(database, LlmCallLog(provider, database), cfg, generousBudget, tools)
+  ): CoachingService = CoachingService(database, LlmCallLog(provider, database), cfg, generousBudget, noExtraction, tools)
 
   /**
    * A dispatcher over [Dispatchers.IO] that can PARK exactly one dispatched block
@@ -566,7 +570,7 @@ class CoachingServiceTest {
             .getOrThrow(),
         ).getOrThrow()
     val gatedDatabase = Database(dbConfig, gate)
-    return CoachingService(gatedDatabase, LlmCallLog(provider, database), cfg, generousBudget, tools) to gatedDatabase
+    return CoachingService(gatedDatabase, LlmCallLog(provider, database), cfg, generousBudget, noExtraction, tools) to gatedDatabase
   }
 
   private fun rejected(payload: JsonElement? = null) =
@@ -991,7 +995,7 @@ class CoachingServiceTest {
               """coaching { model="m", maxTokens=10, systemPromptName="nope", systemPromptVersion="v9", surfaceCommitments=true, surfaceFitSuggestions=true, maxToolRounds=8 }""",
             ),
           ).getOrThrow()
-      val svc = CoachingService(database, LlmCallLog(LogOnlyChatProvider(), database), badConfig, generousBudget)
+      val svc = CoachingService(database, LlmCallLog(LogOnlyChatProvider(), database), badConfig, generousBudget, noExtraction)
       val result = svc.startConvo(student, "hi", null)
       assertTrue(result.isFailure)
       assertTrue(result.exceptionOrNull() is IllegalStateException, "got ${result.exceptionOrNull()}")

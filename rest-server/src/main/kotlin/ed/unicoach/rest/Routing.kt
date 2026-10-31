@@ -22,6 +22,7 @@ import ed.unicoach.rest.routing.SupporterConvoRoutes
 import ed.unicoach.rest.routing.SupporterInviteRoutes
 import ed.unicoach.rest.routing.SupporterRoutes
 import ed.unicoach.rest.routing.VocabularyRouteHandler
+import ed.unicoach.web.common.http.canonicalUuidOrNull
 import io.ktor.http.ContentType
 import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpMethod
@@ -40,22 +41,6 @@ import java.util.UUID
 /** The uniform 400 shape: `VALIDATION_FAILED` with per-field detail — one value, shared by every route handler. */
 suspend fun RoutingContext.respondValidationFailed(fieldErrors: List<FieldError>) {
   call.respond(HttpStatusCode.BadRequest, ErrorResponse(ErrorCode.VALIDATION_FAILED, "Validation failed", fieldErrors))
-}
-
-/**
- * [raw] as a UUID iff it is a canonical one, or null. `UUID.fromString` also
- * accepts short groups (`1-2-3-4-5`), so only a value that prints back as itself
- * is an id. The one rule for every id a route reads, from the path ([pathId]) or
- * from a body field.
- */
-fun canonicalUuidOrNull(raw: String): UUID? {
-  val id =
-    try {
-      UUID.fromString(raw)
-    } catch (_: IllegalArgumentException) {
-      return null
-    }
-  return id.takeIf { it.toString() == raw.lowercase() }
 }
 
 /**
@@ -129,7 +114,6 @@ fun Application.configureRouting(
   emailVerificationService: ed.unicoach.auth.EmailVerificationService,
   emailVerifier: ed.unicoach.auth.EmailVerifier,
   queueService: ed.unicoach.queue.QueueService,
-  extractionConfig: ed.unicoach.coaching.extraction.ExtractionConfig,
   collegeListService: ed.unicoach.coaching.collegelist.CollegeListService,
   collegeSearchService: ed.unicoach.college.CollegeSearchService,
   moneyProfileService: ed.unicoach.coaching.moneyprofile.MoneyProfileService,
@@ -151,7 +135,7 @@ fun Application.configureRouting(
     AuthRouteHandler(authService, sessionConfig, emailVerificationService, emailVerifier, accountClosureService)
   val studentRouteHandler = StudentRouteHandler(authService, studentService, sessionConfig)
   val convoRouteHandler =
-    ConvoRouteHandler(authService, studentService, coachingService, sessionConfig, queueService, extractionConfig)
+    ConvoRouteHandler(authService, studentService, coachingService, sessionConfig)
   val collegeListRouteHandler =
     CollegeListRouteHandler(authService, studentService, collegeListService, sessionConfig)
   val collegeRouteHandler =

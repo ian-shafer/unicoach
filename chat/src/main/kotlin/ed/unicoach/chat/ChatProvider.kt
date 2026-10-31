@@ -29,6 +29,15 @@ interface ChatProvider {
   fun stream(request: ChatRequest): Flow<ChatEvent>
 }
 
+// A ChatProvider whose owner must end it: what ChatProviderFactory builds. The
+// factory's product may hold a client (AnthropicChatProvider's HttpClient), so
+// its lifetime is in the TYPE its caller receives — closed with no cast, and a
+// product that held a client without saying so would not compile. A stub with
+// nothing to release implements close() as a no-op, explicitly.
+interface CloseableChatProvider :
+  ChatProvider,
+  AutoCloseable
+
 // Non-streaming accumulation: collects the stream, returns its terminal event
 // (the last, by contract). A stream that violates the contract — empty, or
 // ending on a non-terminal — throws IllegalStateException, the correct

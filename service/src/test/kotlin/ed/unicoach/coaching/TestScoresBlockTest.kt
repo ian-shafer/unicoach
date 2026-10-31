@@ -7,6 +7,7 @@ import ed.unicoach.chat.ChatResponse
 import ed.unicoach.chat.ContentDelta
 import ed.unicoach.chat.TokenUsage
 import ed.unicoach.coaching.budget.generousBudgetService
+import ed.unicoach.coaching.extraction.disabledExtraction
 import ed.unicoach.coaching.testing.TestScoreService
 import ed.unicoach.coaching.testing.TestScoreWrite
 import ed.unicoach.db.dao.StudentRowFixture
@@ -59,6 +60,7 @@ class TestScoresBlockTest {
       LlmCallLog(provider, CoachingTestDb.database),
       config,
       generousBudget,
+      disabledExtraction(CoachingTestDb.database),
       clock = InstantSource.fixed(today),
     )
 

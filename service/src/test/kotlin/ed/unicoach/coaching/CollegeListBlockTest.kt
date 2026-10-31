@@ -14,6 +14,7 @@ import ed.unicoach.coaching.collegelist.CollegeListService
 import ed.unicoach.coaching.collegelist.EntryWithCollegeName
 import ed.unicoach.coaching.collegelist.RemoveEntryResult
 import ed.unicoach.coaching.costs.CostsTestDb
+import ed.unicoach.coaching.extraction.disabledExtraction
 import ed.unicoach.coaching.testing.TestScoreCopy
 import ed.unicoach.coaching.testing.TestScoreService
 import ed.unicoach.coaching.testing.TestScoreWrite
@@ -162,6 +163,7 @@ class CollegeListBlockTest {
       LlmCallLog(provider, CostsTestDb.database),
       config,
       generousBudgetService(CostsTestDb.database),
+      disabledExtraction(CostsTestDb.database),
       tools = ToolRegistry(listOf(CollegeListChatTool(listService))),
       clock = InstantSource.fixed(today),
     )

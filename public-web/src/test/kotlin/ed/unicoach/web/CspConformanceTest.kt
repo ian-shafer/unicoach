@@ -1,5 +1,7 @@
 package ed.unicoach.web
 
+import ed.unicoach.web.auth.CHAT_PATH
+import ed.unicoach.web.auth.STUDENT_SIGNUP_PATH
 import ed.unicoach.web.common.http.CONTENT_SECURITY_POLICY
 import ed.unicoach.web.common.http.CONTENT_SECURITY_POLICY_HEADER
 import ed.unicoach.web.common.routing.registeredRoutes
@@ -398,6 +400,17 @@ class CspConformanceTest {
         setBody(FormDataContent(Parameters.build { append("token", NOT_A_REAL_TOKEN) }))
       },
     )
+
+    // The signed-in pages (RFC 262): the chat, fetched as a student, and its
+    // precondition page, fetched as a verified user with no student row. Both
+    // are pages a browser renders under the same policy, so they are walked like
+    // every public one.
+    val (_, studentToken) = ChatTestSupport.signedInStudent()
+    val nonStudent = WebAuthTestSupport.seedUser(WebAuthTestSupport.uniqueEmail())
+    val nonStudentToken = WebAuthTestSupport.login(nonStudent.email.value)
+    for ((path, token) in listOf(CHAT_PATH to studentToken, STUDENT_SIGNUP_PATH to nonStudentToken)) {
+      action(path, HttpStatusCode.OK, client.get(path) { header(HttpHeaders.Cookie, WebAuthTestSupport.cookieHeader(token)) })
+    }
   }
 
   /** Every blocked verdict on a synthetic page, in extraction order: what the self-tests assert about. */
@@ -556,6 +569,13 @@ class CspConformanceTest {
         PublicPage("/no-such-page", expectedStatus = HttpStatusCode.NotFound),
       )
 
+    /**
+     * The signed-in pages [forEachPublicPage] fetches with a session (RFC 262).
+     * Declared ABOVE [EVALUATED_GET_ROUTES], which reads it: companion
+     * properties initialise in order.
+     */
+    val SIGNED_IN_GET_ROUTES = listOf(HttpMethod.Get to CHAT_PATH, HttpMethod.Get to STUDENT_SIGNUP_PATH)
+
     /** Never a live token: the confirm step makes no backend call, and the fake verifier refuses this one. */
     const val NOT_A_REAL_TOKEN = "not-a-real-token"
 
@@ -578,7 +598,7 @@ class CspConformanceTest {
       PUBLIC_ROUTES
         .filter { page -> page.expectedStatus == HttpStatusCode.OK }
         .map { page -> HttpMethod.Get to page.path }
-        .distinct()
+        .distinct() + SIGNED_IN_GET_ROUTES
 
     /** Every registered `GET` route this test does NOT evaluate, and why. */
     val EXCLUDED_GET_ROUTES =
@@ -591,6 +611,9 @@ class CspConformanceTest {
           "gated: a signed-out GET redirects to /sign-in, and the signed-in rendering is exercised by the RFC 224 auth routing tests",
         (HttpMethod.Get to "/account/email") to
           "gated: a signed-out GET redirects to /sign-in, and the signed-in rendering is exercised by the RFC 224 auth routing tests",
+        (HttpMethod.Get to "$CHAT_PATH/{conversationId}") to
+          "needs a conversation: the same shell as /chat, which is evaluated, plus a reply rendered by the Markdown " +
+          "renderer, whose output MarkdownHtmlTest proves carries no style, handler or script",
         (HttpMethod.Get to "/{...}") to
           "the static mount's tailcard: chrome-less files under static/, not pages; StaticAssetsTest owns it",
       )

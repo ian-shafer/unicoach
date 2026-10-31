@@ -63,8 +63,14 @@ internal interface TurnParty {
     request: ConvoRequest,
   )
 
-  /** Called once, when the turn produced its successful final answer. */
-  suspend fun onSucceeded()
+  /**
+   * Called once, when the turn produced its successful final answer, BEFORE the
+   * `Completed` event is emitted. [finalRequest] is the request whose call
+   * answered — the same row `Completed` carries — so a party that schedules
+   * work over the turn (the student's extraction, RFC 262) names the request
+   * that closes any tool excursion (RFC 94).
+   */
+  suspend fun onSucceeded(finalRequest: ConvoRequest)
 }
 
 /**
@@ -308,9 +314,10 @@ internal class CoachTurnLoop(
                 // Final answer (a plain end_turn, the forced no-tools call, or a
                 // malformed tool_use with no dispatchable block). The party marks
                 // what a successful turn settles (the student's disclosed
-                // commitments, RFC 93) — bound to success, because a failed first
-                // turn soft-deletes the convo.
-                turn.party.onSucceeded()
+                // commitments, RFC 93, and the extraction enqueue, RFC 262) —
+                // bound to success, because a failed first turn soft-deletes the
+                // convo and a failed turn is never extracted.
+                turn.party.onSucceeded(currentCall.request)
                 succeeded = true
                 emit(
                   ReplyEvent.Completed(

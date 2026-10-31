@@ -4,6 +4,7 @@ import ed.unicoach.web.auth.SIGN_IN_PATH
 import io.ktor.http.HttpStatusCode
 import io.ktor.server.application.ApplicationCall
 import io.ktor.server.html.respondHtml
+import io.ktor.util.AttributeKey
 import kotlinx.html.SECTION
 import kotlinx.html.a
 import kotlinx.html.h1
@@ -32,6 +33,14 @@ private suspend fun ApplicationCall.respondErrorPage(
     }
   }
 }
+
+/**
+ * Marks a call whose `404` body the route rendered itself, so the branded 404
+ * status page leaves it alone. Set only by a route that answers a 404 with
+ * content of its own (RFC 262's chat notice); every other 404 — an unmatched
+ * path, a dead token — still renders the branded page.
+ */
+internal val OwnNotFoundBody = AttributeKey<Unit>("ed.unicoach.web.OwnNotFoundBody")
 
 /**
  * The branded 404 page for any unmatched route. Marker: "404 Not Found".

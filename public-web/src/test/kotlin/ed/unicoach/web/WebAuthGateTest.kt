@@ -134,7 +134,7 @@ class WebAuthGateTest {
    * it before `web/04` exists.
    */
   @Test
-  fun `a signed-in caller asking for the home page or either form is sent to their account`() =
+  fun `a signed-in caller asking for the home page or either form is sent to the chat`() =
     testApplication {
       val email = WebAuthTestSupport.uniqueEmail()
       WebAuthTestSupport.seedUser(email)
@@ -145,7 +145,7 @@ class WebAuthGateTest {
       for (path in listOf("/", "/sign-in", "/register")) {
         val response = noFollow.get(path) { header(HttpHeaders.Cookie, WebAuthTestSupport.cookieHeader(token)) }
         assertEquals(HttpStatusCode.Found, response.status, "[$path] did not redirect a signed-in caller")
-        assertEquals("/account", response.headers[HttpHeaders.Location], "[$path] redirected somewhere other than /account")
+        assertEquals("/chat", response.headers[HttpHeaders.Location], "[$path] redirected somewhere other than /chat (RFC 262)")
       }
     }
 

@@ -21,6 +21,9 @@ dependencies {
   // EmailVerificationService, so public-web is an enqueue-only queue producer.
   // It constructs a QueueService and never an EmailService — the worker sends.
   implementation(project(":queue"))
+  // RFC 262: the web chat runs the coach IN-PROCESS (brief 0013 D13), so this
+  // root builds the provider (ChatConfig, ChatProviderFactory) and closes it.
+  implementation(project(":chat"))
   implementation(libs.ktor.server.core)
   implementation(libs.ktor.server.netty)
   implementation(libs.ktor.server.status.pages)
@@ -48,6 +51,10 @@ dependencies {
   // RFC 260: the report's shape rule (CostReportShapeTest) walks nested sections
   // and cells, and a hand-rolled tag strip is not an HTML parser. Test scope only.
   testImplementation(libs.jsoup)
+  // RFC 262: the chat suites script the provider at its transport seam
+  // (ScriptedAnthropicTransport), so a reply, a delta run and a failure are the
+  // real provider's mapping and not a fake's idea of it.
+  testImplementation(testFixtures(project(":chat")))
 }
 
 tasks.withType<Test> {

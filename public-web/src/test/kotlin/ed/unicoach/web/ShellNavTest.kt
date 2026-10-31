@@ -47,6 +47,7 @@ class ShellNavTest {
           "[$path] does not carry exactly one shell sign-in link; header was [$header]",
         )
         assertTrue(!header.contains("href=\"/account\""), "[$path] offers an account link to a signed-out visitor")
+        assertTrue(!header.contains("href=\"/chat\""), "[$path] offers the chat to a signed-out visitor")
         assertTrue(!header.contains("action=\"/sign-out\""), "[$path] offers a sign-out control to a signed-out visitor")
       }
     }
@@ -62,6 +63,11 @@ class ShellNavTest {
       val shellHeader = headerOf(client.get("/account") { header(HttpHeaders.Cookie, WebAuthTestSupport.cookieHeader(token)) }.bodyAsText())
 
       assertTrue(shellHeader.contains("href=\"/account\""), "the signed-in header carries no account link")
+      // RFC 262: "Chat" comes before "Account", so the signed-in root is the first door.
+      assertTrue(
+        shellHeader.indexOf("<a href=\"/chat\">Chat</a>").let { it >= 0 && it < shellHeader.indexOf("href=\"/account\"") },
+        "the signed-in header carries no Chat link before Account; header was [$shellHeader]",
+      )
       assertTrue(shellHeader.contains("action=\"/sign-out\""), "the signed-in header carries no sign-out form")
       assertTrue(shellHeader.contains("method=\"post\""), "sign-out is not a POST: an anchor would be followed by every prefetcher")
       assertTrue(!shellHeader.contains("href=\"/sign-in\""), "the signed-in header still offers the door")

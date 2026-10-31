@@ -1,5 +1,6 @@
 package ed.unicoach.web
 
+import com.typesafe.config.ConfigFactory
 import ed.unicoach.auth.AppleIdTokenVerifier
 import ed.unicoach.auth.AuthService
 import ed.unicoach.auth.AuthenticatedSession
@@ -8,6 +9,15 @@ import ed.unicoach.auth.EmailVerificationConfig
 import ed.unicoach.auth.EmailVerificationService
 import ed.unicoach.auth.GoogleIdTokenVerifier
 import ed.unicoach.auth.LoginResult
+import ed.unicoach.chat.ChatProvider
+import ed.unicoach.chat.LogOnlyChatProvider
+import ed.unicoach.coaching.CoachingConfig
+import ed.unicoach.coaching.CoachingService
+import ed.unicoach.coaching.LlmCallLog
+import ed.unicoach.coaching.budget.BudgetConfig
+import ed.unicoach.coaching.budget.BudgetService
+import ed.unicoach.coaching.extraction.ExtractionConfig
+import ed.unicoach.coaching.extraction.ExtractionScheduler
 import ed.unicoach.common.config.AppConfig
 import ed.unicoach.common.models.EmailAddress
 import ed.unicoach.common.models.ValidationResult
@@ -28,6 +38,8 @@ import ed.unicoach.family.SupporterInviteService
 import ed.unicoach.family.SupporterLinkRequestService
 import ed.unicoach.family.SupporterService
 import ed.unicoach.queue.QueueService
+import ed.unicoach.student.StudentService
+import ed.unicoach.subscriptions.SubscriptionPlans
 import ed.unicoach.util.Argon2Hasher
 import ed.unicoach.util.TokenGenerator
 import io.ktor.client.HttpClient
@@ -114,6 +126,41 @@ object WebAuthTestSupport {
 
   /** The production request service (RFC 254), wired as `Application.kt` wires it. */
   val linkRequestService = SupporterLinkRequestService(database, supporterService, LinkRequestedNotice(QueueService(database)))
+
+  /** The production student lookup the chat's student gate reads (RFC 262). */
+  val studentService = StudentService(database)
+
+  /**
+   * The student's coach (RFC 262), wired as `Application.kt` wires it — the
+   * packaged coaching, budget and extraction config, the real call log and the
+   * real extraction scheduler — over [provider] instead of a network one.
+   *
+   * A suite about a specific reply passes a provider over a
+   * `ScriptedAnthropicTransport`; [freeAllowanceUsd] is the one budget knob a
+   * suite turns, and `0.00` is the exhausted student.
+   */
+  fun coachingService(
+    provider: ChatProvider = LogOnlyChatProvider(),
+    freeAllowanceUsd: String? = null,
+  ): CoachingService {
+    val budgetConfig =
+      BudgetConfig
+        .from(
+          freeAllowanceUsd
+            ?.let { ConfigFactory.parseString("budget.freeAllowanceUsd = $it").withFallback(config) }
+            ?: config,
+        ).getOrThrow()
+    return CoachingService(
+      database,
+      LlmCallLog(provider, database),
+      CoachingConfig.from(config).getOrThrow(),
+      BudgetService(database, budgetConfig, SubscriptionPlans.from(config).getOrThrow()),
+      ExtractionScheduler(QueueService(database), ExtractionConfig.from(config).getOrThrow()),
+    )
+  }
+
+  /** The coach every suite gets unless it is about the coach: the log-only provider. */
+  val defaultCoachingService: CoachingService by lazy { coachingService() }
 
   /** Truncates users (cascading to sessions) and the job queue, for an isolated test. */
   fun resetDatabase() {
@@ -264,11 +311,11 @@ object WebAuthTestSupport {
     }
 
   /** How many `sessions` rows exist at all — the D12 honesty test's whole assertion. */
-  fun sessionRowCount(): Int = queryInt("SELECT count(*) FROM sessions")
+  fun sessionRowCount(): Int = count("SELECT count(*) FROM sessions")
 
   /** How many LIVE sessions the given user has. */
   fun liveSessionCount(userId: UUID): Int =
-    queryInt(
+    count(
       "SELECT count(*) FROM sessions WHERE user_id = '$userId'::uuid AND is_revoked = false AND expires_at > NOW()",
     )
 
@@ -288,13 +335,13 @@ object WebAuthTestSupport {
     )
 
   /** How many queued jobs of [type] exist — registration must enqueue exactly one SEND_EMAIL. */
-  fun jobCount(type: String): Int = queryInt("SELECT count(*) FROM jobs WHERE job_type = '$type'")
+  fun jobCount(type: String): Int = count("SELECT count(*) FROM jobs WHERE job_type = '$type'")
 
   /** How many supporter-student links exist at all (RFC 232 routing tests). */
-  fun supporterLinkCount(): Int = queryInt("SELECT count(*) FROM supporter_student_links")
+  fun supporterLinkCount(): Int = count("SELECT count(*) FROM supporter_student_links")
 
   /** How many supporter invites have been consumed (RFC 232 routing tests). */
-  fun consumedInviteCount(): Int = queryInt("SELECT count(*) FROM supporter_invites WHERE consumed_at IS NOT NULL")
+  fun consumedInviteCount(): Int = count("SELECT count(*) FROM supporter_invites WHERE consumed_at IS NOT NULL")
 
   /**
    * Drives the invite behind [rawToken] into a DEAD state, by its hash.
@@ -362,15 +409,8 @@ object WebAuthTestSupport {
       }
     }
 
-  private fun queryInt(sql: String): Int =
-    withConnection { connection ->
-      connection.createStatement().use { statement ->
-        statement.executeQuery(sql).use { rows ->
-          rows.next()
-          rows.getInt(1)
-        }
-      }
-    }
+  /** How many rows [sql] counts: a `SELECT count(*)`, the one row it always returns. */
+  fun count(sql: String): Int = soleLong(sql).toInt()
 
   private fun execute(
     sql: String,

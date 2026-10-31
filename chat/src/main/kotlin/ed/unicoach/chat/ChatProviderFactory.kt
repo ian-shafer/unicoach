@@ -10,7 +10,7 @@ import io.ktor.client.plugins.HttpTimeout
 // main() calls this; it is exercised by tests only — production construction is
 // the coaching-service RFC's responsibility.
 object ChatProviderFactory {
-  fun fromConfig(config: ChatConfig): Result<ChatProvider> =
+  fun fromConfig(config: ChatConfig): Result<CloseableChatProvider> =
     when (config.provider) {
       LogOnlyChatProvider.PROVIDER_ID -> Result.success(LogOnlyChatProvider())
       AnthropicChatProvider.PROVIDER_ID -> anthropicProvider(config.anthropic)
@@ -23,7 +23,7 @@ object ChatProviderFactory {
   // the stream is bounded by maxTokens and a stall trips the socket timeout),
   // wrap it in the transport, and transfer the client's lifetime to the provider
   // (closed via its close()), mirroring EmailProviderFactory's SES branch.
-  private fun anthropicProvider(config: AnthropicConfig): Result<ChatProvider> {
+  private fun anthropicProvider(config: AnthropicConfig): Result<CloseableChatProvider> {
     if (config.apiKey == null) {
       return Result.failure(
         IllegalArgumentException(

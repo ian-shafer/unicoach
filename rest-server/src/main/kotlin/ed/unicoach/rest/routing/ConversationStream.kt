@@ -7,6 +7,7 @@ import com.fasterxml.jackson.module.kotlin.registerKotlinModule
 import ed.unicoach.coaching.ConvoContent
 import ed.unicoach.coaching.ReplyEvent
 import ed.unicoach.coaching.VisibleExchange
+import ed.unicoach.coaching.studentSentence
 import ed.unicoach.db.models.Convo
 import ed.unicoach.db.models.ConvoRequest
 import ed.unicoach.rest.models.Conversation
@@ -43,9 +44,9 @@ private val sseMapper: ObjectMapper =
 
 /**
  * Opens the SSE response, writes the opening event, relays deltas, then exactly
- * one terminal frame. On a successful terminal ([ReplyEvent.Completed]) it calls
- * [onCompleted] AFTER the `message` frame is written — the student's door
- * enqueues extraction there (RFC 66), the supporter's does nothing.
+ * one terminal frame. Nothing runs after the `message` frame any more: the
+ * student turn's extraction enqueue moved into `:service` (RFC 262), where it
+ * runs before `Completed` is emitted, so no door can skip it.
  *
  * Every refusal must be answered before this is called: once the bytes writer
  * opens, the status is 200 and the only refusal left is an `error` frame.
@@ -53,7 +54,6 @@ private val sseMapper: ObjectMapper =
 internal suspend fun RoutingContext.streamConversationReply(
   reply: Flow<ReplyEvent>,
   writeOpening: suspend (ByteWriteChannel) -> Unit,
-  onCompleted: suspend (ReplyEvent.Completed) -> Unit,
 ) {
   call.response.header(HttpHeaders.CacheControl, "no-store")
   call.respondBytesWriter(contentType = ContentType.Text.EventStream) {
@@ -66,7 +66,6 @@ internal suspend fun RoutingContext.streamConversationReply(
 
         is ReplyEvent.Completed -> {
           writeSseEvent(this, "message", MessageCompletedEvent(message = coachMessageOf(event)))
-          onCompleted(event)
         }
 
         is ReplyEvent.Failed -> {
@@ -88,13 +87,12 @@ internal suspend fun writeSseEvent(
   writer.flush()
 }
 
-/** The retriable / permanent coach failure, as the client reads it. */
+/**
+ * The retriable / permanent coach failure, as the client reads it. The sentence
+ * is `:service`'s ([studentSentence], RFC 262), so the web chat says the same.
+ */
 internal fun coachFailedError(failed: ReplyEvent.Failed): ErrorResponse =
-  if (failed.retriable) {
-    ErrorResponse(ErrorCode.COACH_UNAVAILABLE, "The coach is temporarily unavailable — try again.")
-  } else {
-    ErrorResponse(ErrorCode.COACH_FAILED, "The coach could not respond to this message.")
-  }
+  ErrorResponse(if (failed.retriable) ErrorCode.COACH_UNAVAILABLE else ErrorCode.COACH_FAILED, failed.studentSentence())
 
 internal fun conversationOf(
   convo: Convo,

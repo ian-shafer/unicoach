@@ -1,0 +1,35 @@
+{
+  "page": {
+    "composerSelector": "form.chat-composer",
+    "transcriptSelector": ".chat-transcript",
+    "emptyStateSelector": ".chat-empty",
+    "retriableFailureAttribute": "data-retriable-failure",
+    "exchangeClass": "exchange",
+    "studentMessageClasses": "message student",
+    "coachMessageClasses": "message coach"
+  },
+  "notice": {
+    "header": "X-Chat-Notice"
+  },
+  "styledClientClasses": {
+    "typing": "typing",
+    "unanswered": "unanswered",
+    "notAnswered": "not-answered",
+    "turnFailed": "turn-failed"
+  },
+  "events": [
+    {
+      "event": "started",
+      "data": { "conversationUrl": "/chat/00000000-0000-4000-8000-000000000000" }
+    },
+    { "event": "delta", "data": { "text": "Start with " } },
+    {
+      "event": "completed",
+      "data": { "html": "<div class=\"message coach\"><div class=\"markdown\"><p>Start with three schools.</p></div></div>" }
+    },
+    {
+      "event": "failed",
+      "data": { "retriable": true, "message": "Something went wrong. Try again." }
+    }
+  ]
+}

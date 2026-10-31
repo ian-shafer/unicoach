@@ -2,8 +2,19 @@ package ed.unicoach.web
 
 import ed.unicoach.web.common.http.CONTENT_SECURITY_POLICY
 import ed.unicoach.web.common.http.CONTENT_SECURITY_POLICY_HEADER
+import ed.unicoach.web.markdown.MARKDOWN_CENTER_CLASS
+import ed.unicoach.web.markdown.MARKDOWN_LIST_CLASS
+import ed.unicoach.web.markdown.MARKDOWN_MAX_DRAWN_DEPTH
+import ed.unicoach.web.markdown.MARKDOWN_TRAILING_CLASS
+import ed.unicoach.web.markdown.markdownDepthClass
 import ed.unicoach.web.render.ACCOUNT_CLASS
 import ed.unicoach.web.render.AUTH_FORM_CLASS
+import ed.unicoach.web.render.CHAT_EMPTY_CLASS
+import ed.unicoach.web.render.CHAT_NOTICE_CLASS
+import ed.unicoach.web.render.COMPOSER_CLASS
+import ed.unicoach.web.render.ChatNotice
+import ed.unicoach.web.render.DATA_LABEL
+import ed.unicoach.web.render.DATA_TABLE_CLASS
 import ed.unicoach.web.render.FIELD_CLASS
 import ed.unicoach.web.render.FIELD_ERROR_CLASS
 import ed.unicoach.web.render.FORM_ERROR_CLASS
@@ -11,12 +22,17 @@ import ed.unicoach.web.render.LINKLIKE_CLASS
 import ed.unicoach.web.render.NOTICE_CLASS
 import ed.unicoach.web.render.REPORT_CLAIM_CLASS
 import ed.unicoach.web.render.SIGN_OUT_FORM_CLASS
+import ed.unicoach.web.render.STUDENT_MESSAGE_CLASSES
 import ed.unicoach.web.render.ShellWidth
+import ed.unicoach.web.render.TRANSCRIPT_CLASS
+import ed.unicoach.web.render.chatNoticeHtml
+import ed.unicoach.web.render.coachMessage
 import ed.unicoach.web.render.siteLayout
 import io.ktor.client.request.get
 import io.ktor.client.statement.bodyAsText
 import io.ktor.http.HttpStatusCode
 import io.ktor.server.testing.testApplication
+import kotlinx.html.div
 import kotlinx.html.html
 import kotlinx.html.stream.createHTML
 import kotlin.test.Test
@@ -339,7 +355,103 @@ class ShellMechanismTest {
       }
     }
 
+  /**
+   * The chat's layout mechanism (RFC 262, brief 0013 D9): its shell is a
+   * `100dvh` column, so the composer is pinned to the bottom of the VISIBLE
+   * viewport on a phone, and the transcript is the one region that scrolls.
+   * Whether it LOOKS right at each width is the D19 device matrix, by hand.
+   */
+  @Test
+  fun `mechanism - the chat shell is a 100dvh column whose transcript scrolls`() {
+    testApplication {
+      application { testPublicWebModule() }
+
+      val css = fetchServedStylesheet()
+      val shell = ShellWidth.CHAT.bodyClass!!
+      assertTrue(declares(css, ".$shell", "height", "100dvh"), "the chat shell is not a 100dvh column")
+      assertTrue(declares(css, ".$shell", "flex-direction", "column"), "the chat shell does not stack its rows")
+      assertTrue(declares(css, ".$TRANSCRIPT_CLASS", "overflow-y", "auto"), "the transcript does not scroll on its own")
+    }
+  }
+
+  /**
+   * A coach table never scrolls sideways (RFC 120): it carries the site's
+   * data-table class, and the narrow breakpoint stacks that class's rows and
+   * relabels each cell from its `data-label`. Both halves are read from what is
+   * served — the rendered table and the stylesheet's narrow block.
+   */
+  @Test
+  fun `mechanism - a coach table stacks under the narrow breakpoint, labelled per cell`() {
+    testApplication {
+      application { testPublicWebModule() }
+
+      val table = createHTML().div { coachMessage("| A | B |\n| --- | --- |\n| 1 | 2 |") }
+      assertTrue(
+        Regex("""<table class="[^"]*\b$DATA_TABLE_CLASS\b""").containsMatchIn(table),
+        "a coach table is not a data table: [$table]",
+      )
+
+      val narrow =
+        Regex("""@media[^{]*max-width:\s*${NARROW_BREAKPOINT_PX}px[^{]*\{(.*?)\n}""", RegexOption.DOT_MATCHES_ALL)
+          .find(stripBlockComments(fetchServedStylesheet()))
+          ?.groupValues
+          ?.get(1)
+          ?: error("no ${NARROW_BREAKPOINT_PX}px block in the served stylesheet")
+      assertTrue(declares(narrow, ".$DATA_TABLE_CLASS tr", "display", "block"), "the narrow block does not stack a data table's rows")
+      assertTrue(
+        declares(narrow, ".$DATA_TABLE_CLASS [$DATA_LABEL]::before", "content", "attr($DATA_LABEL)"),
+        "the narrow block does not relabel a stacked cell from its data-label",
+      )
+    }
+  }
+
 /**
+   * The chat's own classes (RFC 262), joined to the served stylesheet as the
+   * chrome and form classes are. Without a rule, a list indent draws flat, a
+   * centred column draws leading, a failed turn reads like an answer — and no
+   * other test would notice.
+   *
+   * The server's classes are read off markup the server RENDERS — a reply
+   * nested past [MARKDOWN_MAX_DRAWN_DEPTH] with aligned columns, and a notice —
+   * so raising the cap without the rules fails here. The classes `chat.ts`
+   * builds come from the contract fixture its own test holds it to, since no
+   * server markup carries them.
+   */
+  @Test
+  fun `mechanism - every chat class the markup renders is styled by the served stylesheet`() {
+    testApplication {
+      application { testPublicWebModule() }
+
+      val css = stripBlockComments(fetchServedStylesheet())
+      val nestedList = (0..MARKDOWN_MAX_DRAWN_DEPTH + 1).joinToString("\n") { depth -> " ".repeat(depth * 2) + "- d$depth" }
+      val markup =
+        createHTML().div { coachMessage("$nestedList\n\n| A | B | C |\n| --- | :-: | --: |\n| 1 | 2 | 3 |") } +
+          chatNoticeHtml(ChatNotice.Unavailable)
+      val rendered =
+        listOf(MARKDOWN_LIST_CLASS, MARKDOWN_CENTER_CLASS, MARKDOWN_TRAILING_CLASS, CHAT_NOTICE_CLASS) +
+          (1..MARKDOWN_MAX_DRAWN_DEPTH).map(::markdownDepthClass)
+      for (chatClass in rendered) {
+        assertTrue(
+          Regex("""class="[^"]*\b$chatClass\b""").containsMatchIn(markup),
+          "the rendered reply carries no [$chatClass] class: the markup half of the chat contract was renamed",
+        )
+      }
+      val styled =
+        rendered + listOf(COMPOSER_CLASS, TRANSCRIPT_CLASS, CHAT_EMPTY_CLASS) + ChatClientContract.styledClientClasses
+      for (chatClass in styled) {
+        assertTrue(
+          Regex("""\.$chatClass\b""").containsMatchIn(css),
+          "the served stylesheet has no rule naming [.$chatClass]: a class the chat renders is unstyled",
+        )
+      }
+      assertTrue(
+        Regex("""\.${STUDENT_MESSAGE_CLASSES.replace(' ', '.')}\b""").containsMatchIn(css),
+        "the served stylesheet does not tell a student's message from the coach's",
+      )
+    }
+  }
+
+  /**
    * The RFC 224 form classes, joined to the served stylesheet exactly as the
    * chrome classes are.
    *

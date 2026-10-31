@@ -18,16 +18,16 @@ import ed.unicoach.auth.IdTokenVerifierFactory
 import ed.unicoach.auth.SsoProviderConfig
 import ed.unicoach.chat.ChatConfig
 import ed.unicoach.chat.ChatProviderFactory
-import ed.unicoach.chat.ToolRegistry
 import ed.unicoach.coaching.CoachingConfig
 import ed.unicoach.coaching.CoachingService
-import ed.unicoach.coaching.CollegeChatTool
 import ed.unicoach.coaching.LlmCallLog
 import ed.unicoach.coaching.LlmPriceBook
+import ed.unicoach.coaching.StudentToolRegistry
 import ed.unicoach.coaching.budget.BudgetConfig
 import ed.unicoach.coaching.budget.BudgetService
 import ed.unicoach.coaching.collegelist.CollegeListService
 import ed.unicoach.coaching.extraction.ExtractionConfig
+import ed.unicoach.coaching.extraction.ExtractionScheduler
 import ed.unicoach.coaching.report.CostReportConfig
 import ed.unicoach.coaching.report.CostReportShareService
 import ed.unicoach.coaching.report.RevokeCostReportShareChatTool
@@ -43,7 +43,6 @@ import ed.unicoach.coaching.testing.TestScoreService
 import ed.unicoach.coaching.testing.TestTimelineService
 import ed.unicoach.coaching.testing.UpdateTestScoresChatTool
 import ed.unicoach.college.CollegeSearchService
-import ed.unicoach.college.CollegeSearchTool
 import ed.unicoach.common.config.AppConfig
 import ed.unicoach.db.Database
 import ed.unicoach.db.DatabaseConfig
@@ -367,12 +366,14 @@ fun Application.appModule(
   val moneyProfileService =
     ed.unicoach.coaching.moneyprofile
       .MoneyProfileService(database)
-  // Hoisted above the tool registry (RFC 136): the chat tool and the REST
-  // routes share this one instance.
+  // The REST list doors' service (RFC 136). The chat tool reads its own
+  // instance through StudentToolRegistry (RFC 262); the service holds no state,
+  // so both read and write the one table the same way.
   val collegeListService = CollegeListService(database)
-  // Hoisted for the same reason (RFC 205): the intended-subjects chat tool and
-  // the two REST doors read and write through one pair of services, so the
-  // taxonomy the picker offers is the taxonomy the coach resolves against.
+  // The two REST doors' pair of services (RFC 205). The intended-subjects chat
+  // tool builds the same stateless pair over the same database (RFC 262), so
+  // the taxonomy the picker offers is still the taxonomy the coach resolves
+  // against.
   val subjectVocabularyService =
     ed.unicoach.coaching
       .SubjectVocabularyService(database)
@@ -383,8 +384,8 @@ fun Application.appModule(
   val sharingPermissionService =
     ed.unicoach.coaching
       .SharingPermissionService(database)
-  // Hoisted (RFC 250): the cost chat tool and the subject seam read the cost
-  // picture through one instance.
+  // The subject seam's cost read (RFC 250). The cost chat tool builds its own
+  // instance of this stateless service (RFC 262).
   val collegeCostService =
     ed.unicoach.coaching.costs
       .CollegeCostService(database)
@@ -393,18 +394,10 @@ fun Application.appModule(
   // student's own doors use.
   val subjectReadService =
     ed.unicoach.family.SubjectReadService(database, collegeListService, collegeCostService, sharingPermissionService)
-  // The tool registry advertised on every coaching turn (RFC 94). New tools
-  // append here; nothing else in the loop changes.
-  // One CollegeSearchService serves both the chat tool and the REST search
-  // endpoint (RFC 137), so the two doors answer from the same clamp and SQL.
+  // The REST search endpoint's service (RFC 137). The chat tools read their
+  // own instance through StudentToolRegistry; the service is stateless, so
+  // both doors still answer from the same clamp and SQL.
   val collegeSearchService = CollegeSearchService(database)
-  // The published codebook, read once at wiring time (RFC 147): the search tool
-  // advertises its region words and renders results in the same vocabulary.
-  val codebook =
-    kotlinx.coroutines.runBlocking {
-      ed.unicoach.college.Codebook
-        .loadOrEmpty(database)
-    }
   // The Family Cost Report share door (RFC 155): one service behind both tools,
   // so minting and revoking cannot drift apart. Its token is DERIVED from the
   // share row's id, so re-sharing hands back the same link and the raw token is
@@ -433,135 +426,21 @@ fun Application.appModule(
   val fafsaDeadlineService =
     ed.unicoach.coaching.aid
       .FafsaDeadlineService(database)
+  // The student coach's tools (RFC 94): ONE list, shared with public-web's
+  // in-process chat (RFC 262), so the two doors cannot advertise different
+  // coaches. The invite tool mints through the same invite service as the REST
+  // doors here.
   val toolRegistry =
-    ToolRegistry(
-      listOf(
-        // Student-scoped since RFC 169, and doubly so since RFC 245: the same
-        // money-profile service the profile tool writes through, so the
-        // residency a search ranks on is the one the family stated, and the same
-        // intended-subjects service the subject tool writes through, so the
-        // field a result labels against is the one the student chose — never a
-        // second copy of either. The two READS are what a search door takes, so
-        // this is where the real services are named.
-        CollegeChatTool(
-          CollegeSearchTool(collegeSearchService, codebook),
-          moneyProfileService::getForStudent,
-          intendedSubjectsService::getForStudent,
-        ),
-        // The name door beside the filter door (RFC 154): the same
-        // collegeSearchService instance, so a school the student NAMED resolves
-        // over the very path the iOS picker uses.
-        ed.unicoach.coaching.FindCollegeChatTool(
-          ed.unicoach.college.FindCollegeTool(collegeSearchService),
-        ),
-        // "Schools like Bowdoin" (RFC 153): the same service and the same
-        // codebook the search tool reads, so the three doors speak one vocabulary.
-        ed.unicoach.coaching
-          .SimilarCollegesChatTool(
-            ed.unicoach.college
-              .SimilarCollegesTool(collegeSearchService, codebook),
-            moneyProfileService::getForStudent,
-            intendedSubjectsService::getForStudent,
-          ),
-        ed.unicoach.coaching.MoneyProfileChatTool(moneyProfileService),
-        ed.unicoach.coaching.costs
-          .CollegeCostChatTool(collegeCostService),
-        ed.unicoach.coaching.collegelist
-          .CollegeListChatTool(collegeListService),
-        ed.unicoach.coaching.admissions
-          .CollegeAdmissionsChatTool(
-            ed.unicoach.coaching.admissions
-              .CollegeAdmissionsService(database),
-          ),
-        // Federal Pell/loan policy parameters (RFC 159): a no-input read of the
-        // migration-seeded policy_parameters store, plus the student's
-        // dependency answer.
-        ed.unicoach.coaching.aid
-          .FederalAidPolicyChatTool(
-            ed.unicoach.coaching.aid
-              .FederalAidPolicyService(database),
-          ),
-        // The process half of the same subject (RFC 216): the cited FAFSA rules
-        // -- who files, consent, divorced or separated parents, dependency,
-        // what happens after submitting. A sibling of the tool above rather
-        // than more payload on it, and a curated corpus, so it reads nothing.
-        ed.unicoach.coaching.aid
-          .FafsaProcessChatTool(),
-        // The DATE half of that same subject (RFC 237): the coach speaks the
-        // FAFSA dates the public page will show, from the one read both doors
-        // render -- the federal dates every family is bound by, plus this
-        // family's own state's, whose state comes from their money profile and
-        // never from the model. No clock argument, like every other site --
-        // production reads the real one through the InstantSource.system()
-        // default, and only a test pins it.
-        ed.unicoach.coaching.aid
-          .FafsaDeadlineChatTool(fafsaDeadlineService, moneyProfileService),
-        // The share door reads the student's sharing permission and subjects
-        // answer (RFC 251), so the reach sentence it hands over is true for
-        // this student, and the coach knows whether to ask once.
-        ShareCostReportChatTool(
-          costReportShareService,
-          sharingPermissionService::read,
-          intendedSubjectsService::getForStudent,
-        ),
-        RevokeCostReportShareChatTool(costReportShareService),
-        // "Never suggest sharing again" (RFC 160): needs no secret — it writes
-        // the opted_out share event, not a link — so it stands even when the
-        // two doors above decline.
-        StopCostReportOffersChatTool(costReportShareService),
-        // "Connect my mum properly" (RFC 240): the chat door over RFC 232's
-        // invite service, the SAME instance the two REST doors mint through, so
-        // a link the coach hands over and a link iOS hands over are one kind of
-        // credential. A different thing from the three tools above: an account
-        // and a workspace, not a read-only page.
-        ed.unicoach.coaching.family
-          .InviteSupporterChatTool(supporterInviteService),
-        // "When do I need to take the SATs" (RFC 197): the national SAT/ACT
-        // calendar worked back from the earliest deadline on the student's own
-        // list. No clock argument, like every other site -- production reads the
-        // real one through the InstantSource.system() default, and only a test
-        // pins it.
-        AdmissionTestTimelineChatTool(TestTimelineService(database)),
-        // "Is my score worth money at Alabama?" (RFC 239): the curated automatic
-        // merit grid of a named school on the student's own list, and where her
-        // stored score lands in it. A SIBLING of the tool above rather than more
-        // payload on it -- the same argument the FAFSA pair makes -- because the
-        // grid is a curated per-school corpus and the timeline is a national
-        // calendar, and a family asks for them separately.
-        AutomaticAwardChatTool(AutomaticAwardService(database)),
-        // "What is the PSAT actually worth?" (RFC 243): the PSAT/NMSQT is the one
-        // gate to National Merit and no college ever sees the score, so it is a
-        // MONEY tool -- this student's own place in her one qualifying cycle, the
-        // published base rate, and what each school on her list publishes for a
-        // National Merit standing. A SIBLING of the tool above and not more
-        // payload on it, because a STANDING is not a score: it is a second
-        // curated corpus with its own table, and a family asks for it separately.
-        // The money profile rides for the reason `fafsa_deadlines` takes it --
-        // Auburn publishes its package to Alabama residents only, so whose award
-        // a row is has to come from the family's own profile and never from the
-        // model. No clock argument, like every other site.
-        NationalMeritChatTool(NationalMeritService(database), moneyProfileService),
-        // "I got 1340 in March" (RFC 207): the student's own scores, so a later
-        // conversation still has the number she gave us in this one. No clock
-        // argument, like every other site -- production reads the real one
-        // through the InstantSource.system() default, and only a test pins it.
-        UpdateTestScoresChatTool(TestScoreService(database)),
-        // What the student wants to STUDY (RFC 205). The same two services the
-        // REST doors use, so the chat answer and the screen answer are one
-        // answer and not two copies of it.
-        ed.unicoach.coaching
-          .IntendedSubjectsChatTool(intendedSubjectsService, subjectVocabularyService),
-        // Whether people the student shares with may see their subjects (RFC
-        // 251): the chat door over the SAME service the REST door writes
-        // through, so the coach's yes and the "Your details" yes are one answer.
-        ed.unicoach.coaching
-          .UpdateSharingPermissionChatTool(sharingPermissionService),
-      ),
-    )
+    kotlinx.coroutines.runBlocking {
+      StudentToolRegistry.standard(database, supporterInviteService, costReportShareService)
+    }
   // One BudgetService serves both the chat gate and the usage endpoint, so the
   // verdict a student is blocked on is the verdict their usage bar renders.
   val budgetService = BudgetService(database, budgetConfig, subscriptionPlans)
-  val coachingService = CoachingService(database, llmCallLog, coachingConfig, budgetService, toolRegistry)
+  // The extraction enqueue rides the student turn itself (RFC 262), so this root
+  // hands the coach its scheduler rather than a route enqueueing after the fact.
+  val coachingService =
+    CoachingService(database, llmCallLog, coachingConfig, budgetService, ExtractionScheduler(queueService, extractionConfig), toolRegistry)
   // The supporter's own coach (RFC 258): the same loop and call log, its own
   // read-only registry (a SEPARATE instance, brief 0014 D15 -- nothing in it
   // writes), its own prompt, and the parent's own account as its budget subject.
@@ -598,7 +477,6 @@ fun Application.appModule(
     emailVerificationService,
     emailVerifier,
     queueService,
-    extractionConfig,
     collegeListService,
     collegeSearchService,
     moneyProfileService,

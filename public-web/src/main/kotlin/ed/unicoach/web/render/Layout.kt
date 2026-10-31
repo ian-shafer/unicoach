@@ -2,6 +2,7 @@ package ed.unicoach.web.render
 
 import ed.unicoach.web.assets.WebAssets
 import ed.unicoach.web.auth.ACCOUNT_PATH
+import ed.unicoach.web.auth.CHAT_PATH
 import ed.unicoach.web.auth.SIGN_IN_PATH
 import ed.unicoach.web.auth.SIGN_OUT_PATH
 import ed.unicoach.web.common.http.ROBOTS_NOINDEX
@@ -59,6 +60,13 @@ enum class ShellWidth(
    * so no page-specific width rule is ever written.
    */
   WIDE("wide-measure"),
+
+  /**
+   * The chat (RFC 262): the full column AND the full viewport height, so the
+   * composer is pinned to the bottom of a `100dvh` column and the transcript
+   * scrolls above it (brief 0013 D9).
+   */
+  CHAT("chat-shell"),
 }
 
 /**
@@ -199,6 +207,8 @@ fun FlowContent.siteHeader(shellNav: ShellNav = ShellNav.SignedOut) {
         }
 
         ShellNav.SignedIn -> {
+          // The signed-in root (RFC 262), reachable from every signed-in page.
+          a(href = CHAT_PATH) { +CHAT_TITLE }
           a(href = ACCOUNT_PATH) { +"Account" }
           form(action = SIGN_OUT_PATH, method = FormMethod.post, classes = SIGN_OUT_FORM_CLASS) {
             button(type = ButtonType.submit, classes = LINKLIKE_CLASS) { +"Sign out" }

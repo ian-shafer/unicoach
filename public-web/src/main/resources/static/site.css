@@ -130,9 +130,47 @@ main {
    chat, the college list — asks for the full width by naming this class on
    `<body>` (`siteLayout(width = ShellWidth.WIDE)`), and `main` above picks it
    up without being edited. The class name is written in exactly two places:
-   here, and on the `ShellWidth` member that renders it. */
-.wide-measure {
+   here, and on the `ShellWidth` member that renders it. The chat shell below
+   shares this one measure rather than restating it. */
+.wide-measure,
+.chat-shell {
   --measure: 80rem;
+}
+
+/* The chat (RFC 262, brief 0013 D9): the full column AND the full viewport
+   height. The body is a 100dvh column, `main` takes what the header leaves,
+   and inside it the transcript scrolls while the composer stays pinned to the
+   bottom. `dvh`, not `vh`: on a phone `100vh` is the height with the browser's
+   toolbar HIDDEN, so the composer would sit under the toolbar until the page
+   scrolled. The footer's two links are in the header already, and a footer
+   under a pinned composer would unpin it. */
+.chat-shell {
+  display: flex;
+  flex-direction: column;
+  height: 100dvh;
+}
+
+.chat-shell main {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  padding-bottom: 0;
+}
+
+.chat-shell .site-footer {
+  display: none;
+}
+
+/* Text for assistive technology only: the chat's own heading, which the page
+   needs for its outline and the eye does not. */
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
 }
 
 /* ---------------------------------------------------------------------------
@@ -641,6 +679,221 @@ main {
   margin: 0;
 }
 
+/* RFC 262 — the chat. The transcript is the one scrolling region; the
+   composer below it never moves. */
+.chat {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.chat-transcript {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-wrap: anywhere;
+}
+
+.chat-empty {
+  color: var(--muted);
+}
+
+.message {
+  margin: 0.75rem 0;
+}
+
+/* The student's own words, exactly as typed: newlines kept, never Markdown. */
+.message.student {
+  white-space: pre-wrap;
+  width: fit-content;
+  max-width: 85%;
+  margin-left: auto;
+  padding: 0.5rem 0.75rem;
+  border-radius: 0.5rem;
+  background: var(--border);
+}
+
+/* A failed turn keeps the student's words on screen, marked (RFC 262 §7). */
+.message.unanswered {
+  border: 1px solid var(--error);
+}
+
+.not-answered {
+  display: block;
+  font-size: 0.85rem;
+  color: var(--error);
+}
+
+.message.typing {
+  color: var(--muted);
+}
+
+.turn-failed,
+.chat-notice {
+  margin: 0.75rem 0;
+  padding: 0.5rem 0.75rem;
+  border-left: 2px solid var(--error);
+}
+
+.turn-failed button {
+  min-height: var(--tap-target);
+  padding: 0.25rem 1rem;
+  font: inherit;
+  cursor: pointer;
+}
+
+.chat-notice h2 {
+  font-size: 1rem;
+  margin: 0;
+}
+
+/* The composer: the label on its own row, the text area and Send beside it. */
+.chat-composer {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 0.5rem;
+  align-items: end;
+  padding: 0.75rem 0 var(--gutter-y);
+  border-top: 1px solid var(--border);
+  background: var(--bg);
+}
+
+.chat-composer label,
+.chat-composer noscript {
+  grid-column: 1 / -1;
+  color: var(--muted);
+}
+
+/* Floored at the iOS no-zoom size and the tap target, as every form control. */
+.chat-composer textarea {
+  width: 100%;
+  min-height: var(--tap-target);
+  padding: 0.5rem 0.75rem;
+  font-size: max(1rem, var(--input-font-size-min));
+  font-family: inherit;
+  color: var(--fg);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 0.25rem;
+  resize: vertical;
+}
+
+.chat-composer button {
+  min-height: var(--tap-target);
+  padding: 0.5rem 1.25rem;
+  font: inherit;
+  color: var(--bg);
+  background: var(--accent);
+  border: 0;
+  border-radius: 0.25rem;
+  cursor: pointer;
+}
+
+.chat-composer button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* A coach reply's Markdown, drawn as the iOS client draws it (RFC 262 §9).
+   Soft breaks are meaning, so prose keeps its newlines. */
+.markdown p,
+.markdown .md-item-text {
+  white-space: pre-wrap;
+}
+
+.markdown h1,
+.markdown h2 {
+  font-size: 1.25rem;
+  margin: 0.75rem 0 0.25rem;
+}
+
+.markdown h3,
+.markdown h4,
+.markdown h5,
+.markdown h6 {
+  font-size: 1rem;
+  margin: 0.75rem 0 0.25rem;
+}
+
+/* A quote is a leading hairline in the secondary colour, no tint. */
+.markdown blockquote {
+  margin: 0.5rem 0;
+  padding-left: 0.75rem;
+  border-left: 1px solid var(--muted);
+  color: var(--muted);
+}
+
+.markdown blockquote p {
+  margin: 0;
+}
+
+/* Code is outlined, never filled, and WRAPS rather than scrolls (RFC 120). */
+.markdown pre {
+  margin: 0.5rem 0;
+  padding: 0.5rem 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: 0.25rem;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* Links in the text colour and underlined, not the accent, as on iOS. */
+.markdown a {
+  color: var(--fg);
+  text-decoration: underline;
+}
+
+/* A FLAT run of rows indented by depth, not nested lists. */
+.md-list {
+  list-style: none;
+  margin: 0.5rem 0;
+  padding: 0;
+}
+
+.md-list li {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.md-marker {
+  flex: none;
+  min-width: 1.5rem;
+}
+
+.md-depth-1 {
+  padding-left: 1.5rem;
+}
+
+.md-depth-2 {
+  padding-left: 3rem;
+}
+
+.md-depth-3 {
+  padding-left: 4.5rem;
+}
+
+.md-depth-4 {
+  padding-left: 6rem;
+}
+
+.md-depth-5 {
+  padding-left: 7.5rem;
+}
+
+.md-depth-6 {
+  padding-left: 9rem;
+}
+
+/* A column's alignment, at the specificity of the data table's own cells. */
+.data-table .md-center {
+  text-align: center;
+}
+
+.data-table .md-trailing {
+  text-align: right;
+}
+
 /* ---------------------------------------------------------------------------
    6. breakpoints
 
@@ -690,6 +943,13 @@ main {
   /* The report's figures are the one thing that differs: right-aligned in the
      grid, left-aligned once the row is a card. */
   .report-table .report-value {
+    text-align: left;
+  }
+
+  /* So are a coach table's aligned columns (RFC 262): a stacked row reads
+     "Header: value" from the left. */
+  .data-table .md-center,
+  .data-table .md-trailing {
     text-align: left;
   }
 }

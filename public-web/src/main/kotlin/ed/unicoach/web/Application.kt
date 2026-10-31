@@ -1,5 +1,6 @@
 package ed.unicoach.web
 
+import com.typesafe.config.Config
 import ed.unicoach.auth.AppleIdTokenVerifier
 import ed.unicoach.auth.AuthService
 import ed.unicoach.auth.DbEmailVerifier
@@ -8,9 +9,24 @@ import ed.unicoach.auth.EmailVerificationConfig
 import ed.unicoach.auth.EmailVerificationService
 import ed.unicoach.auth.EmailVerifier
 import ed.unicoach.auth.GoogleIdTokenVerifier
+import ed.unicoach.chat.ChatConfig
+import ed.unicoach.chat.ChatProviderFactory
+import ed.unicoach.chat.CloseableChatProvider
+import ed.unicoach.coaching.CoachingConfig
+import ed.unicoach.coaching.CoachingService
+import ed.unicoach.coaching.LlmCallLog
+import ed.unicoach.coaching.LlmPriceBook
 import ed.unicoach.coaching.SharingPermissionService
+import ed.unicoach.coaching.StudentToolRegistry
 import ed.unicoach.coaching.aid.FafsaDeadlineService
+import ed.unicoach.coaching.budget.BudgetConfig
+import ed.unicoach.coaching.budget.BudgetService
 import ed.unicoach.coaching.costs.CollegeCostService
+import ed.unicoach.coaching.extraction.ExtractionConfig
+import ed.unicoach.coaching.extraction.ExtractionScheduler
+import ed.unicoach.coaching.report.CostReportConfig
+import ed.unicoach.coaching.report.CostReportShareService
+import ed.unicoach.coaching.report.ShareTokenDeriver
 import ed.unicoach.common.config.AppConfig
 import ed.unicoach.db.Database
 import ed.unicoach.db.DatabaseConfig
@@ -23,6 +39,8 @@ import ed.unicoach.family.SupporterInviteService
 import ed.unicoach.family.SupporterLinkRequestService
 import ed.unicoach.family.SupporterService
 import ed.unicoach.queue.QueueService
+import ed.unicoach.student.StudentService
+import ed.unicoach.subscriptions.SubscriptionPlans
 import ed.unicoach.util.Argon2Hasher
 import ed.unicoach.util.TokenGenerator
 import ed.unicoach.web.assets.WebAssets
@@ -62,9 +80,14 @@ private val publicWebLog = LoggerFactory.getLogger("ed.unicoach.web.PublicWeb")
  * `GOOGLE_AUTH_PROVIDER`/`APPLE_AUTH_PROVIDER` substitutions, so
  * public-web needs both set to boot even though it serves no SSO route until
  * web/11 — the same inheritance `admin-web` and `queue-worker` already have.
+ *
+ * `chat.conf` is in the list since RFC 262, after `service.conf` as in
+ * `rest-server`'s list: the web chat runs the coach in-process, so this root
+ * builds the provider, and `CHAT_PROVIDER` is now as required here as it is
+ * there.
  */
 internal val PUBLIC_WEB_CONF_RESOURCES =
-  arrayOf("common.conf", "db.conf", "session.conf", "service.conf", "public-web.conf")
+  arrayOf("common.conf", "db.conf", "session.conf", "service.conf", "chat.conf", "public-web.conf")
 
 /**
  * Boots the public-web server: loads config from the classpath plus the local
@@ -87,7 +110,8 @@ fun startServer(wait: Boolean = true): EmbeddedServer<*, *> {
 
   // Every typed reader runs BEFORE the pool is opened. The close hook is
   // registered inside the module, so a config refusal thrown after `Database(...)`
-  // would leave a pool nothing can close.
+  // would leave a pool nothing can close. The one refusal that cannot move
+  // before the pool — the coach's build, which needs it — closes it instead.
   val publicWebConfig =
     PublicWebConfig
       .from(config)
@@ -101,6 +125,7 @@ fun startServer(wait: Boolean = true): EmbeddedServer<*, *> {
   val databaseConfig = DatabaseConfig.from(config).getOrThrow()
   val emailVerificationConfig = EmailVerificationConfig.from(config).getOrThrow()
   val supporterInviteConfig = SupporterInviteConfig.from(config).getOrThrow()
+  val coachConfigs = CoachConfigs.read(config)
 
   val database = Database(databaseConfig)
   // The one writer of a `supporters` row (RFC 241), and the one writer of a
@@ -120,10 +145,16 @@ fun startServer(wait: Boolean = true): EmbeddedServer<*, *> {
   val supporterInviteService = SupporterInviteService(database, supporterInviteConfig, TokenGenerator(), supporterService)
 
   val authServices = WebAuthServices.build(emailVerificationConfig, database, linkRequestService::releaseOnVerified)
+  val coach = closingOnFailure(database::close) { WebCoach.build(coachConfigs, database, supporterInviteService) }
 
   val server =
     embeddedServer(Netty, port = publicWebConfig.port, host = publicWebConfig.host) {
-      environment.monitor.subscribe(ApplicationStopped) { database.close() }
+      environment.monitor.subscribe(ApplicationStopped) {
+        // rest-server never closes its provider; this root does, beside the
+        // pool, because the provider owns an HTTP client of its own.
+        coach.close()
+        database.close()
+      }
       publicWebModule(
         emailVerifier,
         costReportSource,
@@ -139,6 +170,8 @@ fun startServer(wait: Boolean = true): EmbeddedServer<*, *> {
         supporterInviteService = supporterInviteService,
         supporterService = supporterService,
         linkRequestService = linkRequestService,
+        coachingService = coach.coachingService,
+        studentService = StudentService(database),
       )
     }
 
@@ -207,6 +240,114 @@ private data class WebAuthServices(
   }
 }
 
+/**
+ * Every typed reader the in-process coach needs (RFC 262 §3), read together so
+ * [startServer] can run them BEFORE the pool opens, beside its other readers: a
+ * refusal here must not leave a pool nothing closes.
+ *
+ * The price book is checked against the coaching model here too, exactly as
+ * `rest-server` checks it: an env override to an unpriced model fails the boot
+ * rather than metering every turn at the default rate.
+ */
+internal class CoachConfigs(
+  val coaching: CoachingConfig,
+  val budget: BudgetConfig,
+  val plans: SubscriptionPlans,
+  val priceBook: LlmPriceBook,
+  val chat: ChatConfig,
+  val extraction: ExtractionConfig,
+  val costReport: CostReportConfig,
+) {
+  companion object {
+    fun read(config: Config): CoachConfigs {
+      val coaching = CoachingConfig.from(config).getOrThrow()
+      val priceBook = LlmPriceBook.from(config).getOrThrow()
+      priceBook.requireExplicitlyPriced(listOf(coaching.model)).getOrThrow()
+      return CoachConfigs(
+        coaching = coaching,
+        budget = BudgetConfig.from(config).getOrThrow(),
+        plans = SubscriptionPlans.from(config).getOrThrow(),
+        priceBook = priceBook,
+        chat = ChatConfig.from(config).getOrThrow(),
+        extraction = ExtractionConfig.from(config).getOrThrow(),
+        costReport = CostReportConfig.from(config).getOrThrow(),
+      )
+    }
+  }
+}
+
+/**
+ * The student's coach, built in-process (brief 0013 D13): the web chat calls
+ * [CoachingService] directly and never `rest-server`'s API.
+ *
+ * Built from the SAME pieces `rest-server` builds it from — the one tool list
+ * ([StudentToolRegistry.standard]) and a [CoachingService] that schedules its
+ * own extraction ([ExtractionScheduler]) — so the two doors run one coach. The
+ * provider is the one resource here with a lifetime of its own; [close] ends
+ * it.
+ */
+private class WebCoach(
+  val coachingService: CoachingService,
+  private val provider: CloseableChatProvider,
+) : AutoCloseable {
+  override fun close() {
+    provider.close()
+  }
+
+  companion object {
+    fun build(
+      configs: CoachConfigs,
+      database: Database,
+      supporterInvites: SupporterInviteService,
+    ): WebCoach {
+      val provider = ChatProviderFactory.fromConfig(configs.chat).getOrThrow()
+      // A boot-time read (the codebook); a refusal closes the provider it would
+      // otherwise strand.
+      val tools =
+        closingOnFailure(provider::close) {
+          kotlinx.coroutines.runBlocking {
+            StudentToolRegistry.standard(
+              database,
+              supporterInvites,
+              // The share door's secret, derived exactly as rest-server derives
+              // it, so `share_cost_report` answers the same on both doors.
+              // rest-server says so at boot when it is unset; the host's one
+              // environment file serves both.
+              CostReportShareService(
+                database,
+                configs.costReport,
+                configs.costReport.secret?.let(::ShareTokenDeriver),
+              ),
+            )
+          }
+        }
+      val coachingService =
+        CoachingService(
+          database,
+          LlmCallLog(provider, database, configs.priceBook),
+          configs.coaching,
+          BudgetService(database, configs.budget, configs.plans),
+          ExtractionScheduler(QueueService(database), configs.extraction),
+          tools,
+        )
+      return WebCoach(coachingService, provider)
+    }
+  }
+}
+
+/**
+ * [block]'s value; when it throws, [close] runs first and the original failure
+ * is rethrown — a failure to close rides along as suppressed, so it never
+ * replaces the cause of the refused boot.
+ */
+private inline fun <T> closingOnFailure(
+  close: () -> Unit,
+  block: () -> T,
+): T =
+  runCatching(block)
+    .onFailure { cause -> runCatching(close).onFailure(cause::addSuppressed) }
+    .getOrThrow()
+
 fun main() {
   startServer(wait = true)
 }
@@ -224,6 +365,8 @@ fun Application.publicWebModule(
   supporterInviteService: SupporterInviteService,
   supporterService: SupporterService,
   linkRequestService: SupporterLinkRequestService,
+  coachingService: CoachingService,
+  studentService: StudentService,
 ) {
   // READ the bundle name while the module installs (RFC 225). WebAssets is an
   // `object`, so its manifest refusals run at class-init — and nothing touched
@@ -269,5 +412,7 @@ fun Application.publicWebModule(
     supporterInviteService,
     supporterService,
     linkRequestService,
+    coachingService,
+    studentService,
   )
 }

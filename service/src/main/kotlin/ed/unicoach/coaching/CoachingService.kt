@@ -9,6 +9,7 @@ import ed.unicoach.coaching.budget.BudgetVerdict
 import ed.unicoach.coaching.collegelist.CollegeListBlock
 import ed.unicoach.coaching.collegelist.EntryWithCollegeName
 import ed.unicoach.coaching.collegelist.readActiveListInSession
+import ed.unicoach.coaching.extraction.ExtractionScheduler
 import ed.unicoach.coaching.testing.TestScoreCopy
 import ed.unicoach.coaching.testing.TestScores
 import ed.unicoach.coaching.testing.readTestScoresInSession
@@ -70,12 +71,21 @@ import java.time.LocalDate
  * with nothing persisted — and an admitted turn then runs to its terminal without
  * being re-gated, so a half-answered turn is never stranded for spend already made.
  * The parameter is undefaulted: a root cannot ship an ungated coach by omission.
+ *
+ * A successful student turn schedules its own extraction pass through
+ * [extraction] (RFC 262, moved here from `rest-server`'s route), so every door
+ * that runs a turn — the iOS app's REST route and the web chat alike — gets it,
+ * and none can skip it.
  */
 class CoachingService(
   private val database: Database,
   llmCallLog: LlmCallLog,
   private val config: CoachingConfig,
   private val budgetService: BudgetService,
+  // Undefaulted for the budget's reason (RFC 262): a root cannot ship a coach
+  // that skips extraction by omission, which is what the enqueue living in one
+  // door's route made possible.
+  private val extraction: ExtractionScheduler,
   private val tools: ToolRegistry = ToolRegistry(emptyList()),
   // The instant "today" is read at (RFC 186). Defaulted like the sibling clock
   // sites (SynthesisService, FederalAidPolicyService): production passes none
@@ -383,8 +393,9 @@ class CoachingService(
    * registry, each [StudentScopedChatTool] handed the convo's student (RFC 134),
    * nothing written beside a request row, and — on a successful terminal — the
    * opener's disclosed commitments (RFC 93) and surfaced fit suggestions (RFC 98)
-   * marked against the convo. Both lists are empty for postTurn and when
-   * nothing was pending.
+   * marked against the convo, and the extraction pass scheduled through the
+   * final request (RFC 262). Both lists are empty for postTurn and when nothing
+   * was pending.
    */
   private inner class StudentTurnParty(
     private val convoId: ConvoId,
@@ -408,9 +419,10 @@ class CoachingService(
       request: ConvoRequest,
     ) {}
 
-    override suspend fun onSucceeded() {
+    override suspend fun onSucceeded(finalRequest: ConvoRequest) {
       markDisclosedCommitmentsFulfilled(convoId, disclosedCommitmentIds)
       markSurfacedFitSuggestions(convoId, surfacedFitSuggestionIds)
+      extraction.schedule(convoId, finalRequest.id)
     }
   }
 

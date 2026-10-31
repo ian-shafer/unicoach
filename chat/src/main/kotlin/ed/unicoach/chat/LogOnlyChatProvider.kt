@@ -21,7 +21,7 @@ import java.util.UUID
 // ignored (the stub never truncates the echo — synthetic counts are
 // characters, not tokens, so a token ceiling has no meaningful enforcement
 // here).
-class LogOnlyChatProvider : ChatProvider {
+class LogOnlyChatProvider : CloseableChatProvider {
   override val id: String = PROVIDER_ID
 
   private val logger = LoggerFactory.getLogger(LogOnlyChatProvider::class.java)
@@ -101,6 +101,9 @@ class LogOnlyChatProvider : ChatProvider {
         },
       )
     }
+
+  // Holds no client and transmits nothing, so there is nothing to release.
+  override fun close() {}
 
   companion object {
     const val PROVIDER_ID = "log"
