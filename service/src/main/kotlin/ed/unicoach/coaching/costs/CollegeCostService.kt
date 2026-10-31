@@ -56,7 +56,6 @@ import ed.unicoach.db.models.MoneySource
 import ed.unicoach.db.models.PublishedCell
 import ed.unicoach.db.models.ResidencyTierBasis
 import ed.unicoach.db.models.StudentId
-import kotlinx.coroutines.CancellationException
 import org.slf4j.LoggerFactory
 
 /**
@@ -1347,18 +1346,7 @@ class CollegeCostService(
   suspend fun getForStudent(
     studentId: StudentId,
     collegeIds: List<CollegeId>? = null,
-  ): Result<CollegeCostProfile> =
-    try {
-      Result.success(database.withConnection { session -> readInSession(session, studentId, collegeIds) })
-    } catch (e: CancellationException) {
-      // Cancellation is the caller unwinding, not a read that failed: a
-      // cancelled chat turn must not be logged as a database fault, reported to
-      // the model as a read error, or stop propagating (the same rule as
-      // [ed.unicoach.coaching.admissions.CollegeAdmissionsService]).
-      throw e
-    } catch (e: Exception) {
-      Result.failure(e)
-    }
+  ): Result<CollegeCostProfile> = database.withConnectionCatching { session -> readInSession(session, studentId, collegeIds) }
 
   /**
    * The same-session read RFC 155's report path names: the CALLER owns the

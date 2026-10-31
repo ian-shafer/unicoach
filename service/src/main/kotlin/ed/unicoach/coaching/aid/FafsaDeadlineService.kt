@@ -14,7 +14,6 @@ import ed.unicoach.db.models.FafsaFilingDeadline
 import ed.unicoach.db.models.JurisdictionKind
 import ed.unicoach.db.models.PublishedDeadline
 import ed.unicoach.db.models.SourceUrlStatus
-import kotlinx.coroutines.CancellationException
 import org.slf4j.LoggerFactory
 import java.time.InstantSource
 import java.time.LocalDate
@@ -201,15 +200,7 @@ class FafsaDeadlineService(
     FafsaUnreadableAgencies::of,
 ) {
   suspend fun get(zone: ZoneId? = null): Result<FafsaDeadlines> =
-    try {
-      Result.success(database.withConnection { session -> readInSession(session, zone) })
-    } catch (e: CancellationException) {
-      // Cancellation is the caller unwinding, not a read that failed
-      // (CollegeAdmissionsService's rule).
-      throw e
-    } catch (e: Exception) {
-      Result.failure(e)
-    }
+    database.withConnectionCatching { session -> readInSession(session, zone) }
 
   /**
    * The whole read on ONE session, extracted so the batching contract is

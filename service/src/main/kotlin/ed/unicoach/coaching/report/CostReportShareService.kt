@@ -180,7 +180,7 @@ class CostReportShareService(
       Result.success(mintOrReuse(studentId, deriver))
     } catch (e: CancellationException) {
       // Cancellation is the caller unwinding, not a write that failed: the same
-      // rule the cost read follows (CollegeCostService.getForStudent).
+      // rule the reads follow (Database.withConnectionCatching).
       throw e
     } catch (e: ConstraintViolationException) {
       // Only the one-live-share index refusal is the benign race with a

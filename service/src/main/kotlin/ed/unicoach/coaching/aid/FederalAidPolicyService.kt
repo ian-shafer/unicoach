@@ -11,7 +11,6 @@ import ed.unicoach.db.models.DependencyStatus
 import ed.unicoach.db.models.PolicyParameter
 import ed.unicoach.db.models.PolicyParameterRow
 import ed.unicoach.db.models.StudentId
-import kotlinx.coroutines.CancellationException
 import org.slf4j.LoggerFactory
 import java.time.Clock
 import java.time.LocalDate
@@ -150,15 +149,7 @@ class FederalAidPolicyService(
   private val clock: Clock = Clock.systemUTC(),
 ) {
   suspend fun getForStudent(studentId: StudentId): Result<FederalAidPolicy> =
-    try {
-      Result.success(database.withConnection { session -> readInSession(session, studentId) })
-    } catch (e: CancellationException) {
-      // Cancellation is the caller unwinding, not a read that failed
-      // (CollegeAdmissionsService's rule).
-      throw e
-    } catch (e: Exception) {
-      Result.failure(e)
-    }
+    database.withConnectionCatching { session -> readInSession(session, studentId) }
 
   /**
    * The whole read on ONE session, extracted so the batching contract is

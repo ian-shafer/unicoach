@@ -18,7 +18,6 @@ import ed.unicoach.db.models.CollegeDeadline
 import ed.unicoach.db.models.CollegeId
 import ed.unicoach.db.models.ScoreRelease
 import ed.unicoach.db.models.StudentId
-import kotlinx.coroutines.CancellationException
 import java.time.InstantSource
 import java.time.LocalDate
 import java.time.Month
@@ -304,16 +303,7 @@ class TestTimelineService(
   suspend fun getForStudent(
     studentId: StudentId,
     collegeIds: List<CollegeId>? = null,
-  ): Result<TestTimeline> =
-    try {
-      Result.success(database.withConnection { session -> readInSession(session, studentId, collegeIds) })
-    } catch (e: CancellationException) {
-      // Cancellation is the caller unwinding, not a read that failed
-      // (CollegeAdmissionsService's rule).
-      throw e
-    } catch (e: Exception) {
-      Result.failure(e)
-    }
+  ): Result<TestTimeline> = database.withConnectionCatching { session -> readInSession(session, studentId, collegeIds) }
 
   /**
    * The whole read on ONE session: today, the student's graduation date, their

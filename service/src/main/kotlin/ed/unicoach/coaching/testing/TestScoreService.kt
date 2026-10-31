@@ -15,7 +15,6 @@ import ed.unicoach.db.models.NewAdmissionTestScore
 import ed.unicoach.db.models.PartialDate
 import ed.unicoach.db.models.PartialDateColumns
 import ed.unicoach.db.models.StudentId
-import kotlinx.coroutines.CancellationException
 import java.time.InstantSource
 
 /**
@@ -91,27 +90,12 @@ class TestScoreService(
   private val clock: InstantSource = InstantSource.system(),
 ) {
   suspend fun getForStudent(studentId: StudentId): Result<TestScores> =
-    try {
-      Result.success(database.withConnection { session -> readInSession(session, studentId) })
-    } catch (e: CancellationException) {
-      // Cancellation is the caller unwinding, not a read that failed
-      // (CollegeAdmissionsService's rule).
-      throw e
-    } catch (e: Exception) {
-      Result.failure(e)
-    }
+    database.withConnectionCatching { session -> readInSession(session, studentId) }
 
   suspend fun write(
     studentId: StudentId,
     write: TestScoreWrite,
-  ): Result<WriteTestScoresResult> =
-    try {
-      Result.success(database.withConnection { session -> writeInSession(session, studentId, write) })
-    } catch (e: CancellationException) {
-      throw e
-    } catch (e: Exception) {
-      Result.failure(e)
-    }
+  ): Result<WriteTestScoresResult> = database.withConnectionCatching { session -> writeInSession(session, studentId, write) }
 
   /**
    * The whole read on ONE session, delegated to [readTestScoresInSession] --

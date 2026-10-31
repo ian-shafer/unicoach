@@ -21,7 +21,6 @@ import ed.unicoach.db.models.PartialDate
 import ed.unicoach.db.models.ScholarshipSuperscoreRule
 import ed.unicoach.db.models.SourceUrlStatus
 import ed.unicoach.db.models.StudentId
-import kotlinx.coroutines.CancellationException
 import java.math.BigDecimal
 import java.math.RoundingMode
 import java.time.InstantSource
@@ -401,16 +400,7 @@ class AutomaticAwardService(
   override suspend fun getForStudent(
     studentId: StudentId,
     collegeIds: List<CollegeId>?,
-  ): Result<AutomaticAwardReading> =
-    try {
-      Result.success(database.withConnection { session -> readInSession(session, studentId, collegeIds) })
-    } catch (e: CancellationException) {
-      // Cancellation is the caller unwinding, not a read that failed
-      // (CollegeAdmissionsService's rule).
-      throw e
-    } catch (e: Exception) {
-      Result.failure(e)
-    }
+  ): Result<AutomaticAwardReading> = database.withConnectionCatching { session -> readInSession(session, studentId, collegeIds) }
 
   /**
    * The whole read on ONE session: the student's list, the grids for those

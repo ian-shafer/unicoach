@@ -21,7 +21,6 @@ import ed.unicoach.db.models.NationalMeritFunnel
 import ed.unicoach.db.models.QualifyingStanding
 import ed.unicoach.db.models.ResidencyBasis
 import ed.unicoach.db.models.StudentId
-import kotlinx.coroutines.CancellationException
 import java.time.InstantSource
 import java.time.LocalDate
 
@@ -738,18 +737,7 @@ class NationalMeritService(
     studentId: StudentId,
     collegeIds: List<CollegeId>? = null,
     residency: Residency = Residency.NotAsked,
-  ): Result<NationalMeritReading> =
-    try {
-      Result.success(
-        database.withConnection { session -> readInSession(session, studentId, collegeIds, residency) },
-      )
-    } catch (e: CancellationException) {
-      // Cancellation is the caller unwinding, not a read that failed
-      // (CollegeAdmissionsService's rule).
-      throw e
-    } catch (e: Exception) {
-      Result.failure(e)
-    }
+  ): Result<NationalMeritReading> = database.withConnectionCatching { session -> readInSession(session, studentId, collegeIds, residency) }
 
   /**
    * The whole read on ONE session: her stored graduation date, every cycle we

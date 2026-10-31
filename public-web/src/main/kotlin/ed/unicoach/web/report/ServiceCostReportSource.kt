@@ -64,7 +64,7 @@ class ServiceCostReportSource(
     } catch (e: CancellationException) {
       // The caller unwinding, never a read that failed: cancellation must keep
       // propagating rather than be reported as a database fault (the
-      // [CollegeCostService.getForStudent] rule, kept here too).
+      // [ed.unicoach.db.Database.withConnectionCatching] rule, kept here too).
       throw e
     } catch (e: Exception) {
       // The port's own failure type, so a Hikari checkout timeout does not reach

@@ -19,7 +19,6 @@ import ed.unicoach.db.models.CollegeMeritAid
 import ed.unicoach.db.models.CollegeTestPolicyRow
 import ed.unicoach.db.models.FactorRating
 import ed.unicoach.db.models.StudentId
-import kotlinx.coroutines.CancellationException
 import org.slf4j.LoggerFactory
 
 /**
@@ -310,18 +309,7 @@ class CollegeAdmissionsService(
   suspend fun getForStudent(
     studentId: StudentId,
     collegeIds: List<CollegeId>? = null,
-  ): Result<CollegeAdmissionsProfile> =
-    try {
-      Result.success(database.withConnection { session -> readInSession(session, studentId, collegeIds) })
-    } catch (e: CancellationException) {
-      // Cancellation is the caller unwinding, not a read that failed. Folding it
-      // into `Result.failure` would log a cancelled chat turn as a database
-      // fault, tell the model the read failed, and stop the cancellation
-      // propagating -- three wrong answers to one correct event.
-      throw e
-    } catch (e: Exception) {
-      Result.failure(e)
-    }
+  ): Result<CollegeAdmissionsProfile> = database.withConnectionCatching { session -> readInSession(session, studentId, collegeIds) }
 
   /**
    * The whole read on ONE session, extracted so the batching contract above is

@@ -15,7 +15,6 @@ import ed.unicoach.db.dao.SupporterStudentLinksDao
 import ed.unicoach.db.models.SharingPermission
 import ed.unicoach.db.models.StudentId
 import ed.unicoach.db.models.UserId
-import kotlinx.coroutines.CancellationException
 
 /**
  * What a read through [SubjectReadService] answers: the projection, or one
@@ -169,14 +168,7 @@ class SubjectReadService(
     viewer: UserId,
     studentId: StudentId,
     read: (SqlSession, StudentId) -> T,
-  ): Result<SubjectRead<T>> =
-    try {
-      Result.success(database.withConnection { session -> readLinkedInSession(session, viewer, studentId, read) })
-    } catch (e: CancellationException) {
-      throw e
-    } catch (e: Exception) {
-      Result.failure(e)
-    }
+  ): Result<SubjectRead<T>> = database.withConnectionCatching { session -> readLinkedInSession(session, viewer, studentId, read) }
 
   /** The live-link check, then [read] on the SAME session: what was authorised is what is read. */
   private fun <T> readLinkedInSession(
