@@ -4,12 +4,14 @@ Status: GATE 1 ANSWERED 2026-10-31 — D2, D4, D5, D6 approved on their defaults
 D1 and D3 AMENDED (a deleted account is a row in `deleted_users`; erasure is
 driven by the schema); two standing rules added (D7 never an empty value, D8
 classification lives in the type). `spec.md` written the same day with seven
-slices under handle `deletion`; **awaiting gate 2** (D9–D12, in `spec.md`).
-Closure (in-app delete, soft delete, links severed) LANDED as RFC 252 via brief
-0014 `family/09` (`main@b99a77d3`, 2026-10-11); reset (D4) is deferred. The
-original framing below is left as written (2026-08-25); its gate-1 list was
-never taken, so the re-presented and now answered D1–D6 supersede it without
-contradicting a committed decision.
+slices under handle `deletion`; **GATE 2 ANSWERED the same day** (D9, D10, D12
+on defaults; D11 amended — orphaned LLM calls are kept). READY TO START:
+`deletion/01/the-classification` (and `deletion/05/the-words`, which PREFERs
+`deletion/04`). Closure (in-app delete, soft delete, links severed) LANDED as
+RFC 252 via brief 0014 `family/09` (`main@b99a77d3`, 2026-10-11); reset (D4) is
+deferred. The original framing below is left as written (2026-08-25); its gate-1
+list was never taken, so the re-presented and now answered D1–D6 supersede it
+without contradicting a committed decision.
 
 Slice IDs: `deletion/NN/name`, declared in `spec.md`. Ledger: nothing landed.
 
@@ -548,4 +550,4 @@ The verbatim text above is binding; the labels are the gloss later messages use.
 - **D8 (standing) — classification lives in the type.** As quoted. Inherited by
   every future brief without re-asking.
 
-Gate 2 (the slices, D9 onward) is in `spec.md`.
+Gate 2 (the slices, D9–D12) is in `spec.md`, answered 2026-10-31.

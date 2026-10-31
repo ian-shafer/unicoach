@@ -5,7 +5,9 @@ Gate 2 artifact. Slice handle: **`deletion`** (IDs `deletion/NN/name`).
 Gate-1 decisions D1–D8 are recorded verbatim in `brief.md` ("Gate 1 answered
 2026-10-31") and are binding here. D7 and D8 are **standing** rules every future
 brief inherits. This file adds the DISCOVER corrections the amendments turned
-up, the slices, and gate-2 decisions D9–D12.
+up, the slices, and gate-2 decisions D9–D12 — **answered 2026-10-31**: D9, D10
+and D12 approved on their defaults; D11 amended to Option B, orphaned LLM calls
+are kept (see "Gate 2 answered" at the end).
 
 The four research reports under `research/` (schema map, unkeyed data and
 copies, closure as built and purge infrastructure, App Store and legal) remain
@@ -295,8 +297,9 @@ state at the end of RFC 252.
   `job_attempts` rows whose payload names the account or its addresses
   (completed, failed and dead-lettered alike). Nothing else is physically
   deleted.
-- Orphaned LLM calls (**D11**): a log row no `owned.*` column points at is
-  erased once older than the window, by age, by the same walk's sibling sweep.
+- Orphaned LLM calls (**D11**, answered: kept): a log row no `owned.*` column
+  points at is **not** touched by the walk or any sweep. The RFC states this as
+  a known limit, in one sentence, where the walk is described.
 - The spend test (D1): a fixture account with spend on both the student and the
   supporter side; sum `account_llm_cost` over three date ranges; erase; the
   three sums are identical and the ids they are keyed on are unchanged.
@@ -374,7 +377,8 @@ closest email precedent, `ASYNC_WORK.md` (queue-by-default).
   The `jobs` row that carried the address is on D10's physical-delete list and
   is reaped by the existing 30-day completed-job reaper; the walk does not wait
   for it.
-- The sweep also runs D11's orphan-by-age erasure of unowned LLM log rows.
+- The sweep erases accounts only; unowned LLM log rows are left alone (D11,
+  answered: kept).
 
 **Left to /work's spec phase.** Cadence of the sweep; batch size per sweep;
 whether the erase job carries the address or re-reads it under the marker;
@@ -589,3 +593,28 @@ Recommend A. Cost of being wrong: an admin route, cheap to remove.
 Four waves of one slice each is the honest shape: this brief is a chain, and
 nothing user-visible exists until the last link. The copy slice is the only
 parallel work.
+
+---
+
+# Gate 2 answered 2026-10-31 (Ian, verbatim)
+
+> D11: Option B, keep them
+
+D9, D10 and D12 were not addressed and take their defaults, as each block
+states.
+
+- **D9 — the deleted id is the old id.** Default A: `deleted_users.id` is the
+  former `users.id`; likewise students and supporters.
+- **D10 — what is physically deleted.** Default A: `sessions`,
+  `verification_tokens`, `user_auth_identities`, the account's
+  `supporter_invites`, and the `jobs` / `job_attempts` rows whose payload names
+  the account; `email_sends` is erased in place, never deleted.
+- **D11 — orphaned LLM calls are kept.** Amended to B, as quoted: a log row no
+  `owned.*` column points at is not erased by the walk or by any sweep. Option C
+  (every call gets an owner row) stays a backlog item in `STATUS.md`.
+- **D12 — an operator can erase one account on request.** Default A:
+  `deletion/03` ships admin-only `POST /user/{id}/erase` for a closed account.
+
+The slices above were amended in place for D11 before this file was committed
+(`deletion/03` and `deletion/04` no longer mention an orphan sweep); the
+decisions are immutable from here.
