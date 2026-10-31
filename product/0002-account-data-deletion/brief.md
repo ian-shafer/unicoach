@@ -1,17 +1,17 @@
 # Product Brief 0002 — Account data deletion
 
-Status: RE-FRAMED 2026-10-30 to ERASURE ONLY — the App Store launch blocker.
-DISCOVER done (four cited research reports under `research/`, 2,628 lines);
-**awaiting gate 1**, re-presented below as D1–D6 with defaults and with what RFC
-252 already settled marked. Handle: `deletion`. Closure (in-app delete, soft
-delete, links severed) LANDED as RFC 252 via brief 0014 `family/09`
-(`main@b99a77d3`, 2026-10-11); reset (D4) is deferred by default. The original
-framing below is left as written (2026-08-25); its gate-1 list was never taken,
-so the re-presented D1–D6 supersede it without contradicting a committed
-decision.
+Status: GATE 1 ANSWERED 2026-10-31 — D2, D4, D5, D6 approved on their defaults;
+D1 and D3 AMENDED (a deleted account is a row in `deleted_users`; erasure is
+driven by the schema); two standing rules added (D7 never an empty value, D8
+classification lives in the type). `spec.md` written the same day with seven
+slices under handle `deletion`; **awaiting gate 2** (D9–D12, in `spec.md`).
+Closure (in-app delete, soft delete, links severed) LANDED as RFC 252 via brief
+0014 `family/09` (`main@b99a77d3`, 2026-10-11); reset (D4) is deferred. The
+original framing below is left as written (2026-08-25); its gate-1 list was
+never taken, so the re-presented and now answered D1–D6 supersede it without
+contradicting a committed decision.
 
-Slice IDs: this brief is not sliced yet. Its slices get permanent IDs of the
-form `deletion/NN/name` at SPEC & SLICE.
+Slice IDs: `deletion/NN/name`, declared in `spec.md`. Ledger: nothing landed.
 
 Raised by Ian 2026-08-25 while looking for a clean account to test S1-S3 on: "we
 should just build this. It's needed to comply with law (delete user data on
@@ -470,3 +470,82 @@ sooner, nothing irreversible.
 - **Two operator facts outside the slice**: the live RDS backup window (not in
   the repo; the notice says "backups age out within N days", so N must be read
   from AWS), and journald retention on the instance.
+
+### Gate 1 answered 2026-10-31 (Ian, verbatim)
+
+> Approve D2, D4, D5, D6 on defaults. Amend D1 and D3, and add two standing
+> rules.
+>
+> D1 amended — "no tombstone row; a deleted account is a row in deleted_users
+> (and deleted_students, deleted_supporters)." Every child key onto
+> users/students/supporters gains a sibling key onto the deleted table; at
+> erasure the live key goes NULL and the deleted key is set, exactly one of the
+> pair ever set. The account's rows are not deleted: every personal column goes
+> NULL and deleted_at is stamped, history rows included, so row counts and the
+> per-account cost spine survive. The LLM log keeps date, model, tokens and
+> cost; its text and llm_responses_raw.payload go NULL. Per-account spend for
+> any date range is identical before and after erasure, and a test asserts it.
+> Physical deletes are limited to the rows we must never hold again (list them
+> in the spec).
+>
+> D3 amended — "erasure is driven by the schema." Personal columns are declared
+> with domains in a pii schema; forward-owned keys (the owner tables'
+> llm_request_id columns) with domains in an owned schema. One function,
+> soft_delete_entity(table, key_column, key_value), NULLs every pii.* column on
+> a row and stamps deleted_at. The walk follows pg_constraint from the deleted
+> account's ids, re-points keys, erases each reached row, and follows owned.*
+> columns forward using the constraint's referenced column as the key. No
+> per-table code, no column list. The guards gain one arm admitting these
+> updates inside the declared erasure. The drift guard asserts: every column on
+> a reachable table is pii.* or on a short named not-personal list; every FK
+> onto a pii-bearing table is owned.* or on a named not-owned list; every table
+> keyed on an account also keys on its deleted table; no table holding a
+> person's data is keyless.
+>
+> Standing — "never an empty value." A column is never set to an empty string or
+> placeholder. A personal column may be NULL only when the row's deleted_at is
+> set, enforced by CHECK; tables holding personal data gain deleted_at if they
+> lack it.
+>
+> Standing — "classification lives in the type." A column's personal or owned
+> status is a domain, never a comment, a name pattern or a list.
+
+#### The committed decisions, labelled
+
+The verbatim text above is binding; the labels are the gloss later messages use.
+
+- **D1 — a deleted account is a row in `deleted_users`.** Amended as quoted.
+  Supersedes the presented Option A on four points, so no slice inherits the
+  stale text: there is no skeleton-only tombstone (the `users`, `students` and
+  `supporters` rows stay, personal columns NULL, and a `deleted_*` row is added
+  beside them); history (`*_versions`) rows are erased in place, not deleted;
+  the LLM log is kept with its text NULL, never deleted; `email_sends` rows are
+  not deleted by address (they get a key and are erased like any other row, per
+  D3's fourth drift rule). What the presented text and the amendment agree on
+  still holds: the subscription outlives the person (now bound through its
+  sibling key to `deleted_users`), the other party's records stay (brief 0014
+  D9), and the deletion receipt is kept.
+- **D2 — close now, purge after a short fixed window.** Approved on the default:
+  closed at once, erased by a periodic job once the close is N days old, N = 7
+  as one config key, the app says "within 30 days", one email when it is done.
+- **D3 — erasure is driven by the schema.** Amended as quoted. Supersedes the
+  presented Option A's "one purge arm per delete guard": the arm admits the
+  erasing UPDATEs (and the few physical deletes D1 allows) inside the declared
+  erasure, and the drift guard asserts the four schema rules quoted above rather
+  than coverage of a hand-written traversal.
+- **D4 — reset is not this beat.** Approved on the default: a deferred
+  follow-on, dev-only first, reusing the walk with the cut point as a parameter.
+- **D5 — say deleted, say what is kept, confirm when done.** Approved on the
+  default. The "what stays" sentence changes with D1: a record that the account
+  existed and when it was deleted, your subscription record with Apple, and our
+  usage ledger with your words removed.
+- **D6 — Apple's manual route stays; the subscription outlives the person.**
+  Approved on the default: no revoke call now; a follow-on slice stores refresh
+  tokens; the subscription row stays, holding only Apple's identifiers, product,
+  status and periods.
+- **D7 (standing) — never an empty value.** As quoted. Inherited by every future
+  brief without re-asking.
+- **D8 (standing) — classification lives in the type.** As quoted. Inherited by
+  every future brief without re-asking.
+
+Gate 2 (the slices, D9 onward) is in `spec.md`.
