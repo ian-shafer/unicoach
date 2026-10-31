@@ -13,7 +13,8 @@ deferred. The original framing below is left as written (2026-08-25); its gate-1
 list was never taken, so the re-presented and now answered D1–D6 supersede it
 without contradicting a committed decision.
 
-Slice IDs: `deletion/NN/name`, declared in `spec.md`. Ledger: nothing landed.
+Slice IDs: `deletion/NN/name`, declared in `spec.md`. Ledger: at the end of this
+file.
 
 Raised by Ian 2026-08-25 while looking for a clean account to test S1-S3 on: "we
 should just build this. It's needed to comply with law (delete user data on
@@ -551,3 +552,16 @@ The verbatim text above is binding; the labels are the gloss later messages use.
   every future brief without re-asking.
 
 Gate 2 (the slices, D9–D12) is in `spec.md`, answered 2026-10-31.
+
+## Ledger
+
+_(one line per landed slice: ID, RFC, code SHA, date, one-line what.)_
+
+    deletion/01/the-classification LANDED as RFC 263 (main@99921e86,
+      2026-10-31) — personal columns typed `pii.*` (60, across 20 table
+      families), LLM-log keys typed `owned.llm_request_id`, one presence CHECK
+      per formerly NOT NULL personal column, `deleted_at` on 11 erased-in-place
+      tables, `email_sends.user_id` (backfilled), and the drift-guard test
+      `ErasureClassificationTest` (rules 1–3). Approval: sessions and
+      user_auth_identities keep their shape (hard-deleted, D10); the
+      not-personal list is keyed by `table.column`.
