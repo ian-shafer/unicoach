@@ -372,6 +372,28 @@ THIS file, so the line lives here and the spec points at it):
   matrix for the four new screens is a human check and was NOT run**; no login
   throttle was added (Ian declined).
 
+- `web/04/the-chat` LANDED as RFC 262 (main@a0fd10fa, 2026-10-31) — the chat on
+  the web, the door being the signed-in root, which now opens on `/chat`: a
+  server-rendered conversation upgraded by TypeScript to live streaming over a
+  same-origin SSE-over-POST stream (`started`/`delta`/`completed`/`failed`),
+  calling `CoachingService` in-process (D13). A failed turn keeps the student's
+  words on screen and says whether retrying can help; budget exhaustion renders
+  a page before any stream opens. Coach Markdown renders through one escaping
+  Kotlin renderer matching the iOS subset, keeping only http(s) links. The
+  extraction enqueue MOVED into the service layer (`TurnParty.onSucceeded`) and
+  the student tool list got one home (`StudentToolRegistry`), so the web and the
+  iPhone app cannot drift. **D20 OVERRIDDEN at approval (Ian, 2026-10-30): "Do
+  we really need to write code for this? Let's not build a fully featured
+  product before we even launch"** — there is no no-JavaScript send path, and
+  the slice's no-JS acceptance criterion is dropped. A signed-in non-student is
+  redirected by a route interceptor: a student without a profile to a
+  `/get-started` placeholder (web/06 builds the real page), a supporter to
+  `/account`. Full gate green at scope `full`; 40 Deno tests run in every build.
+  Open: **the D19 device matrix was NOT run**; interim copy to confirm (the
+  out-of-allowance notice, owned by web/10; the `/get-started` placeholder;
+  "That message couldn't be sent."); one review finding held — the Markdown
+  parser is a hand port, not a library, as the approved RFC chose.
+
 ## Research
 
 - research/ios-feature-inventory.md — every iOS screen/flow, endpoints, 23-row
