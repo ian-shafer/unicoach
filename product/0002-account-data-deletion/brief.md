@@ -1,8 +1,14 @@
 # Product Brief 0002 — Account data deletion
 
-Status: FRAMED, awaiting gate 1. Not started. Independent of brief 0001
-(compliance, not differentiation) — but it unblocks repeatable clean-slate
-testing, which 0001's slices need.
+Status: RE-FRAMED 2026-10-30 to ERASURE ONLY — the App Store launch blocker.
+DISCOVER done (four cited research reports under `research/`, 2,628 lines);
+**awaiting gate 1**, re-presented below as D1–D6 with defaults and with what RFC
+252 already settled marked. Handle: `deletion`. Closure (in-app delete, soft
+delete, links severed) LANDED as RFC 252 via brief 0014 `family/09`
+(`main@b99a77d3`, 2026-10-11); reset (D4) is deferred by default. The original
+framing below is left as written (2026-08-25); its gate-1 list was never taken,
+so the re-presented D1–D6 supersede it without contradicting a committed
+decision.
 
 Slice IDs: this brief is not sliced yet. Its slices get permanent IDs of the
 form `deletion/NN/name` at SPEC & SLICE.
@@ -92,3 +98,375 @@ The repo is built to REFUSE deletion. This is the design work, not a script:
 - Related open item from brief 0001's runs: ingest observability (a silent no-op
   ingest and a stale jar are indistinguishable today). Separate, small, and
   worth doing before S4's data build.
+
+---
+
+## Re-framed 2026-10-30 — erasure only, the App Store launch blocker
+
+Ian, 2026-10-30: _"Run brief 0002, narrowed to account ERASURE as the App Store
+launch blocker. RFC 252 already closes accounts (in-app delete, soft delete,
+links severed); erasure is the part it left. Re-map the schema first — the
+brief's map predates brief 0014's supporter tables, parent convos, account-keyed
+subscriptions and supporter_llm_costs — then bring me D1–D6 with defaults,
+marking which RFC 252 already settled."_
+
+### What RFC 252 settled (landed `main@b99a77d3`, 2026-10-11)
+
+Close, as built (`AccountClosureService`, one transaction): lock the user; sever
+every live link from the closer's side, one link-ended email per link; cancel
+the closer's pending link requests; revoke the closer's invites and the Family
+Cost Report link; soft-delete `students`, `supporters`, `users`; physically
+delete the `user_auth_identities` row (the one physical delete in the codebase,
+admitted by a guard that checks the owner is closed); revoke every session.
+Door: Settings → "Delete account", both roles, inline confirmation. A paying
+user is warned that Apple keeps billing and shown the manage-subscription
+control; the delete is not blocked. The login screen says "Your account has been
+closed." and gives Apple's manual route for removing the app from an Apple ID.
+Subscriptions and LLM cost rows are kept. Gate decisions 1–4 of RFC 252 are in
+its file; the one that binds here is **RFC 252 gate 1: "Close now, erase
+later"** — erasure is this brief's slice, with this brief's keep-or-erase
+decisions.
+
+**What a user gets today is Apple's "deactivation".** Apple's support article
+for guideline 5.1.1(v) says, verbatim, _"only offering to temporarily deactivate
+or disable an account is insufficient"_
+(`research/app-store-and-legal-erasure.md` §1). So the launch blocker is real
+and is exactly the gap RFC 252 named.
+
+### The schema, re-mapped 2026-10-30
+
+Four reports, every claim cited to a file and line at `main@00bdeb7e`:
+
+| Report                                         | Covers                                                                                                                      |
+| ---------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
+| `research/schema-map.md`                       | every account-linked table (47 of 97), its FK behaviour, its delete guard, its history table, which columns hold the person |
+| `research/unkeyed-data-and-copies.md`          | what a key walk cannot reach: the LLM log, queue payloads, email bodies, logs, backups, processors, the iPhone              |
+| `research/closure-as-built-and-purge-infra.md` | what RFC 252's close does in code, how closed data stays invisible, the periodic-job and config machinery a purge reuses    |
+| `research/app-store-and-legal-erasure.md`      | Apple 5.1.1(v) and its support article verbatim, Sign in with Apple revocation, GDPR/CCPA, LLM-provider retention, minors   |
+
+**Corrections to the 2026-08-25 map** (`schema-map.md` §D, ten items; the ones
+that change the design):
+
+1. **A second account axis exists.** `supporters`, `supporter_student_links`
+   (+versions), `supporter_invites`, `supporter_link_requests`,
+   `supporter_llm_costs`, `convos.party`/`convos.supporter_id`, and the
+   `account_llm_cost` view. One `users` row can be both a student and a
+   supporter, so "erase this user" walks two subtrees.
+2. **`subscriptions` is keyed by `users.id`**, `NOT NULL`, no `ON DELETE`
+   (`subscriptions-key-on-account.sql:54,98`); `student_id` is gone. The
+   rebind-on-return RFC 252 built reads the closed `users` row, so the `users`
+   row must EXIST, soft-deleted, for a returning subscriber to get their
+   entitlement back. Apple's `original_transaction_id` is TOTAL-unique.
+3. **Every student child cascades on paper and is refused in practice.** All
+   student-owned tables carry `ON DELETE CASCADE` from `students`, but Postgres
+   fires each child's own `BEFORE DELETE` guard on the cascaded rows, so the
+   cascade the schema calls "the future physical-erasure path" (0006:54-56) is
+   refused one level down on all 34 guarded tables. The history tables add
+   `RESTRICT` edges back to every live row and hold **every prior value** of
+   name, email, date of birth, income band — a scrub of the live row writes one
+   more history row and leaves the old ones.
+4. **The words have no account key.** `llm_requests.system`/`.content`,
+   `llm_responses.content` and `llm_responses_raw.payload` hold every message
+   typed and every reply, verbatim. They are reached only through five owner
+   tables (`convo_requests`, `extraction_runs`, `synthesis_runs`,
+   `fit_lens_runs` with TWO id columns, `supporter_llm_costs`), each pointing AT
+   the log with no `ON DELETE`. Delete the owners first and the text is
+   stranded. **Orphans are routine, not crash-only**: any rejected, transient or
+   errored extraction, synthesis or fit-lens call writes no run row, and a chat
+   turn whose `convo_requests` write fails leaves the committed call un-owned.
+   No person key reaches those rows.
+5. **Each guarded table carries exactly ONE delete trigger**, from six shared
+   functions, never "2-3". `claims`, `commitments`, `fit_suggestions`,
+   `subscriptions` are mutable entities, not append-only logs.
+6. **Tables the old map did not name**: `money_profiles`, `cost_report_shares`,
+   `share_events`, `sharing_permissions`, `intended_subjects` and its status,
+   `admission_test_scores` and declines, `college_list_entries` (+versions),
+   `sessions` (user agent, first IP), `email_sends`, `students.date_of_birth`.
+7. **`user_auth_identities` is already deleted at close** (RFC 252), by a
+   conditional guard that admits the delete only when the owner is closed — the
+   template for D3.
+
+**The branches an FK walk misses** (`unkeyed-data-and-copies.md`, closing list):
+
+- **`email_sends`**: recipient address, subject and the FULL BODY of every email
+  ever sent, keyed by the address string only, delete- and update-guarded. Link
+  emails name the other party.
+- **`jobs.payload`**: no FK. `SEND_EMAIL` carries the address, the RAW
+  verification token, and the other party's name; other job kinds carry convo,
+  student and transaction ids. Completed jobs are reaped after 30 days;
+  dead-lettered jobs are never reaped. `job_attempts.error_message` carries
+  `to [<address>]`.
+- **The parent's coach talks about the student.** A supporter-party convo
+  carries both `supporter_id` and `student_id`; the student's name, relationship
+  and college list are in every turn's `llm_requests.system`. It keeps rendering
+  after the student closes. Under physical delete it would CASCADE from
+  `students` — destroying the PARENT's own conversation, which brief 0014 D9
+  says survives.
+- **Three copies of the raw verification token** (hash in `verification_tokens`,
+  raw in the queue payload, raw in the email body).
+- **Backups**: `infra/rds.tf` sets no `backup_retention_period` and
+  `skip_final_snapshot = true`; the live window is not knowable from the repo
+  (an operator `aws rds describe-db-instances` answers it). No dumps, no
+  exports, no analytics copies.
+- **Processors**: Anthropic holds every prompt and reply with no account id
+  attached (nothing to key a deletion request on; its stated retention is the
+  mechanism — 30 days by default, longer for flagged content). Apple holds the
+  transaction and the sign-in `sub`. SES holds message metadata.
+- **Logs**: stdout → journald on the instance, no retention configured; one line
+  prints full tool input on dispatch failure, one prints a malformed email
+  payload, failure lines print the address. CloudWatch keeps remote ops-run
+  output 30 days.
+- **The iPhone**: two `UserDefaults` keys and the cookie, all cleared by RFC
+  252's path except on a `401`.
+
+**Machinery that exists for a purge** (`closure-as-built-and-purge-infra.md`,
+"Reusable"): the close as phase one; the periodic-job machinery end to end
+(`periodic_jobs` row, `JobType`, `JobHandler`, sweep precedent, DB-clock and
+idempotency rules in `cron/INVARIANTS.md`); the HOCON-plus-env knob pattern for
+"N days"; `SoftDeleteScope.DELETED` with no caller yet (the sweep's read); the
+conditional guard; catalog-walk tests (`NoUrlColumnOutsideExternalDocumentsTest`
+and siblings) as the drift-guard precedent; admin `undelete` for the `users`
+half. **Missing**: the traversal itself; a way past the guards and `RESTRICT`
+history edges that still refuses every non-purge delete; a schema shape that can
+hold a tombstone (`users.email`/`name` are `NOT NULL` with format checks;
+`convos.student_id` is immutable by trigger; the cost views are inner joins);
+any reset; any export; the copy.
+
+**What the law and Apple actually require** (`app-store-and-legal-erasure.md`,
+closing section):
+
+- Apple: delete "the entire account record, along with associated personal
+  data"; legally-required retention is allowed **if the flow says what is
+  kept**; a deferred purge is explicitly allowed — _"Inform the person how long
+  it will take [...] and provide a confirmation when the deletion is complete"_;
+  subscriptions: warn, show manage, never block (done, RFC 252).
+- GDPR: without undue delay, one month to complete (Art. 12(3)); a usable
+  multi-week "undo" window is endorsed by no source; anonymisation counts only
+  when re-identification is not reasonably likely — **a row that keeps a join
+  key to the person is still personal data** (ICO 2025); backups may age out on
+  a stated schedule the notice mentions (ICO). CCPA: 45 days; de-identification
+  explicitly allowed; backups carved out.
+- Sign in with Apple: Apple's 2022 notice says tokens "must" be revoked at
+  deletion; the current support article and TN3194 say "should"/"expected". The
+  backend validates identity tokens by JWKS only, never exchanges the
+  authorization code, **holds no refresh token** — programmatic revocation is
+  impossible for existing users. TN3194's own fallback is the manual route RFC
+  252 shipped. No public evidence that review tests the call.
+- Minors 13–17: no extra erasure mechanics; California B&P 22581 wants a NOTICE
+  that a minor can remove content they posted — one sentence.
+
+### Gate 1, re-presented — D1–D6 (erasure scope)
+
+Each decision keeps its 2026-08-25 number. "RFC 252 settled" is binding already;
+"Open" is what Ian decides now. Options are outcomes; the default is taken on
+silence.
+
+#### D1 — erase the person, keep the skeleton
+
+**RFC 252 settled:** the `user_auth_identities` row is deleted at close; the
+subscription row and the LLM cost rows are kept while the account is closed.
+
+**Open:** what the purge erases, what it keeps, per class of data.
+
+- **Option A (recommended, default) — "erase the person, keep the skeleton."**
+  After the purge, nothing that identifies or quotes the person exists in our
+  database. Kept: (1) one tombstone row each for `users`, `students`,
+  `supporters` holding only the id and the three dates (created, closed, purged)
+  — the skeleton the subscription record, the other party's severed link history
+  and the parent's own conversation still point at; (2) the subscription record,
+  bound to the tombstone, so a returning subscriber on the same Apple ID gets
+  their entitlement back (RFC 252's rebind) and Apple's transaction id is never
+  re-minted; (3) our spend ledger with the words removed — every LLM call keeps
+  model, tokens, cost and time, and loses `system`, `content`, tool input and
+  the raw provider body, so a past month's cost never changes after a purge; (4)
+  the deletion receipt — the one confirmation email's send record (D5) — so we
+  can show we told the person it was done. Erased: every other row the person
+  owns, **including every history (`*_versions`) row**, every `email_sends` row
+  addressed to any address the account ever had (the receipt excepted), every
+  queue job and attempt that names the account or its addresses (dead-lettered
+  included), tokens, sessions. **Orphaned LLM calls** (no owner row, so no
+  person key) have their words blanked by age, not by person: any orphan older
+  than the purge window loses its text. **The other party's records stay**: a
+  parent's own conversation that names the student, and the link-ended email in
+  the other party's send log, are the other party's data (brief 0014 D9, "each
+  party's own conversations, inputs, and account survive the other's deletion");
+  the student's name inside them is the parent's record, like a name in a
+  notebook.
+- **Option B — "erase everything, including the skeleton."** No tombstone: the
+  `users`/`students`/`supporters` rows go too. Consequences: the subscription
+  row must go with them (its key is `NOT NULL`), so a returning subscriber on
+  the same Apple ID cannot subscribe on a new account (TOTAL-unique transaction
+  id) until Apple's record expires; the parent's conversation about the student
+  is destroyed by the cascade, breaking D9; the cost ledger loses the owner
+  rows, so a past month's spend changes after a purge.
+- **Option C — "scrub in place, delete nothing."** Blank the personal columns on
+  every row and keep the rows. Fails the test the law sets: rows that keep their
+  join keys and their shape are pseudonymised, not erased, and the history
+  tables would still hold the prior values unless deleted anyway.
+
+Recommend A: it is the only option that is erasure in the ICO's sense AND keeps
+D9 and the rebind RFC 252 built. Cost of being wrong: a purge is irreversible by
+construction; the window in D2 is the only undo.
+
+#### D2 — close now, purge after a short fixed window
+
+**RFC 252 settled:** access ends at once — sessions revoked, identity released,
+links severed, the email already says "closed" (not "deleted").
+
+**Open:** when the irreversible purge runs, and what we promise.
+
+- **Option A (recommended, default) — "closed at once, erased by a periodic job
+  once the close is N days old; N = 7, one config key; the app says 'within 30
+  days'; one email when it is done."** The window is operator safety for a
+  brand-new irreversible path and takeover recovery (admin `undelete` exists for
+  the `users` half), not a user-facing undo: the identity is already released,
+  so the person cannot log back in to change their mind. Saying 30 while doing 7
+  keeps the promise true through a week of job failures; the one-month GDPR
+  clock is met either way.
+- **Option B — "erased inside the close transaction, immediately."** Cleanest
+  legal posture and no job, no second email: the confirmation is in-app.
+  Consequences: an irreversible traversal of ~47 tables runs on the request path
+  on day one with no operator window; an account-takeover deletion is
+  unrecoverable; the person's address is gone before any confirmation could be
+  sent.
+- **Option C — "a 30-day usable undo: the person can sign back in and cancel."**
+  Endorsed by no legal source; contradicts RFC 252, which already releases the
+  sign-in at close; would need the identity row kept for 30 days.
+
+Recommend A. Cost of being wrong: small — N is a config key, and B is a later
+narrowing (set N to 0 and run the purge inline) once the path has run in
+production.
+
+#### D3 — only the purge can delete a person's rows, and a test proves it
+
+**RFC 252 settled:** the precedent. `user_auth_identities`' guard now admits a
+DELETE **only when the owning `users` row is soft-deleted** and refuses every
+other delete (`user-auth-identities-delete-on-closed-account.sql`).
+
+**Open:** how the purge gets past 34 delete guards, the update guards on the
+logs, and the `RESTRICT` history edges, without weakening them for anything
+else.
+
+- **Option A (recommended, default) — "each guard gains one purge arm: the owner
+  is closed AND the statement runs inside a declared purge; everything else is
+  refused as today."** The declared purge is a transaction-local marker the
+  purge sets and nothing else does (mechanism — a `SET LOCAL` setting, or one
+  SQL routine that owns the traversal — is /work's spec). A **drift guard** test
+  walks `pg_constraint`/`pg_trigger` and fails when any table reachable from an
+  account key is not covered by the purge, or carries a guard with no purge arm
+  (the catalog-walk pattern of `NoUrlColumnOutsideExternalDocumentsTest`, with
+  its anti-vacuity probe). The log tables' UPDATE guards gain the same arm so
+  the words can be blanked (D1).
+- **Option B — "disable triggers inside the purge transaction."** Precedent
+  exists in two migrations (`ALTER TABLE … DISABLE TRIGGER`). Consequences: a
+  blanket switch rather than a named exception; needs table-owner privilege on
+  the app role; nothing in the schema says WHICH deletes are legitimate, so the
+  drift guard can only check coverage, not intent.
+- **Option C — "drop the guards on account-owned tables."** Trades the audit
+  guarantee for simplicity; refused by the brief's own framing.
+
+Recommend A: it generalises what RFC 252 already shipped and makes the guarantee
+testable. Cost of being wrong: one migration per guarded table either way; the
+arm's shape is the only thing that would change.
+
+#### D4 — reset is not this beat
+
+**RFC 252 settled:** nothing (no reset exists at any level; tests use
+`TRUNCATE … CASCADE`).
+
+**Open:** whether a "start over" (keep the identity, erase the coaching state)
+rides along, and for whom.
+
+- **Option A (recommended, default) — "deferred: a follow-on slice, dev-only
+  first, reusing the purge's traversal minus the identity rows."** The launch
+  blocker stays as small as it can be; the traversal is written once with the
+  cut point (identity or everything) as a parameter so the follow-on is cheap.
+- **Option B — "build reset in the same slice."** Same traversal, one more door;
+  widens the launch-blocking change by an admin or user surface and a second set
+  of acceptance criteria.
+- **Option C — "user-facing 'start over' now."** A product feature (value before
+  ask, confirmation, what survives) that deserves its own gate.
+
+Recommend A. Reversible: the slice board can promote the follow-on any time.
+
+#### D5 — say "deleted", say what is kept, confirm when done
+
+**RFC 252 settled:** the door (Settings → Delete account, both roles, inline
+confirmation), the billing notice and manage-subscription control, the login
+screen's closed line and the Apple manual route, `/privacy` pointing at the
+door, "contact us" for access requests.
+
+**Open:** the words, the completion confirmation, what the operator sees, export
+first, the minors notice.
+
+- **Option A (recommended, default) — "the confirmation says deleted and erased
+  within 30 days, and what stays: a record that the account existed and when it
+  was deleted, your subscription record with Apple, and our spend ledger with
+  your words removed, plus the provider's retention; one email confirms when
+  erasure is complete; the operator sees only the tombstone afterwards; no
+  export in this beat; `/privacy` gains the one minors sentence and loses its
+  stale 'essay content'."** Apple's article asks for exactly the first three;
+  the receipt email is Apple's "confirmation when complete" and the only channel
+  that survives the account. No export: Apple does not require it and GDPR Art.
+  15/20 are separate rights that "contact us" already covers for now.
+- **Option B — "export first."** A "download my data" step before deletion.
+  Nothing exists; it is its own slice with its own format questions; it would
+  delay the launch blocker.
+- **Option C — "no confirmation email; the in-app notice states the window."**
+  Weaker reading of Apple's text; saves the receipt row in D1; a reviewer who
+  reads the article literally may ask for it.
+
+Recommend A. Cost of being wrong: copy — cheap to change, but it is the copy a
+reviewer reads.
+
+#### D6 — Apple's manual route stays; the subscription outlives the person
+
+**RFC 252 settled:** the subscription is kept, warned-not-blocked, and rebinds
+to a new account on the same Apple ID; the Apple identity row is deleted at
+close; the login screen shows Apple's manual route (TN3194); Google stores no
+token, so there is nothing to revoke.
+
+**Open:** programmatic Sign in with Apple token revocation; what the
+subscription row keeps after the purge.
+
+- **Option A (recommended, default) — "ship erasure without the revoke call; the
+  manual route stays; a follow-on slice starts exchanging the authorization code
+  at sign-in and storing the refresh token so revocation becomes possible for
+  accounts created after it. The subscription row stays bound to the tombstone
+  indefinitely, holding only Apple's identifiers, product, status and
+  periods."** The backend holds no refresh token today, so for every existing
+  account the only compliant routes are the manual one or a re-authentication
+  inside the delete flow; review enforcement of the call is undocumented; TN3194
+  itself offers the manual route. The subscription row keeps no personal data
+  beyond Apple's transaction id, and keeping it is what lets a returning
+  subscriber keep what they paid for.
+- **Option B — "re-authenticate inside Delete account: the Apple sheet appears,
+  the server exchanges the fresh code, revokes, then closes."** Compliant for
+  everyone today; adds an Apple sheet to the deletion flow for Apple users only,
+  a client-secret signing key in config, and an Apple round-trip the close must
+  survive failing. Build it if we want zero review risk on this point.
+- **Option C — "drop the subscription row at purge."** The transaction id is
+  arguably personal data once severed. Consequence: a returning subscriber
+  cannot subscribe on a new account until Apple's record expires (TOTAL-unique
+  id), and RFC 252's rebind is undone.
+
+Recommend A, stated honestly: it is the one open review risk this beat accepts.
+Cost of being wrong: a rejection on this point costs the follow-on slice built
+sooner, nothing irreversible.
+
+### Carried into every slice (not decisions — standing facts)
+
+- **The drift guard is the acceptance test** of the whole brief: a test that
+  walks the catalog and fails when a new account-linked table or guard is not
+  covered by the purge. The code wins over the research maps above; the test
+  derives the set from `pg_constraint`, never from this document.
+- **Order matters**: collect `llm_request_id`s from the five owner tables before
+  any owner row is removed; delete history rows before live rows; newest-first
+  through `claims.superseded_by_id`.
+- **The parent's conversation about a purged student** keeps rendering with the
+  student's name from its own text, and the student's tombstone id. The list the
+  parent's coach READS is gone with the student (the subject seam already
+  returns nothing for a closed student).
+- **Two operator facts outside the slice**: the live RDS backup window (not in
+  the repo; the notice says "backups age out within N days", so N must be read
+  from AWS), and journald retention on the instance.
