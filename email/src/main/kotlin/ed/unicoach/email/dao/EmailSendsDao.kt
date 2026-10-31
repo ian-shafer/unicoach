@@ -16,9 +16,10 @@ object EmailSendsDao {
       val sql =
         """
         INSERT INTO email_sends (
-          recipient_email, sender_email, subject, body, status, provider, provider_message_id, error_message
+          recipient_email, sender_email, subject, body, status, provider, provider_message_id, error_message,
+          user_id
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         RETURNING *
         """.trimIndent()
       session.prepareStatement(sql).use { stmt ->
@@ -30,6 +31,7 @@ object EmailSendsDao {
         stmt.setString(6, newSend.provider)
         stmt.setString(7, newSend.providerMessageId)
         stmt.setString(8, newSend.errorMessage)
+        stmt.setObject(9, newSend.userId?.value)
 
         stmt.executeQuery().use { rs ->
           if (rs.next()) {

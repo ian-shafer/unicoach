@@ -6,9 +6,11 @@ import ed.unicoach.common.models.ValidationResult
 import ed.unicoach.db.DatabaseConfig
 import ed.unicoach.db.dao.DaoException
 import ed.unicoach.db.dao.SqlSession
+import ed.unicoach.db.models.UserId
 import ed.unicoach.email.EmailBody
 import ed.unicoach.email.EmailSendStatus
 import ed.unicoach.email.EmailSubject
+import ed.unicoach.email.SentEmail
 import ed.unicoach.error.PermanentError
 import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.BeforeAll
@@ -18,6 +20,7 @@ import java.sql.Connection
 import java.sql.DriverManager
 import java.sql.PreparedStatement
 import java.sql.SQLException
+import java.util.UUID
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertNotNull
@@ -66,6 +69,7 @@ class EmailSendsDaoTest {
   private fun sentSend() =
     NewEmailSend(
       recipient = address("to@example.com"),
+      userId = null,
       sender = address("noreply@uni.coach"),
       subject = subject("Welcome"),
       body = body("Hello there"),
@@ -78,6 +82,7 @@ class EmailSendsDaoTest {
   private fun rejectedSend() =
     NewEmailSend(
       recipient = address("to@example.com"),
+      userId = null,
       sender = address("noreply@uni.coach"),
       subject = subject("Welcome"),
       body = body("Hello there"),
@@ -162,17 +167,54 @@ class EmailSendsDaoTest {
   }
 
   @Test
-  fun `omitting a NOT NULL column is rejected`() {
-    assertFailsWith<SQLException> {
-      connection.createStatement().use { stmt ->
-        stmt.execute(
-          """
-          INSERT INTO email_sends (recipient_email, sender_email, subject, status, provider)
-          VALUES ('to@example.com', 'noreply@uni.coach', 's', 'SENT', 'log')
-          """.trimIndent(),
-        )
+  fun `omitting the body of a live send is rejected by its present-while-live check`() {
+    val refused =
+      assertFailsWith<SQLException> {
+        connection.createStatement().use { stmt ->
+          stmt.execute(
+            """
+            INSERT INTO email_sends (recipient_email, sender_email, subject, status, provider)
+            VALUES ('to@example.com', 'noreply@uni.coach', 's', 'SENT', 'log')
+            """.trimIndent(),
+          )
+        }
+      }
+    assertTrue(
+      refused.message.orEmpty().contains("email_sends_body_present_while_live_check"),
+      "the refusal must name the presence check, got: ${refused.message}",
+    )
+  }
+
+  /** A real account row, so the send's foreign key has something to point at. */
+  private fun account(): UserId {
+    val id = UUID.randomUUID()
+    connection.prepareStatement("INSERT INTO users (id, email, name) VALUES (?, ?, ?)").use { stmt ->
+      stmt.setObject(1, id)
+      stmt.setString(2, "send-$id@example.com")
+      stmt.setString(3, "Send Recipient")
+      stmt.executeUpdate()
+    }
+    return UserId(id)
+  }
+
+  private fun userIdOf(sent: SentEmail): UUID? =
+    connection.prepareStatement("SELECT user_id FROM email_sends WHERE id = ?").use { stmt ->
+      stmt.setObject(1, sent.id)
+      stmt.executeQuery().use { rs ->
+        assertTrue(rs.next())
+        rs.getObject("user_id", UUID::class.java)
       }
     }
+
+  /** RFC 263: a logged send carries the account it went to, so account erasure can reach it. */
+  @Test
+  fun `a send recorded for an account carries its user id`() {
+    val recipient = account()
+    val forAccount = EmailSendsDao.insert(session, sentSend().copy(userId = recipient)).getOrThrow()
+    val forNoAccount = EmailSendsDao.insert(session, sentSend()).getOrThrow()
+
+    assertEquals(recipient.value, userIdOf(forAccount))
+    assertNull(userIdOf(forNoAccount), "a send to no account stores a NULL key")
   }
 
   @Test

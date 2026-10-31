@@ -384,6 +384,20 @@ class SupporterServiceTest {
       assertEquals(emptyList(), linkEndedEmails(), "nothing severed, nobody told")
     }
 
+  /** RFC 263: the link-ended job carries the recipient's account, so the logged send is reachable by erasure. */
+  @Test
+  fun `the link-ended job names the recipient's account`() {
+    runBlocking {
+      val avaUser = verify(createUser("Ava Okafor"))
+      val studentId = createStudent(avaUser)
+      val janeUser = verify(createUser("Jane Okafor"))
+      val janes = link(supporterOf(janeUser), studentId)
+
+      assertIs<UnlinkOutcome.Unlinked>(service.disconnectAsStudent(studentId, janes.id).getOrThrow())
+      assertEquals(listOf(janeUser.asString), SendEmailJobQueries.payloads(connection).map { it.userId })
+    }
+  }
+
   /** ASYNC_WORK.md rule 2: the email is required, so a failed enqueue undoes the disconnect. */
   @Test
   fun `a failed enqueue rolls the disconnect back`(): Unit =

@@ -146,9 +146,9 @@ test_convos_minimal_insert_no_name_rejected() {
     INSERT INTO convos (party, student_id) VALUES ('student', '$STUDENT_ID');
 EOF
   )
-  echo "$out" | grep -qi 'null value in column "name"' || { echo "output was: $out"; return 1; }
+  echo "$out" | grep -q 'convos_name_present_while_live_check' || { echo "output was: $out"; return 1; }
 }
-assert_success "convos: insert with only student_id (no name) rejected (NOT NULL, 23502)" test_convos_minimal_insert_no_name_rejected
+assert_success "convos: insert with only student_id (no name) rejected (present-while-live check, 23514)" test_convos_minimal_insert_no_name_rejected
 
 test_convos_minimal_insert_with_name() {
   local out
@@ -182,9 +182,9 @@ test_convos_name_null_rejected() {
     INSERT INTO convos (party, student_id, name) VALUES ('student', '$STUDENT_ID', NULL);
 EOF
   )
-  echo "$out" | grep -qi 'null value in column "name"' || { echo "output was: $out"; return 1; }
+  echo "$out" | grep -q 'convos_name_present_while_live_check' || { echo "output was: $out"; return 1; }
 }
-assert_success "convos: NULL name rejected (NOT NULL, 23502)" test_convos_name_null_rejected
+assert_success "convos: NULL name on a live convo rejected (present-while-live check, 23514)" test_convos_name_null_rejected
 
 test_convos_name_too_long() {
   local out

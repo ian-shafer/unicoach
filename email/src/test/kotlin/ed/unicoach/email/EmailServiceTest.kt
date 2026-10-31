@@ -107,7 +107,7 @@ class EmailServiceTest {
       val provider = FakeEmailProvider(ProviderResult.Sent("pm-1"))
       val service = EmailService(database, provider, config())
 
-      val result = service.send(address("to@example.com"), subject("Hi"), body("Body"))
+      val result = service.send(address("to@example.com"), subject("Hi"), body("Body"), userId = null)
 
       assertTrue(result.isSuccess)
       val sent = result.getOrThrow()
@@ -126,7 +126,7 @@ class EmailServiceTest {
       val provider = FakeEmailProvider(ProviderResult.Rejected("bad recipient"))
       val service = EmailService(database, provider, config())
 
-      val result = service.send(address("to@example.com"), subject("Hi"), body("Body"))
+      val result = service.send(address("to@example.com"), subject("Hi"), body("Body"), userId = null)
 
       assertTrue(result.isFailure)
       assertTrue(result.exceptionOrNull() is PermanentError)
@@ -144,7 +144,7 @@ class EmailServiceTest {
       val provider = FakeEmailProvider(ProviderResult.TransientFailure("timeout"))
       val service = EmailService(database, provider, config())
 
-      val result = service.send(address("to@example.com"), subject("Hi"), body("Body"))
+      val result = service.send(address("to@example.com"), subject("Hi"), body("Body"), userId = null)
 
       assertTrue(result.isFailure)
       assertTrue(result.exceptionOrNull() is TransientError)
@@ -157,7 +157,7 @@ class EmailServiceTest {
       val provider = FakeEmailProvider(ProviderResult.Sent("pm-1"))
       val service = EmailService(database, provider, config(defaultFrom = "not-an-email"))
 
-      val result = service.send(address("to@example.com"), subject("Hi"), body("Body"))
+      val result = service.send(address("to@example.com"), subject("Hi"), body("Body"), userId = null)
 
       assertTrue(result.isFailure)
       assertTrue(result.exceptionOrNull() is PermanentError)
@@ -172,7 +172,7 @@ class EmailServiceTest {
       val provider = FakeEmailProvider(ProviderResult.Sent("pm-1"))
       val service = EmailService(poisoned, provider, config())
 
-      val result = service.send(address("to@example.com"), subject("Hi"), body("Body"))
+      val result = service.send(address("to@example.com"), subject("Hi"), body("Body"), userId = null)
 
       assertTrue(result.isFailure)
       // The DAO/DB failure is propagated, not swallowed or remapped to an email exception.
@@ -186,7 +186,7 @@ class EmailServiceTest {
       val provider = FakeEmailProvider(ProviderResult.Sent("pm-1"))
       val service = EmailService(database, provider, config())
 
-      service.send(address("to@example.com"), subject("Subject line"), body("Body text"))
+      service.send(address("to@example.com"), subject("Subject line"), body("Body text"), userId = null)
 
       val captured = provider.captured
       assertNotNull(captured)

@@ -84,6 +84,7 @@ class LinkEndedNotice(
         to = recipient.email.value,
         template = EmailTemplate.LINK_ENDED,
         context = LinkEndedContext(recipientName = recipient.name.value, otherName = other.name.value).asJson(),
+        userId = recipient.id.asString,
       )
     when (val result = queueService.enqueue(session, JobType.SEND_EMAIL, payload.asJson())) {
       is EnqueueResult.Success -> Unit

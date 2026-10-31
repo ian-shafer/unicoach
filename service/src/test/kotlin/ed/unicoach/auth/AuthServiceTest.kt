@@ -16,6 +16,7 @@ import ed.unicoach.db.models.PersonName
 import ed.unicoach.db.models.TokenHash
 import ed.unicoach.util.Argon2Hasher
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.runTest
 import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.BeforeAll
@@ -26,6 +27,7 @@ import java.sql.DriverManager
 import java.sql.PreparedStatement
 import java.time.Duration
 import kotlin.test.assertEquals
+import kotlin.test.assertIs
 import kotlin.test.assertTrue
 
 @OptIn(ExperimentalCoroutinesApi::class)
@@ -422,6 +424,25 @@ class AuthServiceTest {
       assertEquals(1, sendEmailJobsTo(email), "Registration must enqueue exactly one SEND_EMAIL job to the registrant")
       assertEquals(0, countRows("SELECT COUNT(*) FROM email_sends"), "Registration must send nothing inline (no email_sends row)")
     }
+
+  /**
+   * RFC 263: the logged send must be reachable by account erasure, so the job
+   * carries the account it goes to -- on registration and after an email change,
+   * when the address is new but the account is the same.
+   */
+  @Test
+  fun `the verification job names the recipient's account`() {
+    runBlocking {
+      val email = "verify_account@example.com"
+      val reg = authService.register(email, "Verify Account", "Password123", null, Duration.ofDays(1), null, null)
+      val user = (reg.getOrThrow() as RegisterResult.Success).user
+      assertEquals(listOf(user.id.asString), SendEmailJobQueries.payloads(connection).filter { it.to == email }.map { it.userId })
+
+      val newEmail = "verify_account_new@example.com"
+      assertIs<ChangeEmailResult.Success>(authService.changeEmail(user, newEmail).getOrThrow())
+      assertEquals(listOf(user.id.asString), SendEmailJobQueries.payloads(connection).filter { it.to == newEmail }.map { it.userId })
+    }
+  }
 
   @Test
   fun `register rolls back the user and token when the enqueue fails`() =

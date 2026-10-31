@@ -61,9 +61,14 @@ class EmailVerificationService(
    * fails. Builds the [VerificationEmailContext] with the raw token and serializes
    * an [EmailJobPayload]; the worker renders the link and transmits. Performs no
    * rendering.
+   *
+   * [to] is the point-in-time address the token is for, which after an email
+   * change is the NEW address; [userId] is the account it belongs to, carried so
+   * the logged send is reachable by account erasure (RFC 263).
    */
   fun enqueue(
     session: SqlSession,
+    userId: UserId,
     to: EmailAddress,
     rawToken: String,
   ): Result<Unit> {
@@ -72,6 +77,7 @@ class EmailVerificationService(
         to = to.value,
         template = EmailTemplate.EMAIL_VERIFICATION,
         context = VerificationEmailContext(verifyToken = rawToken).asJson(),
+        userId = userId.asString,
       )
     return when (val result = queueService.enqueue(session, JobType.SEND_EMAIL, payload.asJson())) {
       is EnqueueResult.Success -> Result.success(Unit)
@@ -94,7 +100,7 @@ class EmailVerificationService(
       database.withConnection { session ->
         VerificationTokensDao.consumeAllForUser(session, user.id).getOrThrow()
         val rawToken = issueToken(session, user.id).getOrThrow()
-        enqueue(session, user.email, rawToken).getOrThrow()
+        enqueue(session, user.id, user.email, rawToken).getOrThrow()
         ResendResult.Sent
       }
     }

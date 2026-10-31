@@ -19,6 +19,7 @@ import ed.unicoach.email.EmailTemplate
 import ed.unicoach.queue.QueueService
 import ed.unicoach.util.TokenGenerator
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.runTest
 import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.BeforeAll
@@ -29,6 +30,7 @@ import java.sql.DriverManager
 import java.sql.PreparedStatement
 import java.time.Duration
 import kotlin.test.assertEquals
+import kotlin.test.assertIs
 import kotlin.test.assertTrue
 
 @OptIn(ExperimentalCoroutinesApi::class)
@@ -131,7 +133,7 @@ class EmailVerificationServiceTest {
       val rawToken =
         database.withConnection { session ->
           val token = svc.issueToken(session, user.id).getOrThrow()
-          svc.enqueue(session, user.email, token).getOrThrow()
+          svc.enqueue(session, user.id, user.email, token).getOrThrow()
           token
         }
 
@@ -153,7 +155,7 @@ class EmailVerificationServiceTest {
         runCatching {
           database.withConnection { session ->
             svc.issueToken(session, user.id).getOrThrow()
-            svc.enqueue(session, user.email, "tok").getOrThrow()
+            svc.enqueue(session, user.id, user.email, "tok").getOrThrow()
           }
         }
 
@@ -195,4 +197,14 @@ class EmailVerificationServiceTest {
       )
       assertEquals(1, sendEmailJobs().size, "Resend must enqueue exactly one SEND_EMAIL job")
     }
+
+  /** RFC 263: the job carries the account it goes to, so the logged send is reachable by erasure. */
+  @Test
+  fun `the resent verification job names the recipient's account`() {
+    runBlocking {
+      val user = createUser()
+      assertIs<ResendResult.Sent>(service().resend(user).getOrThrow())
+      assertEquals(listOf(user.id.asString), sendEmailJobs().map { it.userId })
+    }
+  }
 }

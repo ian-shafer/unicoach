@@ -16,6 +16,7 @@ class EmailJobPayloadTest {
         to = "user@example.com",
         template = EmailTemplate.EMAIL_VERIFICATION,
         context = context,
+        userId = null,
       )
 
     val decoded = payload.asJson().deserialize<EmailJobPayload>()

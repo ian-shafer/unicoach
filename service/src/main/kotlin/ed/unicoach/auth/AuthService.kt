@@ -151,7 +151,7 @@ class AuthService(
         // enqueue aborts the transaction: no user/token is committed and the route
         // surfaces it as a 500 via getOrThrow().
         val verificationRawToken = emailVerificationService.issueToken(session, user.id).getOrThrow()
-        emailVerificationService.enqueue(session, user.email, verificationRawToken).getOrThrow()
+        emailVerificationService.enqueue(session, user.id, user.email, verificationRawToken).getOrThrow()
 
         Result.success(RegisterResult.Success(user, newToken))
       }
@@ -202,7 +202,7 @@ class AuthService(
         // rewrite. A failed enqueue aborts the transaction (surfaced as a 500).
         VerificationTokensDao.consumeAllForUser(session, user.id).getOrThrow()
         val verificationRawToken = emailVerificationService.issueToken(session, user.id).getOrThrow()
-        emailVerificationService.enqueue(session, rewritten.email, verificationRawToken).getOrThrow()
+        emailVerificationService.enqueue(session, rewritten.id, rewritten.email, verificationRawToken).getOrThrow()
 
         Result.success(ChangeEmailResult.Success(rewritten))
       }

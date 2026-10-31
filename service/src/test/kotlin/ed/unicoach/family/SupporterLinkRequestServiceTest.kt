@@ -218,6 +218,18 @@ class SupporterLinkRequestServiceTest {
     )
   }
 
+  /** RFC 263: the link-requested job carries the student's account, so the logged send is reachable by erasure. */
+  @Test
+  fun `the link-requested job names the recipient's account`() {
+    val ava = sharedStudent()
+    claim(user("Sam Stranger"), ava.token)
+
+    assertEquals(
+      listOf(ava.user.asString),
+      SendEmailJobQueries.payloads(connection).filter { it.template == EmailTemplate.LINK_REQUESTED }.map { it.userId },
+    )
+  }
+
   @Test
   fun `the student claiming their own report makes nothing`() {
     val ava = sharedStudent()

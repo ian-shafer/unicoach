@@ -6,7 +6,9 @@ import ed.unicoach.db.Database
 import ed.unicoach.db.DatabaseConfig
 import ed.unicoach.queue.JobResult
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.runTest
+import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import org.junit.jupiter.api.AfterAll
@@ -101,6 +103,7 @@ class EmailSendHandlerTest {
       to = to,
       template = EmailTemplate.EMAIL_VERIFICATION,
       context = JsonObject(mapOf("verifyToken" to JsonPrimitive(token))),
+      userId = null,
     ).asJson()
 
   private fun countRows(): Int {
@@ -161,6 +164,84 @@ class EmailSendHandlerTest {
       assertTrue(message.contains("EMAIL_VERIFICATION"), "Message must carry the template, got: $message")
       assertTrue(message.contains("bad recipient"), "Message must preserve the provider reason, got: $message")
     }
+
+  private fun account(): java.util.UUID {
+    val id = java.util.UUID.randomUUID()
+    DriverManager.getConnection(jdbcUrl, dbUser, dbPassword ?: "").use { c ->
+      c.prepareStatement("INSERT INTO users (id, email, name) VALUES (?, ?, ?)").use { stmt ->
+        stmt.setObject(1, id)
+        stmt.setString(2, "handler-$id@example.com")
+        stmt.setString(3, "Handler Recipient")
+        stmt.executeUpdate()
+      }
+    }
+    return id
+  }
+
+  private fun loggedUserIds(): List<java.util.UUID?> {
+    DriverManager.getConnection(jdbcUrl, dbUser, dbPassword ?: "").use { c ->
+      c.prepareStatement("SELECT user_id FROM email_sends").use { stmt ->
+        stmt.executeQuery().use { rs ->
+          return buildList { while (rs.next()) add(rs.getObject("user_id", java.util.UUID::class.java)) }
+        }
+      }
+    }
+  }
+
+  /** RFC 263: the worker passes the payload's account through to the logged send, with no lookup. */
+  @Test
+  fun `a job naming an account logs the send under it`() {
+    runBlocking {
+      val recipient = account()
+      val payload =
+        EmailJobPayload(
+          to = "user@example.com",
+          template = EmailTemplate.EMAIL_VERIFICATION,
+          context = JsonObject(mapOf("verifyToken" to JsonPrimitive("tok"))),
+          userId = recipient.toString(),
+        ).asJson()
+
+      assertEquals(JobResult.Success, handler(FakeEmailProvider(ProviderResult.Sent("pm-1"))).execute(payload))
+      assertEquals(listOf<java.util.UUID?>(recipient), loggedUserIds())
+    }
+  }
+
+  /**
+   * RFC 263: a job queued before the deploy has no `userId` field at all. It
+   * must still decode and send, logged with a NULL key.
+   */
+  @Test
+  fun `a queued job without a user id is still sent`() {
+    runBlocking {
+      val queuedBeforeDeploy =
+        Json.decodeFromString<JsonObject>(
+          """{"to":"user@example.com","template":"EMAIL_VERIFICATION","context":{"verifyToken":"tok"}}""",
+        )
+
+      assertEquals(JobResult.Success, handler(FakeEmailProvider(ProviderResult.Sent("pm-1"))).execute(queuedBeforeDeploy))
+      assertEquals(listOf<java.util.UUID?>(null), loggedUserIds())
+    }
+  }
+
+  /** A malformed account id is a poison message: sending would log mail erasure cannot reach. */
+  @Test
+  fun `a job naming a malformed account id returns PermanentFailure and sends nothing`() {
+    runBlocking {
+      val provider = FakeEmailProvider(ProviderResult.Sent("pm-1"))
+      val payload =
+        EmailJobPayload(
+          to = "user@example.com",
+          template = EmailTemplate.EMAIL_VERIFICATION,
+          context = JsonObject(mapOf("verifyToken" to JsonPrimitive("tok"))),
+          userId = "not-a-uuid",
+        ).asJson()
+
+      val failure = assertIs<JobResult.PermanentFailure>(handler(provider).execute(payload))
+      assertTrue(failure.message.contains("not-a-uuid"), "Message must carry the bad id, got: ${failure.message}")
+      assertNull(provider.captured, "No send may be attempted for a malformed account id")
+      assertEquals(0, countRows())
+    }
+  }
 
   @Test
   fun `transient failure returns RetriableFailure and writes no row`() =
@@ -265,6 +346,7 @@ class EmailSendHandlerTest {
           to = "user@example.com",
           template = EmailTemplate.EMAIL_VERIFICATION,
           context = JsonObject(mapOf("unexpectedField" to JsonPrimitive("sentinel-value"))),
+          userId = null,
         ).asJson()
       val result = handler(provider, renderers = listOf(failingRenderer)).execute(payload)
 
