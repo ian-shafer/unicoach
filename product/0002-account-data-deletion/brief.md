@@ -565,3 +565,13 @@ _(one line per landed slice: ID, RFC, code SHA, date, one-line what.)_
       `ErasureClassificationTest` (rules 1–3). Approval: sessions and
       user_auth_identities keep their shape (hard-deleted, D10); the
       not-personal list is keyed by `table.column`.
+    deletion/02/the-deleted-tables LANDED as RFC 264 (main@c1476182,
+      2026-11-01) — `deleted_users` / `deleted_students` / `deleted_supporters`
+      (append-only, id REFERENCES the live root, UNIQUE user_id), a
+      `deleted_<root>_id` sibling on 27 keys across 24 tables and 11 history
+      copies, each pair one CHECK; spend views read either key; the
+      subscription rebind also rebinds from an erased account; drift rule 4.
+      Approval (Ian, 2026-11-01): `supporter_invites` exempt (D10 deletes it);
+      the roots' own history ids exempt; nullable keys
+      (`email_sends.user_id`, `convos.supporter_id`) pair at-most-one; names
+      kept (`deleted_*`, `erased_at`, `closed_at`); no sibling indexes.
