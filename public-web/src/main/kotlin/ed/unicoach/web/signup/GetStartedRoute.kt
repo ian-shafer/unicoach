@@ -8,6 +8,7 @@ import ed.unicoach.web.auth.STUDENT_SIGNUP_PATH
 import ed.unicoach.web.auth.getVerified
 import ed.unicoach.web.auth.respondGateRedirect
 import ed.unicoach.web.render.respondGetStartedPage
+import ed.unicoach.web.render.signedInNav
 import io.ktor.server.routing.Route
 
 /**
@@ -28,7 +29,7 @@ internal fun Route.getStartedRoute(
     if (studentService.getStudentForUser(caller.user.id).getOrThrow() != null) {
       call.respondGateRedirect(CHAT_PATH)
     } else {
-      call.respondGetStartedPage()
+      call.respondGetStartedPage(caller.signedInNav)
     }
   }
 }

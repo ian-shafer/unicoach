@@ -7,7 +7,11 @@ import ed.unicoach.db.models.Session
 import ed.unicoach.db.models.SessionId
 import ed.unicoach.db.models.TokenHash
 import ed.unicoach.db.models.UserId
+import ed.unicoach.db.session.SessionMetadata
+import ed.unicoach.db.session.SessionMetadataJson
+import org.postgresql.util.PSQLException
 import java.sql.ResultSet
+import java.sql.SQLException
 import java.util.UUID
 
 object SessionsDao :
@@ -15,6 +19,69 @@ object SessionsDao :
   Listable<Session>,
   Creatable<NewSession, Session>,
   Destroyable<SessionId> {
+  /** The column's size CHECK: the cap's one home (RFC 265). */
+  private const val METADATA_SIZE_CHECK = "sessions_metadata_size_check"
+
+  /**
+   * A `metadata` write's SQLSTATE mapping: the size CHECK becomes
+   * [SessionMetadataTooLargeException], told apart from any other `23514` by its
+   * constraint name, and carrying the row ([id], `null` for an INSERT) and the
+   * size of the [printed] value it refused; everything else keeps the DAO's
+   * default mapping.
+   */
+  private fun mapMetadataWriteError(
+    e: SQLException,
+    id: SessionId?,
+    printed: String?,
+  ): Exception {
+    val serverError = (e as? PSQLException)?.serverErrorMessage
+    return if (e.sqlState == SQLSTATE_CHECK_VIOLATION && serverError?.constraint == METADATA_SIZE_CHECK) {
+      SessionMetadataTooLargeException(METADATA_SIZE_CHECK, id, printed?.toByteArray(Charsets.UTF_8)?.size ?: 0)
+    } else {
+      mapDatabaseError(e)
+    }
+  }
+
+  /**
+   * The live-row predicate of a metadata write, stated once: the
+   * UPDATE filters on it, and the existence probe that tells a version race
+   * from a revoked row asks the same question. Two copies could drift apart,
+   * and a probe looser than its UPDATE would retry a row it can never write.
+   */
+  private const val LIVE_SESSION = "is_revoked = false"
+
+  /** The marker a corrupt `metadata` cell's exception carries in place of the cell. */
+  private const val WITHHELD_METADATA = "<withheld: sessions.metadata is pii.jsonb>"
+
+  /**
+   * The stored metadata as a [SessionMetadata]. SQL `NULL` is the default
+   * instance: proto3 has no other way to say "nothing set", and every row
+   * minted before RFC 265 holds `NULL`.
+   *
+   * Anything the strict parser refuses is row corruption (D-E). The raw value is
+   * WITHHELD from the exception: the column is `pii.jsonb`, a draft holds what a
+   * family typed, and the CSRF token is a secret. So is the parser's own
+   * message, which can quote the offending JSON: the cause is chained as a
+   * [WithheldMessageException], which keeps the parser exception's type and
+   * stack and drops its text. The row id is what finds the cell.
+   */
+  private fun mapMetadata(
+    raw: String?,
+    id: SessionId,
+  ): SessionMetadata {
+    if (raw == null) return SessionMetadata.getDefaultInstance()
+    return try {
+      SessionMetadataJson.parse(raw)
+    } catch (e: com.google.protobuf.InvalidProtocolBufferException) {
+      throw CorruptPersistedValueException(
+        WITHHELD_METADATA,
+        ValidationError.InvalidFormat(expected = "canonical proto3 JSON of a SessionMetadata"),
+        location = "sessions.metadata id=[${id.value}]",
+        cause = WithheldMessageException(e),
+      )
+    }
+  }
+
   private fun mapSession(rs: ResultSet): Session {
     val id = SessionId(UUID.fromString(rs.getString("id")))
     val version = rs.getInt("version")
@@ -36,7 +103,7 @@ object SessionsDao :
             ValidationError.InvalidFormat(expected = "a known LoginMethod wire value"),
           )
       }
-    val metadata = rs.getString("metadata")
+    val metadata = mapMetadata(rs.getString("metadata"), id)
     val userAgent = rs.getString("user_agent")
     val initialIp = rs.getString("initial_ip")
     val expiresAt = rs.getInstant("expires_at")
@@ -160,6 +227,7 @@ object SessionsDao :
       VALUES (?, ?, ?, ?, ?, ?::jsonb, NOW() + (${input.expiration.seconds} * INTERVAL '1 second'))
       RETURNING *
       """.trimIndent()
+    val metadata = SessionMetadataJson.printOrNull(input.metadata)
     return session.mutateReturning(
       sql,
       bind = { stmt ->
@@ -168,12 +236,19 @@ object SessionsDao :
         stmt.setBytes(3, input.tokenHash.value)
         stmt.setStringOrNull(4, input.userAgent)
         stmt.setStringOrNull(5, input.initialIp)
-        stmt.setStringOrNull(6, input.metadata)
+        stmt.setStringOrNull(6, metadata)
       },
       map = ::mapSession,
+      mapError = { mapMetadataWriteError(it, null, metadata) },
     )
   }
 
+  /**
+   * Rebinds a live session to [newUserId] under a new token. [newMetadata]
+   * REPLACES the row's metadata rather than keeping it: the row is changing
+   * hands, and the previous holder's form drafts and CSRF token are not the new
+   * holder's to inherit (RFC 265).
+   */
   fun remintToken(
     session: SqlSession,
     id: SessionId,
@@ -182,14 +257,17 @@ object SessionsDao :
     newTokenHash: ByteArray,
     newExpirationSeconds: Long,
     newLoginMethod: LoginMethod,
+    newMetadata: SessionMetadata,
   ): Result<Session> {
     val sql =
       """
       UPDATE sessions
-      SET version = ?, user_id = ?, login_method = ?, token_hash = ?, expires_at = NOW() + (? * INTERVAL '1 second')
+      SET version = ?, user_id = ?, login_method = ?, token_hash = ?, metadata = ?::jsonb,
+          expires_at = NOW() + (? * INTERVAL '1 second')
       WHERE id = ? AND version = ? AND is_revoked = false
       RETURNING *
       """.trimIndent()
+    val metadata = SessionMetadataJson.printOrNull(newMetadata)
     return session.mutateReturning(
       sql,
       bind = { stmt ->
@@ -197,12 +275,55 @@ object SessionsDao :
         stmt.setObject(2, newUserId.value)
         stmt.setString(3, newLoginMethod.wire)
         stmt.setBytes(4, newTokenHash)
-        stmt.setLong(5, newExpirationSeconds)
-        stmt.setObject(6, id.value)
-        stmt.setInt(7, currentVersion)
+        stmt.setStringOrNull(5, metadata)
+        stmt.setLong(6, newExpirationSeconds)
+        stmt.setObject(7, id.value)
+        stmt.setInt(8, currentVersion)
       },
       map = ::mapSession,
+      mapError = { mapMetadataWriteError(it, id, metadata) },
       onNoRow = { NotFoundException("Session could not be reminted either due to version mismatch or not found") },
+    )
+  }
+
+  /**
+   * Replaces a live session's [metadata] at [currentVersion] (RFC 265).
+   *
+   * It never touches `expires_at`, so saving a draft never keeps a session
+   * alive. It bumps `version` like `extendExpiry` does, so the two serialize
+   * through the row's optimistic version rather than one overwriting the other.
+   *
+   * Failures: [SessionMetadataTooLargeException] when the size CHECK refuses the
+   * value; [ConcurrentModificationException] when the row is live at another
+   * version; [NotFoundException] when it is revoked or gone.
+   */
+  fun writeMetadata(
+    session: SqlSession,
+    id: SessionId,
+    currentVersion: Int,
+    metadata: SessionMetadata,
+  ): Result<Session> {
+    val sql =
+      """
+      UPDATE sessions
+      SET version = ?, metadata = ?::jsonb
+      WHERE id = ? AND version = ? AND $LIVE_SESSION
+      RETURNING *
+      """.trimIndent()
+    val printed = SessionMetadataJson.printOrNull(metadata)
+    return session.occUpdate(
+      table = "sessions",
+      sql = sql,
+      bind = { stmt ->
+        stmt.setInt(1, currentVersion + 1)
+        stmt.setStringOrNull(2, printed)
+        stmt.setObject(3, id.value)
+        stmt.setInt(4, currentVersion)
+      },
+      idValue = id.value,
+      map = ::mapSession,
+      mapError = { mapMetadataWriteError(it, id, printed) },
+      liveCondition = LIVE_SESSION,
     )
   }
 

@@ -33,6 +33,7 @@ import ed.unicoach.web.render.ShellNav
 import ed.unicoach.web.render.chatNoticeHtml
 import ed.unicoach.web.render.respondChatPage
 import ed.unicoach.web.render.respondNotFoundPage
+import ed.unicoach.web.render.signedInNav
 import io.ktor.http.ContentType
 import io.ktor.http.HttpHeaders
 import io.ktor.http.withCharset
@@ -95,16 +96,16 @@ internal fun Route.chatRoutes(
       this.supporterService = supporterService
     }
 
-    getVerified("", authService, sessionConfig) {
-      call.respondChatPage(action = CHAT_PATH, exchanges = emptyList())
+    getVerified("", authService, sessionConfig) { caller ->
+      call.respondChatPage(action = CHAT_PATH, exchanges = emptyList(), nav = caller.signedInNav)
     }
 
     postVerified("", authService, sessionConfig) {
       startConversation(coachingService, call.chatStudent())
     }
 
-    getVerified("/{$CONVO_ID_PARAM}", authService, sessionConfig) {
-      showConversation(coachingService, call.chatStudent())
+    getVerified("/{$CONVO_ID_PARAM}", authService, sessionConfig) { caller ->
+      showConversation(coachingService, call.chatStudent(), caller.signedInNav)
     }
 
     postVerified("/{$CONVO_ID_PARAM}", authService, sessionConfig) {
@@ -117,8 +118,9 @@ internal fun Route.chatRoutes(
 private suspend fun RoutingContext.showConversation(
   coachingService: CoachingService,
   student: Student,
+  nav: ShellNav.SignedIn,
 ) {
-  val convoId = pathConvoId() ?: return call.respondNotFoundPage(ShellNav.SignedIn)
+  val convoId = pathConvoId() ?: return call.respondNotFoundPage(nav)
   when (val outcome = coachingService.listTurns(student.id, convoId).getOrThrow()) {
     is ListTurnsResult.Found -> {
       call.respondChatPage(
@@ -127,11 +129,12 @@ private suspend fun RoutingContext.showConversation(
           outcome.exchanges.map { exchange ->
             ChatExchange(ConvoContent.renderText(exchange.userContent), ConvoContent.renderText(exchange.finalContent))
           },
+        nav = nav,
       )
     }
 
     ListTurnsResult.NotFound -> {
-      call.respondNotFoundPage(ShellNav.SignedIn)
+      call.respondNotFoundPage(nav)
     }
   }
 }

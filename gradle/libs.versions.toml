@@ -15,6 +15,9 @@ commons-csv = "1.14.1"
 cron-utils = "9.2.1"
 bouncycastle = "1.82"
 jsoup = "1.21.1"
+# The protobuf Java runtime (RFC 265). Its version is "4.<protoc version>":
+# :db's generateProto derives the protoc it requires from this one value.
+protobuf = "4.34.1"
 
 [libraries]
 ktor-server-core = { module = "io.ktor:ktor-server-core", version.ref = "ktor" }
@@ -56,6 +59,8 @@ cron-utils = { module = "com.cronutils:cron-utils", version.ref = "cron-utils" }
 bouncycastle-pkix = { module = "org.bouncycastle:bcpkix-jdk18on", version.ref = "bouncycastle" }
 bouncycastle-prov = { module = "org.bouncycastle:bcprov-jdk18on", version.ref = "bouncycastle" }
 jsoup = { module = "org.jsoup:jsoup", version.ref = "jsoup" }
+protobuf-java = { module = "com.google.protobuf:protobuf-java", version.ref = "protobuf" }
+protobuf-java-util = { module = "com.google.protobuf:protobuf-java-util", version.ref = "protobuf" }
 
 [plugins]
 ktor = { id = "io.ktor.plugin", version.ref = "ktor" }

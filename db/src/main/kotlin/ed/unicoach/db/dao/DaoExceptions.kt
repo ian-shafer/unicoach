@@ -3,6 +3,7 @@ package ed.unicoach.db.dao
 import ed.unicoach.common.models.ValidationError
 import ed.unicoach.db.models.AnswerStatus
 import ed.unicoach.db.models.Id
+import ed.unicoach.db.models.SessionId
 import ed.unicoach.error.PermanentError
 import ed.unicoach.error.TransientError
 
@@ -34,7 +35,7 @@ private const val SQLSTATE_RESTRICT_VIOLATION = "23001"
 internal val FOREIGN_KEY_SQLSTATES = setOf(SQLSTATE_FOREIGN_KEY_VIOLATION, SQLSTATE_RESTRICT_VIOLATION)
 
 internal const val SQLSTATE_UNIQUE_VIOLATION = "23505"
-private const val SQLSTATE_CHECK_VIOLATION = "23514"
+internal const val SQLSTATE_CHECK_VIOLATION = "23514"
 
 /**
  * `raise_exception` — the state a bare PL/pgSQL `RAISE EXCEPTION` produces, and
@@ -202,6 +203,36 @@ class ActiveSupporterLinkException(
   detail: String? = null,
 ) : ConstraintViolationException(cause, constraint, detail, "An active link already joins this supporter and student")
 
+/**
+ * A `sessions.metadata` write the column's size CHECK refused (RFC 265). Nothing
+ * was written: the row keeps its previous metadata and version.
+ *
+ * Its own type, distinguished by constraint name, because the caller's answer
+ * differs from every other write failure: the family keeps what they typed on
+ * screen and is told it could not be kept. The cap's number lives only in that
+ * CHECK; Kotlin reads the database's refusal and never restates it.
+ *
+ * It carries the [constraint] name, the row and the refused value's size, and
+ * NOT the driver exception or its DETAIL: for a CHECK, PostgreSQL's DETAIL is
+ * "Failing row contains (...)", the whole row — the session's token hash and up
+ * to the cap of what a family typed. Which rule, which session and how big is
+ * what an operator tuning the cap or hunting a runaway form needs.
+ */
+class SessionMetadataTooLargeException(
+  val constraint: String,
+  /** The session whose write was refused, or `null` for the INSERT that would have created it. */
+  val sessionId: SessionId?,
+  /**
+   * The refused value's canonical JSON in UTF-8 bytes, as sent. The CHECK
+   * measures the value as STORED, after TOAST compression, so this is the
+   * uncompressed size and not the figure the cap compared.
+   */
+  val printedBytes: Int,
+) : DaoException(
+    "Session [${sessionId?.value ?: "new"}] metadata of [$printedBytes] printed bytes exceeds the [$constraint] cap; nothing was written",
+  ),
+  PermanentError
+
 class DatabaseException(
   cause: Throwable,
 ) : DaoException("General database error", cause),
@@ -236,8 +267,31 @@ class CorruptPersistedValueException(
    * without parsing this message back out of prose.
    */
   val location: String? = null,
-) : DaoException("Persisted value [$value] failed reconstruction: $error" + (location?.let { " at $it" } ?: "")),
+  /** The reader's own failure, when one raised it: chained, so its type and stack reach the log. */
+  cause: Throwable? = null,
+) : DaoException("Persisted value [$value] failed reconstruction: $error" + (location?.let { " at $it" } ?: ""), cause),
   PermanentError
+
+/**
+ * Stands in for [original] in a cause chain when its message may quote a
+ * withheld value — a parser's diagnostic that echoes the offending JSON of a
+ * `pii.jsonb` cell, say. It keeps what a stack trace is read for, the type and
+ * where it was thrown, and drops the text; [original]'s own causes are wrapped
+ * the same way, so nothing further down the chain re-quotes it.
+ */
+class WithheldMessageException(
+  original: Throwable,
+) : RuntimeException(
+    "[${original.javaClass.name}] message withheld: it can quote the stored value",
+    original.cause?.let(::WithheldMessageException),
+  ) {
+  /** The original type's fully qualified name, as data. */
+  val originalType: String = original.javaClass.name
+
+  init {
+    stackTrace = original.stackTrace
+  }
+}
 
 /**
  * A persisted value no domain type reads, as the house's LOCATED exception --

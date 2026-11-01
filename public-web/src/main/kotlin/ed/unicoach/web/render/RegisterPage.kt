@@ -99,6 +99,8 @@ suspend fun ApplicationCall.respondRegisterPage(
       authFormCard(
         heading = REGISTER_HEADING,
         action = REGISTER_PATH,
+        // A signed-out door: there is no session whose token it could echo.
+        csrf = null,
         error =
           when (state) {
             RegisterFormState.Fresh, is RegisterFormState.Invalid -> null

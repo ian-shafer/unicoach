@@ -34,6 +34,13 @@
             # on the python3 above. See bin/test-fuzz.
             pkgs.uv
 
+            # protoc — generates the Java message classes for :db's committed
+            # .proto schema of record (RFC 265). :db's generateProto task
+            # checks this binary's version against the protobuf runtime in
+            # gradle/libs.versions.toml and fails the build when they differ,
+            # so a nixpkgs bump cannot silently emit code the runtime refuses.
+            pkgs.protobuf
+
             # Deno — replaces node:20-alpine + npx prettier for Markdown formatting.
             pkgs.deno
 

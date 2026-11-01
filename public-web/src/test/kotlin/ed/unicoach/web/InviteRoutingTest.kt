@@ -298,6 +298,21 @@ class InviteRoutingTest {
       val supporterUser = WebAuthTestSupport.seedUser("parent-${WebAuthTestSupport.uniqueEmail()}", name = "Parent Jane")
       val session = WebAuthTestSupport.login(supporterUser.email.value)
 
+      // The accept form is a signed-in POST, so it carries the session's CSRF
+      // token, and a POST without it accepts nothing (RFC 265).
+      val page = client.get("/invite?token=$token") { header(HttpHeaders.Cookie, WebAuthTestSupport.cookieHeader(session)) }.bodyAsText()
+      assertTrue(page.contains("name=\"_csrf\" value=\"${WebAuthTestSupport.csrfTokenFor(session)}\""), "the accept form carries no token")
+      val tokenless =
+        formPost(
+          "/invite",
+          form = Parameters.build { append("token", token) },
+          sessionToken = session,
+          client = noFollowClient(),
+          csrf = null,
+        )
+      assertEquals(HttpStatusCode.Forbidden, tokenless.status)
+      assertEquals(0, WebAuthTestSupport.supporterLinkCount(), "a token-less accept linked")
+
       val response =
         formPost(
           "/invite",

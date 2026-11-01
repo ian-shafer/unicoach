@@ -39,6 +39,14 @@ object ChatClientContract {
   /** The header that marks a body as one of the server's own notices — the only body `chat.ts` inserts. */
   val noticeHeader: String = root.getValue("notice").jsonObject.string("header")
 
+  private val csrf: JsonObject = root.getValue("csrf").jsonObject
+
+  /** The composer's hidden field `chat.ts` reads the session's CSRF token from (RFC 265). */
+  val csrfField: String = csrf.string("field")
+
+  /** The request header `chat.ts` sends that token in. */
+  val csrfHeader: String = csrf.string("header")
+
   /** The classes `chat.ts` builds that the stylesheet must style. */
   val styledClientClasses: List<String> =
     root

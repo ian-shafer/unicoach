@@ -161,15 +161,16 @@ suspend fun ApplicationCall.respondVerifyEmailResult(
  */
 suspend fun ApplicationCall.respondVerifyEmailHold(
   user: User,
+  nav: ShellNav.SignedIn,
   notice: WebNotice? = null,
 ) {
   respondHtml {
-    siteLayout("Verify email", nav = ShellNav.SignedIn) {
+    siteLayout("Verify email", nav = nav) {
       section("verify-email") {
         h1 { +VERIFY_HOLD_HEADING }
         p { +"We sent a verification link to ${user.email.value}. Open it to finish setting up your account." }
         notice(notice)
-        form(action = RESEND_VERIFICATION_PATH, method = FormMethod.post) {
+        signedInForm(action = RESEND_VERIFICATION_PATH, csrf = nav.csrf) {
           button(type = ButtonType.submit) { +"Send it again" }
         }
         p { +"Signed in with the wrong address? Change it from your account page once you have verified, or sign out and register again." }

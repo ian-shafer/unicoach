@@ -15,6 +15,7 @@ import ed.unicoach.web.ChatTestSupport.sendMessage
 import ed.unicoach.web.ChatTestSupport.signedInStudent
 import ed.unicoach.web.ChatTestSupport.textReplay
 import ed.unicoach.web.WebAuthTestSupport.count
+import ed.unicoach.web.auth.CSRF_HEADER
 import ed.unicoach.web.render.CHAT_MESSAGE_FIELD
 import ed.unicoach.web.render.CONVERSATION_UNAVAILABLE
 import ed.unicoach.web.render.MESSAGE_NOT_SENT
@@ -216,6 +217,7 @@ class ChatStreamTest {
           client.post("/chat") {
             header(HttpHeaders.Origin, WebAuthTestSupport.urlBase)
             header(HttpHeaders.Cookie, WebAuthTestSupport.cookieHeader(token))
+            header(CSRF_HEADER, WebAuthTestSupport.csrfTokenFor(token)!!)
             header(HttpHeaders.ContentType, ContentType.Application.Json.toString())
             setBody("{\"message\": \"Hi\"}")
           }

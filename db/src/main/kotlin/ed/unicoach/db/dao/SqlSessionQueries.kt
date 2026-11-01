@@ -200,6 +200,10 @@ internal fun SqlSession.execute(
  * returned row → success. On 0 rows → probes `SELECT 1 FROM <table> WHERE id = ?`
  * and fails with [ConcurrentModificationException] when the row exists, else
  * [NotFoundException]. The probed column is immaterial (existence-only).
+ *
+ * [liveCondition] narrows "exists" for a table whose UPDATE also filters on
+ * liveness (`sessions`' `is_revoked = false`): a row that is there but no longer
+ * live is gone to the caller, and a retry against it could never succeed.
  */
 internal fun <T> SqlSession.occUpdate(
   table: String,
@@ -208,6 +212,7 @@ internal fun <T> SqlSession.occUpdate(
   idValue: Any,
   map: (ResultSet) -> T,
   mapError: (SQLException) -> Exception = ::mapDatabaseError,
+  liveCondition: String? = null,
 ): Result<T> =
   try {
     prepareStatement(sql).use { stmt ->
@@ -216,7 +221,8 @@ internal fun <T> SqlSession.occUpdate(
         if (rs.next()) {
           Result.success(map(rs))
         } else {
-          prepareStatement("SELECT 1 FROM $table WHERE id = ?").use { probe ->
+          val probeSql = "SELECT 1 FROM $table WHERE id = ?" + (liveCondition?.let { " AND $it" } ?: "")
+          prepareStatement(probeSql).use { probe ->
             probe.setObject(1, idValue)
             probe.executeQuery().use { probeRs ->
               if (probeRs.next()) {

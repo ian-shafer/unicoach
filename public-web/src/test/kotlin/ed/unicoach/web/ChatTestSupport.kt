@@ -9,6 +9,7 @@ import ed.unicoach.chat.Replay
 import ed.unicoach.chat.ScriptedAnthropicTransport
 import ed.unicoach.coaching.CoachingService
 import ed.unicoach.db.models.User
+import ed.unicoach.web.auth.CSRF_HEADER
 import io.ktor.client.HttpClient
 import io.ktor.client.request.forms.FormDataContent
 import io.ktor.client.request.header
@@ -55,17 +56,23 @@ object ChatTestSupport {
     return user to WebAuthTestSupport.login(user.email.value)
   }
 
-  /** A composer POST, as `chat.ts` sends it: same-origin, form-encoded, asking for the stream. */
+  /**
+   * A composer POST, as `chat.ts` sends it: same-origin, form-encoded, asking
+   * for the stream, with the session's CSRF token in the header (RFC 265).
+   * [csrf] is `null` to send no header at all.
+   */
   suspend fun sendMessage(
     client: HttpClient,
     path: String,
     token: String,
     form: Parameters,
+    csrf: String? = WebAuthTestSupport.csrfTokenFor(token),
   ): HttpResponse =
     client.post(path) {
       header(HttpHeaders.Origin, WebAuthTestSupport.urlBase)
       header(HttpHeaders.Cookie, WebAuthTestSupport.cookieHeader(token))
       header(HttpHeaders.Accept, "text/event-stream, text/html")
+      csrf?.let { header(CSRF_HEADER, it) }
       setBody(FormDataContent(form))
     }
 

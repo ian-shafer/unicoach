@@ -1,5 +1,7 @@
 package ed.unicoach.web.render
 
+import ed.unicoach.web.DraftNotKept
+import ed.unicoach.web.auth.CsrfToken
 import io.ktor.http.encodeURLParameter
 import kotlinx.html.FORM
 import kotlinx.html.FlowContent
@@ -61,6 +63,13 @@ const val TOKEN_FIELD = "token"
 const val REPORT_FIELD = "report"
 
 /**
+ * The hidden field every signed-in form echoes the session's CSRF token in
+ * (brief 0013 D22, RFC 265). Underscored so it cannot collide with a field a
+ * form names for the family's own input.
+ */
+const val CSRF_FIELD = "_csrf"
+
+/**
  * The credential keys a signup door's URL may carry (RFC 232, RFC 254), all
  * secret in the request log. Read by both doors' `secretQueryParams` AND by the
  * signed-in landing, which answers before routing and stamps the set itself.
@@ -95,6 +104,59 @@ fun pathCarryingToken(
 fun FlowContent.tokenField(token: String?) {
   if (token == null) return
   hiddenInput(name = TOKEN_FIELD) { value = token }
+}
+
+/**
+ * A `POST` form on a signed-in page, opened with the hidden field that echoes
+ * the session's CSRF [csrf] token (RFC 265) under [CSRF_FIELD], where the route
+ * check reads it back.
+ *
+ * The ONE way a signed-in page builds a form: the token field is written here
+ * and nowhere else, so a signed-in form cannot be built without it and no form
+ * author has to remember it. [attributes] are set on the `form` element before
+ * any child is written, because the streaming HTML builder refuses an attribute
+ * once the element's content has begun.
+ */
+fun FlowContent.signedInForm(
+  action: String,
+  csrf: CsrfToken,
+  classes: String? = null,
+  attributes: Map<String, String> = emptyMap(),
+  block: FORM.() -> Unit,
+) {
+  form(action = action, method = FormMethod.post, classes = classes) {
+    attributes.forEach { (name, value) -> this.attributes[name] = value }
+    hiddenInput(name = CSRF_FIELD) { value = csrf.value }
+    block()
+  }
+}
+
+/**
+ * What a family is told when a failed submission was too big to keep as a draft
+ * (RFC 265): everything they typed is still on the page, and nothing is lost
+ * unless they leave it.
+ */
+const val DRAFT_NOT_KEPT_NOTICE =
+  "Some of what you typed is too long for us to keep if you leave this page. " +
+    "It is all still here — shorten your longest answer, then save."
+
+/**
+ * What a family is told when a failed submission could not be kept as a draft
+ * for any reason but its length (RFC 265): text the session cannot store, or a
+ * fault saving it. There is nothing for them to fix, so it asks for nothing.
+ */
+const val DRAFT_NOT_SAVED_NOTICE =
+  "We could not keep what you typed if you leave this page. It is all still here."
+
+/** The notice for why the draft was not kept, or nothing when it was. */
+fun FlowContent.draftNotKeptNotice(notKept: DraftNotKept?) {
+  val notice =
+    when (notKept) {
+      null -> return
+      DraftNotKept.TOO_LONG -> DRAFT_NOT_KEPT_NOTICE
+      DraftNotKept.NOT_SAVED -> DRAFT_NOT_SAVED_NOTICE
+    }
+  p(FORM_ERROR_CLASS) { +notice }
 }
 
 /** The hidden field that carries a report token through a form POST (RFC 254), or nothing. */
@@ -186,10 +248,16 @@ fun FlowContent.notice(notice: WebNotice?) {
  * per page, exactly as [respondErrorPage] states the error-page shape for the
  * three error pages. Sign-in, registration and change-email had three verbatim
  * copies of this block.
+ *
+ * [csrf] has no default, so every card says which kind it is: a signed-in card
+ * (change-email) passes its session's token and is built by [signedInForm]; a
+ * signed-out door (sign-in, registration) passes `null`, having no session to
+ * echo.
  */
 fun FlowContent.authFormCard(
   heading: String,
   action: String,
+  csrf: CsrfToken?,
   error: String? = null,
   intro: SECTION.() -> Unit = {},
   after: SECTION.() -> Unit = {},
@@ -199,7 +267,11 @@ fun FlowContent.authFormCard(
     h1 { +heading }
     intro()
     formError(error)
-    form(action = action, method = FormMethod.post) { fields() }
+    if (csrf == null) {
+      form(action = action, method = FormMethod.post) { fields() }
+    } else {
+      signedInForm(action, csrf) { fields() }
+    }
     after()
   }
 }

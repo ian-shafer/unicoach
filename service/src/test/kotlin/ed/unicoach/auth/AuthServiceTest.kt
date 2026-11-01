@@ -15,6 +15,7 @@ import ed.unicoach.db.models.PasswordHash
 import ed.unicoach.db.models.PersonName
 import ed.unicoach.db.models.TokenHash
 import ed.unicoach.util.Argon2Hasher
+import ed.unicoach.util.TokenGenerator
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.runTest
@@ -153,7 +154,9 @@ class AuthServiceTest {
           tokenHash = tokenHash,
           userAgent = "test-agent",
           initialIp = "127.0.0.1",
-          metadata = null,
+          metadata =
+            ed.unicoach.db.session.SessionMetadata
+              .getDefaultInstance(),
           expiration = expiration,
           loginMethod = if (userId != null) LoginMethod.PASSWORD else null,
         ),
@@ -635,4 +638,72 @@ class AuthServiceTest {
       val reloaded = UsersDao.findById(sqlSession, user.id).getOrThrow()
       assertEquals(email, reloaded.email.value, "Email rewrite must roll back with the failed enqueue")
     }
+
+  // --- RFC 265: the CSRF token is minted with the session -------------------
+
+  @Test
+  fun `both mint paths create a session holding its own full-size CSRF token`() {
+    runBlocking {
+      val email = "mint_token@example.com"
+      val password = "Password123"
+      val registered = authService.register(email, "Mint Token", password, null, Duration.ofDays(1), null, null).getOrThrow()
+      val loggedIn = authService.login(email, password, null, Duration.ofDays(1), null, null).getOrThrow()
+
+      val tokens =
+        listOf((registered as RegisterResult.Success).token, (loggedIn as LoginResult.Success).token).map { raw ->
+          SessionsDao
+            .findByTokenHash(sqlSession, TokenHash.fromRawToken(raw))
+            .getOrThrow()
+            .metadata.csrfToken
+        }
+
+      for (token in tokens) assertEquals(TokenGenerator.TOKEN_BYTES, token.size(), "a session's CSRF token is the minted size")
+      assertTrue(tokens[0] != tokens[1], "two sessions never share a CSRF token")
+    }
+  }
+
+  @Test
+  fun `a register that remints an old session gives it a fresh token and no drafts`() {
+    runBlocking {
+      val first = authService.register("remint_a@example.com", "Remint A", "Password123", null, Duration.ofDays(1), null, null).getOrThrow()
+      val firstToken = (first as RegisterResult.Success).token
+      val held = SessionsDao.findByTokenHash(sqlSession, TokenHash.fromRawToken(firstToken)).getOrThrow()
+      val drafted =
+        SessionsDao
+          .writeMetadata(
+            sqlSession,
+            held.id,
+            held.version,
+            held.metadata
+              .toBuilder()
+              .setDrafts(
+                ed.unicoach.db.session.FormDrafts
+                  .newBuilder()
+                  .setChangeEmail(
+                    ed.unicoach.db.session.ChangeEmailDraft
+                      .newBuilder()
+                      .setNewEmail("first-holder@example.com"),
+                  ),
+              ).build(),
+          ).getOrThrow()
+
+      val second =
+        authService
+          .register(
+            "remint_b@example.com",
+            "Remint B",
+            "Password123",
+            firstToken,
+            Duration.ofDays(1),
+            null,
+            null,
+          ).getOrThrow()
+      val reminted = SessionsDao.findByTokenHash(sqlSession, TokenHash.fromRawToken((second as RegisterResult.Success).token)).getOrThrow()
+
+      assertEquals(drafted.id, reminted.id, "the old row was reminted, not replaced")
+      assertTrue(!reminted.metadata.hasDrafts(), "the previous holder's draft does not pass to the new user")
+      assertEquals(TokenGenerator.TOKEN_BYTES, reminted.metadata.csrfToken.size())
+      assertTrue(reminted.metadata.csrfToken != drafted.metadata.csrfToken, "the previous holder's CSRF token does not either")
+    }
+  }
 }

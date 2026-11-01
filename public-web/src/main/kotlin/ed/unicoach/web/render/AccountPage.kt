@@ -52,10 +52,11 @@ const val SUPPORTER_APP_NOTE =
 suspend fun ApplicationCall.respondAccountPage(
   user: User,
   isSupporter: Boolean,
+  nav: ShellNav.SignedIn,
   notice: WebNotice? = null,
 ) {
   respondHtml {
-    siteLayout(ACCOUNT_HEADING, width = ShellWidth.WIDE, nav = ShellNav.SignedIn) {
+    siteLayout(ACCOUNT_HEADING, width = ShellWidth.WIDE, nav = nav) {
       section(ACCOUNT_CLASS) {
         h1 { +ACCOUNT_HEADING }
         notice(notice)

@@ -74,7 +74,9 @@ class SessionCleanupTest {
               .TokenHash(hashValid),
           userAgent = "A",
           initialIp = "1",
-          metadata = null,
+          metadata =
+            ed.unicoach.db.session.SessionMetadata
+              .getDefaultInstance(),
           expiration = Duration.ofDays(7),
         ),
       )
@@ -88,7 +90,9 @@ class SessionCleanupTest {
               .TokenHash(hashExpired),
           userAgent = "B",
           initialIp = "2",
-          metadata = null,
+          metadata =
+            ed.unicoach.db.session.SessionMetadata
+              .getDefaultInstance(),
           expiration = Duration.ofSeconds(-1),
         ),
       )

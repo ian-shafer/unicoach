@@ -7,17 +7,16 @@ import ed.unicoach.coaching.studentSentence
 import ed.unicoach.common.util.UsDate
 import ed.unicoach.error.FieldError
 import ed.unicoach.web.auth.CHAT_PATH
+import ed.unicoach.web.auth.CsrfToken
 import ed.unicoach.web.markdown.markdown
 import io.ktor.http.HttpStatusCode
 import io.ktor.server.application.ApplicationCall
 import io.ktor.server.html.respondHtml
 import kotlinx.html.ButtonType
 import kotlinx.html.FlowContent
-import kotlinx.html.FormMethod
 import kotlinx.html.a
 import kotlinx.html.button
 import kotlinx.html.div
-import kotlinx.html.form
 import kotlinx.html.h1
 import kotlinx.html.h2
 import kotlinx.html.id
@@ -143,9 +142,10 @@ data class ChatExchange(
 suspend fun ApplicationCall.respondChatPage(
   action: String,
   exchanges: List<ChatExchange>,
+  nav: ShellNav.SignedIn,
 ) {
   respondHtml {
-    siteLayout(CHAT_TITLE, width = ShellWidth.CHAT, nav = ShellNav.SignedIn) {
+    siteLayout(CHAT_TITLE, width = ShellWidth.CHAT, nav = nav) {
       section("chat") {
         h1("visually-hidden") { +CHAT_TITLE }
         div(TRANSCRIPT_CLASS) {
@@ -158,7 +158,7 @@ suspend fun ApplicationCall.respondChatPage(
             }
           }
         }
-        composer(action)
+        composer(action, nav.csrf)
       }
     }
   }
@@ -181,9 +181,21 @@ fun FlowContent.coachMessage(markdownText: String) {
  */
 fun coachMessageHtml(markdownText: String): String = createHTML(prettyPrint = false).div(COACH_MESSAGE_CLASSES) { markdown(markdownText) }
 
-private fun FlowContent.composer(action: String) {
-  form(action = action, method = FormMethod.post, classes = COMPOSER_CLASS) {
-    attributes[RETRIABLE_FAILURE_ATTRIBUTE] = studentSentence(retriable = true)
+/**
+ * The composer. Its [csrf] hidden field is what `chat.ts` reads and sends as
+ * the `X-CSRF-Token` header (RFC 265); the message body it posts is built from
+ * the text area alone.
+ */
+private fun FlowContent.composer(
+  action: String,
+  csrf: CsrfToken,
+) {
+  signedInForm(
+    action = action,
+    csrf = csrf,
+    classes = COMPOSER_CLASS,
+    attributes = mapOf(RETRIABLE_FAILURE_ATTRIBUTE to studentSentence(retriable = true)),
+  ) {
     label {
       htmlFor = COMPOSER_TEXTAREA_ID
       +COMPOSER_LABEL

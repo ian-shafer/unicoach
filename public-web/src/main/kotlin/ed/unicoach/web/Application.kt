@@ -9,6 +9,7 @@ import ed.unicoach.auth.EmailVerificationConfig
 import ed.unicoach.auth.EmailVerificationService
 import ed.unicoach.auth.EmailVerifier
 import ed.unicoach.auth.GoogleIdTokenVerifier
+import ed.unicoach.auth.SessionMetadataService
 import ed.unicoach.chat.ChatConfig
 import ed.unicoach.chat.ChatProviderFactory
 import ed.unicoach.chat.CloseableChatProvider
@@ -172,6 +173,8 @@ fun startServer(wait: Boolean = true): EmbeddedServer<*, *> {
         linkRequestService = linkRequestService,
         coachingService = coach.coachingService,
         studentService = StudentService(database),
+        // The one writer of a session's metadata (RFC 265): the draft rail's.
+        sessionMetadataService = SessionMetadataService(database),
       )
     }
 
@@ -367,6 +370,7 @@ fun Application.publicWebModule(
   linkRequestService: SupporterLinkRequestService,
   coachingService: CoachingService,
   studentService: StudentService,
+  sessionMetadataService: SessionMetadataService,
 ) {
   // READ the bundle name while the module installs (RFC 225). WebAssets is an
   // `object`, so its manifest refusals run at class-init — and nothing touched
@@ -414,5 +418,6 @@ fun Application.publicWebModule(
     linkRequestService,
     coachingService,
     studentService,
+    sessionMetadataService,
   )
 }

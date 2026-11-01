@@ -3,6 +3,7 @@ package ed.unicoach.web
 import ed.unicoach.auth.AuthService
 import ed.unicoach.auth.EmailVerificationService
 import ed.unicoach.auth.EmailVerifier
+import ed.unicoach.auth.SessionMetadataService
 import ed.unicoach.auth.VerifyEmailResult
 import ed.unicoach.coaching.CoachingService
 import ed.unicoach.family.SupporterInviteService
@@ -71,6 +72,7 @@ fun Application.testPublicWebModule(
   linkRequestService: SupporterLinkRequestService = WebAuthTestSupport.linkRequestService,
   coachingService: CoachingService = WebAuthTestSupport.defaultCoachingService,
   studentService: StudentService = WebAuthTestSupport.studentService,
+  sessionMetadataService: SessionMetadataService = WebAuthTestSupport.sessionMetadataService,
 ) {
   publicWebModule(
     emailVerifier,
@@ -87,6 +89,7 @@ fun Application.testPublicWebModule(
     linkRequestService,
     coachingService,
     studentService,
+    sessionMetadataService,
   )
 }
 

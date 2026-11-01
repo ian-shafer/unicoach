@@ -18,6 +18,8 @@ import {
   COACH_MESSAGE_CLASSES,
   type Composer,
   COMPOSER_SELECTOR,
+  CSRF_FIELD,
+  CSRF_HEADER,
   decodeEvent,
   domComposer,
   EMPTY_STATE_SELECTOR,
@@ -37,6 +39,7 @@ import {
   type Transcript,
   TRANSCRIPT_SELECTOR,
   TURN_FAILED_CLASS,
+  turnRequest,
   type TurnResponse,
   TYPING_CLASS,
   UNANSWERED_CLASS,
@@ -189,6 +192,10 @@ class FakeComposer implements Composer {
   body(text: string): URLSearchParams {
     return new URLSearchParams({ message: text });
   }
+  csrf = "session-csrf-token";
+  csrfToken(): string {
+    return this.csrf;
+  }
   setSending(sending: boolean): void {
     this.sendingLog.push(sending);
   }
@@ -266,15 +273,15 @@ function harness(respond: Post) {
   const composer = new FakeComposer();
   const transcript = new FakeTranscript();
   const page = new FakePage();
-  const posts: Array<{ url: string; body: string }> = [];
+  const posts: Array<{ url: string; body: string; csrfToken: string }> = [];
   const controller = new ChatController({
     composer,
     transcript,
     page,
     retriableFailure: RETRIABLE,
-    post: (url, body) => {
-      posts.push({ url, body: body.toString() });
-      return respond(url, body);
+    post: (url, body, csrfToken) => {
+      posts.push({ url, body: body.toString(), csrfToken });
+      return respond(url, body, csrfToken);
     },
   });
   return { composer, transcript, page, posts, controller };
@@ -641,7 +648,7 @@ Deno.test("the page's composer disables Send in flight and never the text area",
     disabled: false,
   } as unknown as HTMLTextAreaElement;
   const button = { disabled: false } as unknown as HTMLButtonElement;
-  const composer = domComposer(form, textarea, button, "/chat");
+  const composer = domComposer(form, textarea, button, "/chat", "tok");
 
   composer.setSending(true);
   assertEquals(button.disabled, true, "Send disabled while in flight");
@@ -653,6 +660,66 @@ Deno.test("the page's composer disables Send in flight and never the text area",
 
 Deno.test("the POST asks for the stream or an HTML notice", () => {
   assertEquals(ACCEPT_HEADER, "text/event-stream, text/html", "Accept");
+});
+
+// --- RFC 265: the CSRF token ---------------------------------------------------
+
+Deno.test("a turn posts the composer's CSRF token", async () => {
+  const h = harness(() =>
+    Promise.resolve(
+      streamResponse([frame("completed", { html: "<div></div>" })]),
+    )
+  );
+  h.composer.value = "Hi";
+  h.composer.csrf = "the-composers-token";
+  await h.controller.submit();
+  assertEquals(
+    h.posts.map((p) => p.csrfToken),
+    ["the-composers-token"],
+    "the POST did not carry the composer's token",
+  );
+});
+
+Deno.test("the turn's request sends the token as X-CSRF-Token", () => {
+  const init = turnRequest(new URLSearchParams({ message: "Hi" }), "tok-123");
+  const headers = new Headers(init.headers);
+  assertEquals(headers.get(CSRF_HEADER), "tok-123", "X-CSRF-Token");
+  assertEquals(headers.get("Accept"), ACCEPT_HEADER, "Accept");
+  assertEquals(init.method, "POST", "method");
+  assertEquals(init.credentials, "same-origin", "credentials");
+});
+
+Deno.test("the page's composer hands the turn the token it was mounted with", () => {
+  const form = {
+    getAttribute: (_name: string) => "/chat",
+    setAttribute: (_name: string, _value: string) => {},
+  } as unknown as HTMLFormElement;
+  const textarea = {
+    value: "",
+    name: "message",
+  } as unknown as HTMLTextAreaElement;
+  const button = { disabled: false } as unknown as HTMLButtonElement;
+  const composer = domComposer(
+    form,
+    textarea,
+    button,
+    "/chat",
+    "from-the-field",
+  );
+  assertEquals(composer.csrfToken(), "from-the-field", "csrfToken");
+  assertEquals(
+    composer.body("Hi").has(CSRF_FIELD),
+    false,
+    "the token travels in the header, not the message body",
+  );
+});
+
+Deno.test("the CSRF field and header are the contract's", () => {
+  assertEquals(
+    { field: CSRF_FIELD, header: CSRF_HEADER },
+    contract.csrf,
+    "the CSRF names differ from the ones the server is held to",
+  );
 });
 
 // --- Test 30: scroll follow --------------------------------------------------

@@ -4,6 +4,7 @@ import io.ktor.http.Parameters
 import io.ktor.server.application.ApplicationCall
 import io.ktor.server.request.path
 import io.ktor.server.request.receiveParameters
+import io.ktor.util.AttributeKey
 import org.slf4j.LoggerFactory
 
 /**
@@ -20,11 +21,28 @@ private val formLog = LoggerFactory.getLogger("ed.unicoach.web.Forms")
  * uncaught throw here is answered by the branded 503 — a server fault page for
  * a malformed client request. The CALLER re-renders its own form instead,
  * because which form to show is the route's knowledge and not this helper's.
+ *
+ * Read ONCE per request and kept on the call (RFC 265): the CSRF check in front
+ * of a signed-in POST reads `_csrf` from this body, and the handler behind it
+ * then reads its own fields from the same body, which the request stream can
+ * deliver only once. A body that was not a form is kept as that answer too.
  */
-internal suspend fun ApplicationCall.formParametersOrNull(): Parameters? =
-  runCatching { receiveParameters() }
-    .onFailure { cause -> formLog.debug("unreadable form body on [{}]", request.path(), cause) }
-    .getOrNull()
+internal suspend fun ApplicationCall.formParametersOrNull(): Parameters? {
+  attributes.getOrNull(FormBodyKey)?.let { return it.parameters }
+  val parameters =
+    runCatching { receiveParameters() }
+      .onFailure { cause -> formLog.debug("unreadable form body on [{}]", request.path(), cause) }
+      .getOrNull()
+  attributes.put(FormBodyKey, FormBody(parameters))
+  return parameters
+}
+
+/** One request's form body as [formParametersOrNull] read it: `null` parameters for a body that was not a form. */
+private class FormBody(
+  val parameters: Parameters?,
+)
+
+private val FormBodyKey = AttributeKey<FormBody>("ed.unicoach.web.FormBody")
 
 /**
  * The one value [name] carries in this form body.

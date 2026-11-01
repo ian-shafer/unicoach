@@ -11,6 +11,10 @@
   "notice": {
     "header": "X-Chat-Notice"
   },
+  "csrf": {
+    "field": "_csrf",
+    "header": "X-CSRF-Token"
+  },
   "styledClientClasses": {
     "typing": "typing",
     "unanswered": "unanswered",

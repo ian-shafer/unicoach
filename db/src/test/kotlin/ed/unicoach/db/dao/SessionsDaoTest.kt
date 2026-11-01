@@ -1,10 +1,14 @@
 package ed.unicoach.db.dao
 
+import com.google.protobuf.ByteString
 import ed.unicoach.db.models.LoginMethod
 import ed.unicoach.db.models.NewSession
 import ed.unicoach.db.models.SessionId
 import ed.unicoach.db.models.TokenHash
 import ed.unicoach.db.models.UserId
+import ed.unicoach.db.session.ChangeEmailDraft
+import ed.unicoach.db.session.FormDrafts
+import ed.unicoach.db.session.SessionMetadata
 import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.BeforeEach
@@ -15,6 +19,8 @@ import java.sql.PreparedStatement
 import java.time.Duration
 import java.util.UUID
 import kotlin.test.assertEquals
+import kotlin.test.assertIs
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 class SessionsDaoTest {
@@ -77,7 +83,7 @@ class SessionsDaoTest {
         tokenHash = TokenHash(hash),
         userAgent = "agent",
         initialIp = null,
-        metadata = null,
+        metadata = SessionMetadata.getDefaultInstance(),
         expiration = Duration.ofDays(7),
         loginMethod = if (userId != null) LoginMethod.PASSWORD else null,
       ),
@@ -146,7 +152,7 @@ class SessionsDaoTest {
             .TokenHash(hash),
         userAgent = "test-agent",
         initialIp = "127.0.0.1",
-        metadata = "{\"foo\":\"bar\"}",
+        metadata = SessionMetadata.getDefaultInstance(),
         expiration = Duration.ofDays(7),
       )
 
@@ -156,26 +162,6 @@ class SessionsDaoTest {
     val retrievedResult = SessionsDao.findByTokenHash(session, TokenHash(hash))
     assertTrue(retrievedResult.isSuccess)
     assertTrue(retrievedResult.getOrNull()!!.userId == null)
-  }
-
-  @Test
-  fun `metadata size caps strictly enforce constraints at 2KB`() {
-    val hash = byteArrayOf(1, 2, 3, 4)
-    val oversizedMetadata = "{\"big\":\"" + "a".repeat(2048) + "\"}"
-    val newSession =
-      NewSession(
-        userId = null,
-        tokenHash =
-          ed.unicoach.db.models
-            .TokenHash(hash),
-        userAgent = "test-agent",
-        initialIp = "127.0.0.1",
-        metadata = oversizedMetadata,
-        expiration = Duration.ofDays(7),
-      )
-
-    val createResult = SessionsDao.create(session, newSession)
-    assertTrue(createResult.isFailure)
   }
 
   @Test
@@ -189,7 +175,7 @@ class SessionsDaoTest {
             .TokenHash(hash),
         userAgent = "agent",
         initialIp = null,
-        metadata = null,
+        metadata = SessionMetadata.getDefaultInstance(),
         expiration = Duration.ofDays(7),
       )
 
@@ -214,7 +200,7 @@ class SessionsDaoTest {
         tokenHash = tokenHash,
         userAgent = "agent",
         initialIp = null,
-        metadata = null,
+        metadata = SessionMetadata.getDefaultInstance(),
         expiration = Duration.ofDays(7),
       )
 
@@ -267,7 +253,7 @@ class SessionsDaoTest {
         tokenHash = tokenHash,
         userAgent = "agent",
         initialIp = null,
-        metadata = null,
+        metadata = SessionMetadata.getDefaultInstance(),
         expiration = Duration.ofDays(7),
       )
 
@@ -291,7 +277,7 @@ class SessionsDaoTest {
             tokenHash = TokenHash(byteArrayOf(50, 1)),
             userAgent = null,
             initialIp = null,
-            metadata = null,
+            metadata = SessionMetadata.getDefaultInstance(),
             expiration = Duration.ofDays(7),
             loginMethod = LoginMethod.PASSWORD,
           ),
@@ -307,7 +293,7 @@ class SessionsDaoTest {
             tokenHash = TokenHash(byteArrayOf(50, 2)),
             userAgent = null,
             initialIp = null,
-            metadata = null,
+            metadata = SessionMetadata.getDefaultInstance(),
             expiration = Duration.ofDays(7),
             loginMethod = LoginMethod.GOOGLE,
           ),
@@ -326,7 +312,7 @@ class SessionsDaoTest {
           tokenHash = TokenHash(byteArrayOf(51, 1)),
           userAgent = null,
           initialIp = null,
-          metadata = null,
+          metadata = SessionMetadata.getDefaultInstance(),
           expiration = Duration.ofDays(7),
           loginMethod = null,
         ),
@@ -344,7 +330,7 @@ class SessionsDaoTest {
           tokenHash = TokenHash(byteArrayOf(52, 1)),
           userAgent = null,
           initialIp = null,
-          metadata = null,
+          metadata = SessionMetadata.getDefaultInstance(),
           expiration = Duration.ofDays(7),
           loginMethod = LoginMethod.PASSWORD,
         ),
@@ -374,9 +360,230 @@ class SessionsDaoTest {
           newTokenHash = byteArrayOf(54, 2),
           newExpirationSeconds = Duration.ofDays(7).seconds,
           newLoginMethod = LoginMethod.GOOGLE,
+          newMetadata = SessionMetadata.getDefaultInstance(),
         ).getOrThrow()
 
     assertEquals(user, reminted.userId)
     assertEquals(LoginMethod.GOOGLE, reminted.loginMethod)
+  }
+
+  // --- metadata (RFC 265) ----------------------------------------------------
+
+  private fun metadataWith(
+    token: ByteArray,
+    newEmail: String,
+  ): SessionMetadata =
+    SessionMetadata
+      .newBuilder()
+      .setCsrfToken(ByteString.copyFrom(token))
+      .setDrafts(FormDrafts.newBuilder().setChangeEmail(ChangeEmailDraft.newBuilder().setNewEmail(newEmail)))
+      .build()
+
+  /** One column of the session row, read back as SQL sees it. */
+  private fun sqlString(
+    sql: String,
+    id: SessionId,
+  ): String? =
+    connection.prepareStatement(sql).use { stmt ->
+      stmt.setObject(1, id.value)
+      stmt.executeQuery().use { rs ->
+        check(rs.next()) { "no session row [${id.value}]" }
+        rs.getString(1)
+      }
+    }
+
+  /** Writes [rawJson] straight into the column, as a row no codec wrote. */
+  private fun storeRawMetadata(
+    id: SessionId,
+    rawJson: String?,
+  ) {
+    connection.prepareStatement("UPDATE sessions SET metadata = ?::jsonb, version = version + 1 WHERE id = ?").use { stmt ->
+      stmt.setString(1, rawJson)
+      stmt.setObject(2, id.value)
+      stmt.executeUpdate()
+    }
+  }
+
+  @Test
+  fun `metadata round-trips and is stored with the canonical proto3 JSON spellings`() {
+    val created = createSession(createUser(), byteArrayOf(60, 1))
+    val token = ByteArray(32) { it.toByte() }
+    val metadata = metadataWith(token, "new@example.com")
+
+    val written = SessionsDao.writeMetadata(session, created.id, created.version, metadata).getOrThrow()
+
+    assertEquals(metadata, written.metadata)
+    assertEquals(metadata, SessionsDao.findById(session, created.id).getOrThrow().metadata)
+    assertEquals(
+      java.util.Base64
+        .getEncoder()
+        .encodeToString(token),
+      sqlString("SELECT metadata ->> 'csrfToken' FROM sessions WHERE id = ?", created.id),
+    )
+    assertEquals(
+      "new@example.com",
+      sqlString("SELECT metadata -> 'drafts' -> 'changeEmail' ->> 'newEmail' FROM sessions WHERE id = ?", created.id),
+    )
+  }
+
+  /**
+   * "Nothing set" has one spelling in the column: SQL `NULL`, the one the read
+   * side maps back to the default instance — never `{}` on some rows and `NULL`
+   * on others. Every write path binds through the one codec, so each is checked.
+   */
+  @Test
+  fun `the default instance is stored as SQL NULL on every write path`() {
+    val metadataText = "SELECT metadata::text FROM sessions WHERE id = ?"
+    val user = createUser()
+
+    val created = createSession(user, byteArrayOf(64, 1))
+    assertNull(sqlString(metadataText, created.id), "create stored the default instance as a document")
+
+    val holding = SessionsDao.writeMetadata(session, created.id, created.version, metadataWith(ByteArray(32), "a@example.com")).getOrThrow()
+    val cleared = SessionsDao.writeMetadata(session, created.id, holding.version, SessionMetadata.getDefaultInstance()).getOrThrow()
+    assertNull(sqlString(metadataText, created.id), "writeMetadata stored the default instance as a document")
+    assertEquals(SessionMetadata.getDefaultInstance(), cleared.metadata)
+
+    val held = SessionsDao.writeMetadata(session, created.id, cleared.version, metadataWith(ByteArray(32), "b@example.com")).getOrThrow()
+    SessionsDao
+      .remintToken(
+        session,
+        created.id,
+        held.version,
+        user,
+        UUID.randomUUID().toString().toByteArray(),
+        3600,
+        LoginMethod.PASSWORD,
+        SessionMetadata.getDefaultInstance(),
+      ).getOrThrow()
+    assertNull(sqlString(metadataText, created.id), "remintToken stored the default instance as a document")
+  }
+
+  @Test
+  fun `a NULL metadata column reads as the default instance`() {
+    val created = createSession(createUser(), byteArrayOf(61, 1))
+    storeRawMetadata(created.id, null)
+
+    assertNull(sqlString("SELECT metadata::text FROM sessions WHERE id = ?", created.id))
+    assertEquals(SessionMetadata.getDefaultInstance(), SessionsDao.findById(session, created.id).getOrThrow().metadata)
+  }
+
+  @Test
+  fun `stored metadata the strict parser refuses is a corrupt row`() {
+    for (raw in listOf("""{"csrfToken":"AAAA","unknownField":1}""", """{"csrfToken":7}""", """[1,2]""")) {
+      val created = createSession(createUser(), UUID.randomUUID().toString().toByteArray())
+      storeRawMetadata(created.id, raw)
+
+      val read = SessionsDao.findById(session, created.id)
+
+      val failure = assertIs<CorruptPersistedValueException>(read.exceptionOrNull(), "[$raw] must be refused")
+      assertEquals("sessions.metadata id=[${created.id.value}]", failure.location)
+    }
+  }
+
+  /**
+   * The cell is `pii.jsonb` and the parser's own message can quote it — here
+   * it names the unknown key, which is the stored text. The parser failure is
+   * still chained, by type and stack, so the log says what refused the row;
+   * nothing anywhere in the chain repeats what the row holds.
+   */
+  @Test
+  fun `a corrupt metadata row chains the parser failure and quotes none of the stored value`() {
+    val stored = "familyTypedThis${UUID.randomUUID().toString().replace("-", "")}"
+    val created = createSession(createUser(), byteArrayOf(65, 1))
+    storeRawMetadata(created.id, """{"$stored":1}""")
+
+    val failure = assertIs<CorruptPersistedValueException>(SessionsDao.findById(session, created.id).exceptionOrNull())
+
+    val cause = assertIs<WithheldMessageException>(failure.cause, "the parser failure is not chained")
+    assertEquals(com.google.protobuf.InvalidProtocolBufferException::class.java.name, cause.originalType)
+    val chain = generateSequence<Throwable>(failure) { it.cause }.toList()
+    for (link in chain) {
+      assertTrue(!link.message.orEmpty().contains(stored), "[${link.javaClass.name}] quotes the stored value: ${link.message}")
+    }
+  }
+
+  @Test
+  fun `metadata past the cap is refused as too large and the row is unchanged`() {
+    val created = createSession(createUser(), byteArrayOf(62, 1))
+    val kept = SessionsDao.writeMetadata(session, created.id, created.version, metadataWith(ByteArray(32), "kept@example.com")).getOrThrow()
+    val huge = SessionMetadataFixtures.textPastTheCap()
+
+    val refused = SessionsDao.writeMetadata(session, created.id, kept.version, metadataWith(ByteArray(32), huge))
+
+    val failure = assertIs<SessionMetadataTooLargeException>(refused.exceptionOrNull())
+    assertEquals(created.id, failure.sessionId, "the refusal names the session it refused")
+    assertTrue(failure.printedBytes > huge.length, "the refusal carries the size of what it refused: ${failure.printedBytes}")
+    val after = SessionsDao.findById(session, created.id).getOrThrow()
+    assertEquals(kept.metadata, after.metadata, "never silently truncated: the previous value stands")
+    assertEquals(kept.version, after.version)
+  }
+
+  @Test
+  fun `writeMetadata never moves expires_at`() {
+    val created = createSession(createUser(), byteArrayOf(63, 1))
+
+    val written = SessionsDao.writeMetadata(session, created.id, created.version, metadataWith(ByteArray(32), "a@example.com")).getOrThrow()
+
+    assertEquals(created.expiresAt, written.expiresAt)
+    assertEquals(created.version + 1, written.version)
+  }
+
+  @Test
+  fun `writeMetadata at a stale version is a conflict and writes nothing`() {
+    val created = createSession(createUser(), byteArrayOf(64, 1))
+    val extended = SessionsDao.extendExpiry(session, created.id, created.version).getOrThrow()
+
+    val stale = SessionsDao.writeMetadata(session, created.id, created.version, metadataWith(ByteArray(32), "a@example.com"))
+
+    assertIs<ConcurrentModificationException>(stale.exceptionOrNull())
+    assertEquals(extended, SessionsDao.findById(session, created.id).getOrThrow())
+  }
+
+  @Test
+  fun `writeMetadata on a revoked session is not found and writes nothing`() {
+    val tokenHash = TokenHash(byteArrayOf(65, 1))
+    val created = createSession(createUser(), tokenHash.value)
+    val revoked = SessionsDao.revokeByTokenHash(session, tokenHash).getOrThrow()
+
+    val gone = SessionsDao.writeMetadata(session, created.id, revoked.version, metadataWith(ByteArray(32), "a@example.com"))
+
+    assertIs<NotFoundException>(gone.exceptionOrNull())
+    assertEquals(revoked, SessionsDao.findById(session, created.id).getOrThrow())
+  }
+
+  @Test
+  fun `remintToken replaces the metadata the row held for its previous holder`() {
+    val first = createUser()
+    val created = createSession(first, byteArrayOf(66, 1))
+    val held =
+      SessionsDao
+        .writeMetadata(
+          session,
+          created.id,
+          created.version,
+          metadataWith(
+            ByteArray(32) {
+              1
+            },
+            "first@example.com",
+          ),
+        ).getOrThrow()
+    val fresh = SessionMetadata.newBuilder().setCsrfToken(ByteString.copyFrom(ByteArray(32) { 2 })).build()
+
+    val reminted =
+      SessionsDao
+        .remintToken(
+          session = session,
+          id = held.id,
+          currentVersion = held.version,
+          newUserId = createUser(),
+          newTokenHash = byteArrayOf(66, 2),
+          newExpirationSeconds = Duration.ofDays(7).seconds,
+          newLoginMethod = LoginMethod.PASSWORD,
+          newMetadata = fresh,
+        ).getOrThrow()
+
+    assertEquals(fresh, reminted.metadata)
   }
 }

@@ -48,7 +48,7 @@ class GatedPathSpellingTest {
     testApplication {
       application { testPublicWebModule() }
 
-      assertEverySpellingRefused(cookie = null, expected = SIGN_IN)
+      assertEverySpellingRefused(sessionToken = null, expected = SIGN_IN)
     }
 
   @Test
@@ -58,7 +58,7 @@ class GatedPathSpellingTest {
       WebAuthTestSupport.seedUser(email, verified = false)
       application { testPublicWebModule() }
 
-      assertEverySpellingRefused(WebAuthTestSupport.cookieHeader(WebAuthTestSupport.login(email)), VERIFY_EMAIL)
+      assertEverySpellingRefused(WebAuthTestSupport.login(email), VERIFY_EMAIL)
     }
 
   /**
@@ -70,9 +70,14 @@ class GatedPathSpellingTest {
    * progress.
    */
   private suspend fun ApplicationTestBuilder.assertEverySpellingRefused(
-    cookie: String?,
+    sessionToken: String?,
     expected: String,
   ) {
+    val cookie = sessionToken?.let(WebAuthTestSupport::cookieHeader)
+    // The POSTs carry the session's CSRF token, as the page's own form would:
+    // without it the CSRF check refuses them first, and the suite would be
+    // testing that check instead of the access class behind it.
+    val csrf = sessionToken?.let(WebAuthTestSupport::csrfTokenFor)
     val noFollow = noFollowClient()
     val leaks = mutableListOf<String>()
 
@@ -80,7 +85,7 @@ class GatedPathSpellingTest {
       leaks += refusalFailure(noFollow.rawGet(path, cookie), "GET [$path]", expected)
     }
     for (path in changeEmailSpellings) {
-      leaks += refusalFailure(rawFormPost(path, cookie, noFollow), "POST [$path]", expected)
+      leaks += refusalFailure(rawFormPost(path, cookie, csrf, noFollow), "POST [$path]", expected)
     }
 
     assertTrue(leaks.isEmpty(), "a gated path was reachable by [${leaks.size}] spelling(s):\n${leaks.joinToString("\n")}")
@@ -143,6 +148,7 @@ class GatedPathSpellingTest {
   private suspend fun ApplicationTestBuilder.rawFormPost(
     path: String,
     cookie: String?,
+    csrf: String?,
     client: HttpClient,
   ): HttpResponse =
     client.post {
@@ -150,7 +156,8 @@ class GatedPathSpellingTest {
       header(HttpHeaders.Origin, WebAuthTestSupport.urlBase)
       cookie?.let { header(HttpHeaders.Cookie, it) }
       contentType(ContentType.Application.FormUrlEncoded)
-      setBody("email=someone%40example.com")
+      // The token is URL-safe base64, so it needs no escaping in the body.
+      setBody("email=someone%40example.com" + (csrf?.let { "&_csrf=$it" } ?: ""))
     }
 
   private companion object {

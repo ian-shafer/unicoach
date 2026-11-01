@@ -1,5 +1,6 @@
 package ed.unicoach.auth
 
+import com.google.protobuf.ByteString
 import ed.unicoach.common.models.EmailAddress
 import ed.unicoach.common.models.ValidationResult
 import ed.unicoach.db.Database
@@ -24,6 +25,7 @@ import ed.unicoach.db.models.SoftDeleteScope
 import ed.unicoach.db.models.TokenHash
 import ed.unicoach.db.models.User
 import ed.unicoach.db.models.UserId
+import ed.unicoach.db.session.SessionMetadata
 import ed.unicoach.util.Argon2Hasher
 import ed.unicoach.util.Validator
 import org.slf4j.LoggerFactory
@@ -124,6 +126,9 @@ class AuthService(
                 newTokenHash = newHash.value,
                 newExpirationSeconds = sessionExpiration.seconds,
                 newLoginMethod = ed.unicoach.db.models.LoginMethod.PASSWORD,
+                // The row changes hands, so it starts over: the previous
+                // holder's drafts and CSRF token are not the new user's.
+                newMetadata = mintSessionMetadata(),
               ).getOrThrow()
             wasReminted = true
           }
@@ -139,7 +144,7 @@ class AuthService(
                   tokenHash = newHash,
                   userAgent = userAgent,
                   initialIp = initialIp,
-                  metadata = null,
+                  metadata = mintSessionMetadata(),
                   expiration = sessionExpiration,
                   loginMethod = ed.unicoach.db.models.LoginMethod.PASSWORD,
                 ),
@@ -645,13 +650,28 @@ class AuthService(
           tokenHash = newHash,
           userAgent = userAgent,
           initialIp = initialIp,
-          metadata = null,
+          metadata = mintSessionMetadata(),
           expiration = sessionExpiration,
           loginMethod = loginMethod,
         ),
       ).getOrThrow()
     return newToken
   }
+
+  /**
+   * A new session's first metadata: a fresh CSRF synchronizer token and nothing
+   * else (RFC 265 D-F, brief 0013 D22).
+   *
+   * Minted WITH the session, in the same INSERT, so there is no window in which
+   * a live session lacks one and no lazy first write a concurrent request could
+   * race. Every session gets one, including `rest-server`'s, because the row is
+   * one row whichever surface it is later used from.
+   */
+  private fun mintSessionMetadata(): SessionMetadata =
+    SessionMetadata
+      .newBuilder()
+      .setCsrfToken(ByteString.copyFrom(tokenGenerator.generateBytes()))
+      .build()
 
   /** A name candidate and the source it came from, so a rejected one is identifiable in the log. */
   private data class NameCandidate(

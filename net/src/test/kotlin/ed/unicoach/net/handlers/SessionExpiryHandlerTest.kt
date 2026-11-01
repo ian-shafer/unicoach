@@ -78,7 +78,9 @@ class SessionExpiryHandlerTest {
               tokenHash = TokenHash(tokenBytes),
               userAgent = "test-agent",
               initialIp = "127.0.0.1",
-              metadata = null,
+              metadata =
+                ed.unicoach.db.session.SessionMetadata
+                  .getDefaultInstance(),
               expiration = expiration,
             ),
           )

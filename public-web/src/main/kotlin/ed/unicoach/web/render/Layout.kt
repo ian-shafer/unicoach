@@ -3,19 +3,19 @@ package ed.unicoach.web.render
 import ed.unicoach.web.assets.WebAssets
 import ed.unicoach.web.auth.ACCOUNT_PATH
 import ed.unicoach.web.auth.CHAT_PATH
+import ed.unicoach.web.auth.CsrfToken
 import ed.unicoach.web.auth.SIGN_IN_PATH
 import ed.unicoach.web.auth.SIGN_OUT_PATH
+import ed.unicoach.web.auth.WebCaller
 import ed.unicoach.web.common.http.ROBOTS_NOINDEX
 import kotlinx.html.ButtonType
 import kotlinx.html.FlowContent
-import kotlinx.html.FormMethod
 import kotlinx.html.HTML
 import kotlinx.html.MAIN
 import kotlinx.html.a
 import kotlinx.html.body
 import kotlinx.html.button
 import kotlinx.html.footer
-import kotlinx.html.form
 import kotlinx.html.head
 import kotlinx.html.header
 import kotlinx.html.link
@@ -83,8 +83,8 @@ const val LINKLIKE_CLASS = "linklike"
 /**
  * Who the navigation is being rendered FOR (RFC 224).
  *
- * An enum for the same reason [ShellWidth] is one: the two headers differ in
- * which controls they carry, and a caller that passed a free-form string or a
+ * A closed type for the same reason [ShellWidth] is one: the two headers differ
+ * in which controls they carry, and a caller that passed a free-form string or a
  * boolean pair could ask for a header that is neither. It also keeps the door
  * in ONE place — a "Sign in" link written per page would go missing from the
  * page that forgot it, and the slice's whole door is that link.
@@ -94,10 +94,9 @@ const val LINKLIKE_CLASS = "linklike"
  * the same body it did; what they gain is the shared header's one new anchor,
  * which is the point of putting the door in the shell rather than on a page.
  */
-
-enum class ShellNav {
+sealed interface ShellNav {
   /** No session: the nav carries the door, `<a href="/sign-in">Sign in</a>`. */
-  SignedOut,
+  data object SignedOut : ShellNav
 
   /**
    * A live session: the nav carries "Account" and the sign-out control.
@@ -106,9 +105,19 @@ enum class ShellNav {
    * not styling pedantry: it changes state, so it must be a `POST` the
    * same-origin guard can see (D-C), and a `GET` link would be followed by
    * every prefetcher and link scanner that touches the page.
+   *
+   * It carries the session's [csrf] token (RFC 265) because that form, like
+   * every signed-in form, must echo it — so a signed-in header cannot be asked
+   * for without the token its sign-out control needs, and a signed-in page
+   * reads its own forms' token from the same value.
    */
-  SignedIn,
+  data class SignedIn(
+    val csrf: CsrfToken,
+  ) : ShellNav
 }
+
+/** The header [this] caller's pages render: signed in, with the session's CSRF token. */
+val WebCaller.signedInNav: ShellNav.SignedIn get() = ShellNav.SignedIn(csrfToken)
 
 /**
  * The shared HTML skeleton for every public-web page. Links the chrome-less
@@ -206,11 +215,11 @@ fun FlowContent.siteHeader(shellNav: ShellNav = ShellNav.SignedOut) {
           a(href = SIGN_IN_PATH) { +SIGN_IN_HEADING }
         }
 
-        ShellNav.SignedIn -> {
+        is ShellNav.SignedIn -> {
           // The signed-in root (RFC 262), reachable from every signed-in page.
           a(href = CHAT_PATH) { +CHAT_TITLE }
           a(href = ACCOUNT_PATH) { +"Account" }
-          form(action = SIGN_OUT_PATH, method = FormMethod.post, classes = SIGN_OUT_FORM_CLASS) {
+          signedInForm(action = SIGN_OUT_PATH, csrf = shellNav.csrf, classes = SIGN_OUT_FORM_CLASS) {
             button(type = ButtonType.submit, classes = LINKLIKE_CLASS) { +"Sign out" }
           }
         }

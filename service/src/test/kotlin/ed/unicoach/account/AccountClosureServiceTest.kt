@@ -111,7 +111,16 @@ class AccountClosureServiceTest {
     SessionsDao
       .create(
         sqlSession,
-        NewSession(UserId(userId), hash, "agent", null, null, Duration.ofDays(7), LoginMethod.PASSWORD),
+        NewSession(
+          UserId(userId),
+          hash,
+          "agent",
+          null,
+          ed.unicoach.db.session.SessionMetadata
+            .getDefaultInstance(),
+          Duration.ofDays(7),
+          LoginMethod.PASSWORD,
+        ),
       ).getOrThrow()
     return Account(UserId(userId), email, hash)
   }

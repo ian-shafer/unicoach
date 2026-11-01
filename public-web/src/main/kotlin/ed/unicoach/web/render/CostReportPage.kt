@@ -65,13 +65,13 @@ import ed.unicoach.db.models.QualifyingStanding
 import ed.unicoach.db.models.ResidencyTierBasis
 import ed.unicoach.family.ClaimView
 import ed.unicoach.web.REPORT_CONNECT_PATH
+import ed.unicoach.web.auth.CsrfToken
 import ed.unicoach.web.auth.REGISTER_PATH
 import ed.unicoach.web.auth.SIGN_IN_PATH
 import io.ktor.server.application.ApplicationCall
 import io.ktor.server.html.respondHtml
 import kotlinx.html.ButtonType
 import kotlinx.html.FlowContent
-import kotlinx.html.FormMethod
 import kotlinx.html.TBODY
 import kotlinx.html.THEAD
 import kotlinx.html.TR
@@ -81,7 +81,6 @@ import kotlinx.html.aside
 import kotlinx.html.button
 import kotlinx.html.caption
 import kotlinx.html.div
-import kotlinx.html.form
 import kotlinx.html.h1
 import kotlinx.html.h2
 import kotlinx.html.h3
@@ -554,7 +553,7 @@ private fun printsAProgram(programSlices: Map<CollegeId, List<CollegeSubjectRetu
 suspend fun ApplicationCall.respondCostReportPage(
   profile: CollegeCostProfile,
   nav: ShellNav = ShellNav.SignedOut,
-  claim: ClaimView,
+  offer: ClaimOffer,
   token: String,
 ) {
   val residencyBases = residencyBasesOf(profile)
@@ -614,7 +613,7 @@ suspend fun ApplicationCall.respondCostReportPage(
       // AFTER the report and outside its section (RFC 254): the offer never
       // stands in front of the report, and an `aside` keeps it out of every
       // measure taken of the report section itself.
-      reportClaim(claim, token)
+      reportClaim(offer, token)
     }
   }
 }
@@ -662,6 +661,32 @@ const val CLAIM_NOT_SENT_NOTICE =
   "Your account is ready, but we couldn't send a request to connect from that report link."
 
 /**
+ * The one offer the page makes after the report (RFC 254): `:service`'s
+ * [ClaimView], resolved against the reader this request has.
+ *
+ * Its own type rather than [ClaimView] because the signed-in offer is a form,
+ * and a signed-in form needs the session's CSRF token (RFC 265). Carrying the
+ * token on [AskToConnect] makes "ask to connect without a session" a value
+ * nobody can build, the way `InviteViewer.SignedIn` carries its token for the
+ * invite page's accept form.
+ */
+sealed interface ClaimOffer {
+  /** A signed-out reader: the two doors that carry the report token onward. */
+  data object SignUp : ClaimOffer
+
+  /** A signed-in reader who may ask to connect, by a form that echoes [csrf]. */
+  data class AskToConnect(
+    val csrf: CsrfToken,
+  ) : ClaimOffer
+
+  /** A signed-in reader whose request is already waiting. */
+  data object Pending : ClaimOffer
+
+  /** Nothing to offer. */
+  data object None : ClaimOffer
+}
+
+/**
  * The offer after the report (RFC 254), chosen by WHO is reading and by
  * nothing about the student, so its markup cannot carry a fact about them.
  *
@@ -671,11 +696,11 @@ const val CLAIM_NOT_SENT_NOTICE =
  * `Referrer-Policy: same-origin` already keeps the token off every other origin.
  */
 private fun FlowContent.reportClaim(
-  claim: ClaimView,
+  offer: ClaimOffer,
   token: String,
 ) {
-  when (claim) {
-    ClaimView.SIGN_UP -> {
+  when (offer) {
+    ClaimOffer.SignUp -> {
       aside(REPORT_CLAIM_CLASS) {
         claimOffer()
         p {
@@ -688,21 +713,21 @@ private fun FlowContent.reportClaim(
       }
     }
 
-    ClaimView.ASK_TO_CONNECT -> {
+    is ClaimOffer.AskToConnect -> {
       aside(REPORT_CLAIM_CLASS) {
         claimOffer()
-        form(action = REPORT_CONNECT_PATH, method = FormMethod.post) {
+        signedInForm(action = REPORT_CONNECT_PATH, csrf = offer.csrf) {
           reportField(token)
           button(type = ButtonType.submit) { +CLAIM_ASK_BUTTON }
         }
       }
     }
 
-    ClaimView.PENDING -> {
+    ClaimOffer.Pending -> {
       aside(REPORT_CLAIM_CLASS) { p { +CLAIM_PENDING_LINE } }
     }
 
-    ClaimView.NONE -> {
+    ClaimOffer.None -> {
       Unit
     }
   }

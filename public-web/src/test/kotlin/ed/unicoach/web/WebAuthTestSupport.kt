@@ -9,6 +9,7 @@ import ed.unicoach.auth.EmailVerificationConfig
 import ed.unicoach.auth.EmailVerificationService
 import ed.unicoach.auth.GoogleIdTokenVerifier
 import ed.unicoach.auth.LoginResult
+import ed.unicoach.auth.SessionMetadataService
 import ed.unicoach.chat.ChatProvider
 import ed.unicoach.chat.LogOnlyChatProvider
 import ed.unicoach.coaching.CoachingConfig
@@ -42,6 +43,8 @@ import ed.unicoach.student.StudentService
 import ed.unicoach.subscriptions.SubscriptionPlans
 import ed.unicoach.util.Argon2Hasher
 import ed.unicoach.util.TokenGenerator
+import ed.unicoach.web.auth.CsrfToken
+import ed.unicoach.web.render.CSRF_FIELD
 import io.ktor.client.HttpClient
 import io.ktor.client.request.HttpRequestBuilder
 import io.ktor.client.request.forms.FormDataContent
@@ -126,6 +129,16 @@ object WebAuthTestSupport {
 
   /** The production request service (RFC 254), wired as `Application.kt` wires it. */
   val linkRequestService = SupporterLinkRequestService(database, supporterService, LinkRequestedNotice(QueueService(database)))
+
+  /** The production metadata writer the draft rail writes through (RFC 265). */
+  val sessionMetadataService = SessionMetadataService(database)
+
+  /**
+   * The production metadata writer over a database that has gone away: a real
+   * pool on the real configuration, closed, so every write fails the way an
+   * outage fails it rather than the way a fake chooses to.
+   */
+  fun unreachableSessionMetadataService(): SessionMetadataService = SessionMetadataService(Database(dbConfig).also(Database::close))
 
   /** The production student lookup the chat's student gate reads (RFC 262). */
   val studentService = StudentService(database)
@@ -310,6 +323,14 @@ object WebAuthTestSupport {
       authService.resolveSession(TokenHash.fromRawToken(token)).getOrThrow()
     }
 
+  /**
+   * The CSRF token the session behind [token] carries, as its pages render it
+   * (RFC 265), or `null` when [token] resolves no session — the value a page's
+   * `_csrf` field would hold, read from the row rather than scraped from a page,
+   * so a suite about a route does not depend on another route rendering.
+   */
+  fun csrfTokenFor(token: String): String? = resolveSession(token)?.let { CsrfToken.of(it.session.metadata)?.value }
+
   /** How many `sessions` rows exist at all — the D12 honesty test's whole assertion. */
   fun sessionRowCount(): Int = count("SELECT count(*) FROM sessions")
 
@@ -318,9 +339,6 @@ object WebAuthTestSupport {
     count(
       "SELECT count(*) FROM sessions WHERE user_id = '$userId'::uuid AND is_revoked = false AND expires_at > NOW()",
     )
-
-  /** The metadata column of the single session row, or null. Used by the D12 honesty test. */
-  fun soleSessionMetadata(): String? = soleString("SELECT metadata FROM sessions")
 
   /**
    * How many whole seconds from now the single live session row expires.
@@ -382,9 +400,6 @@ object WebAuthTestSupport {
   private fun <T> withConnection(block: (Connection) -> T): T =
     DriverManager.getConnection(dbConfig.jdbcUrl, dbConfig.user, dbConfig.password ?: "").use(block)
 
-  /** The single `String` column of the one row [sql] must return. */
-  private fun soleString(sql: String): String? = soleRow(sql) { it.getString(1) }
-
   /** The single `Long` column of the one row [sql] must return. */
   private fun soleLong(sql: String): Long = soleRow(sql) { it.getLong(1) }
 
@@ -442,8 +457,15 @@ object WebAuthTestSupport {
  * `SameOriginGuardTest` deliberately does NOT use it: that suite varies the
  * headers this one fixes.
  *
+ * The session's CSRF token is part of that shape too (RFC 265): every
+ * signed-in form a page renders echoes it, so a POST carrying [sessionToken]
+ * carries that session's token in `_csrf` unless the call says otherwise.
+ *
  * @param client the client to post with — a suite asserting WHERE a caller was
  *   sent passes [noFollowClient].
+ * @param csrf the `_csrf` value to send, or `null` to send none. Defaults to
+ *   the token of the session behind [sessionToken]; the CSRF suite passes an
+ *   absent or wrong one.
  * @param extra anything this one request adds, such as a `User-Agent`.
  */
 suspend fun ApplicationTestBuilder.formPost(
@@ -451,12 +473,18 @@ suspend fun ApplicationTestBuilder.formPost(
   form: Parameters = Parameters.Empty,
   sessionToken: String? = null,
   client: HttpClient = this.client,
+  csrf: String? = sessionToken?.let(WebAuthTestSupport::csrfTokenFor),
   extra: HttpRequestBuilder.() -> Unit = {},
 ): HttpResponse =
   client.post(path) {
     header(HttpHeaders.Origin, WebAuthTestSupport.urlBase)
     sessionToken?.let { header(HttpHeaders.Cookie, WebAuthTestSupport.cookieHeader(it)) }
-    setBody(FormDataContent(form))
+    val body =
+      Parameters.build {
+        appendAll(form)
+        csrf?.let { append(CSRF_FIELD, it) }
+      }
+    setBody(FormDataContent(body))
     extra()
   }
 

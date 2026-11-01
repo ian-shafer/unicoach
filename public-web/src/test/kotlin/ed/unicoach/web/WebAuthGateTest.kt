@@ -199,6 +199,11 @@ class WebAuthGateTest {
    *
    * The POST answers 303 rather than rendering, so a reload cannot send a second
    * email; the confirmation the family reads is on the page this returns.
+   *
+   * The session's CSRF token is replaced in the returned page: it is a
+   * per-session secret every signed-in page carries (RFC 265), so two sessions'
+   * pages differ by it whatever the account's state, and comparing it would
+   * prove nothing about what the page says.
    */
   private suspend fun io.ktor.server.testing.ApplicationTestBuilder.resend(token: String): String {
     val cookie = WebAuthTestSupport.cookieHeader(token)
@@ -211,6 +216,6 @@ class WebAuthGateTest {
 
     val rendered = noFollow.get(location) { header(HttpHeaders.Cookie, cookie) }
     assertEquals(HttpStatusCode.OK, rendered.status)
-    return rendered.bodyAsText()
+    return rendered.bodyAsText().replace(WebAuthTestSupport.csrfTokenFor(token)!!, "CSRF")
   }
 }

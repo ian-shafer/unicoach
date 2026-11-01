@@ -76,15 +76,17 @@ data class SiteOrigin(
 }
 
 /**
- * The methods a same-origin check SKIPS: the two safe ones, and only those.
+ * The methods that change no state, and so are SKIPPED by every cross-site
+ * request forgery check: this file's same-origin guard and `public-web`'s CSRF
+ * synchronizer-token check (RFC 265) both read this one set.
  *
  * Stated as the exemption rather than as the set to check, because the
  * exemption is the closed set. A safe method is followed by every link,
- * prefetch and crawler, none of which sends an `Origin`; every other method is
- * checked whether or not this file has heard of it, so a route added by a later
- * slice cannot arrive unguarded.
+ * prefetch and crawler, none of which sends an `Origin` or a token; every other
+ * method is checked whether or not this file has heard of it, so a route added
+ * by a later slice cannot arrive unguarded.
  */
-private val SAFE_METHODS =
+val SAFE_METHODS: Set<HttpMethod> =
   setOf(
     HttpMethod.Get,
     HttpMethod.Head,
@@ -109,8 +111,9 @@ private val SAFE_METHODS =
  * it. Shipping a public sign-in form with that hole and a note in the RFC was a
  * real option and was rejected.
  *
- * This is an outer layer, not a replacement: `web/05` still lands synchronizer
- * tokens per D22, and they compose with this.
+ * This is an outer layer, not a replacement: `web/05` has since landed D22's
+ * synchronizer tokens (RFC 265), which public-web checks on every
+ * session-bearing POST behind this guard, and the two compose.
  *
  * The policy, stated exactly because the edges are where these go wrong:
  *

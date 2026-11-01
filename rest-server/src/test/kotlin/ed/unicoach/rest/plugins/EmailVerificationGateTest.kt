@@ -365,7 +365,9 @@ class EmailVerificationGateTest {
                     .fromRawToken(rawToken),
                 userAgent = "test",
                 initialIp = "127.0.0.1",
-                metadata = null,
+                metadata =
+                  ed.unicoach.db.session.SessionMetadata
+                    .getDefaultInstance(),
                 expiration = java.time.Duration.ofDays(7),
                 loginMethod = ed.unicoach.db.models.LoginMethod.PASSWORD,
               ),

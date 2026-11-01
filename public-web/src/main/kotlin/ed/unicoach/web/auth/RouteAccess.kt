@@ -2,10 +2,16 @@ package ed.unicoach.web.auth
 
 import ed.unicoach.auth.AuthService
 import ed.unicoach.web.WebSessionConfig
+import ed.unicoach.web.common.http.SAFE_METHODS
+import ed.unicoach.web.render.respondForbiddenPage
+import ed.unicoach.web.render.signedInNav
+import io.ktor.server.request.httpMethod
+import io.ktor.server.request.path
 import io.ktor.server.routing.Route
 import io.ktor.server.routing.RoutingContext
 import io.ktor.server.routing.get
 import io.ktor.server.routing.post
+import org.slf4j.LoggerFactory
 
 /**
  * Registers a `GET` that only a signed-in caller reaches, and HANDS the handler
@@ -84,6 +90,16 @@ internal fun Route.postVerified(
  * than an error page, so a caller who arrives by an unusual spelling reads
  * exactly what a caller who arrives by the usual one reads.
  *
+ * A state-changing request must also echo the session's CSRF synchronizer token
+ * (brief 0013 D22, RFC 265), checked HERE so every session-bearing POST is
+ * covered by construction — [postSignedIn], [postVerified], the routes that
+ * call this directly, and whatever a later slice registers. The method decides,
+ * not the wrapper: the safe methods are the closed set, the same-origin
+ * guard's own [SAFE_METHODS], so a method nobody listed is checked rather than
+ * waved through. A missing or wrong token gets the same branded 403 that guard
+ * renders; this is the inner layer of the same defence, and a family reads one
+ * answer for both.
+ *
  * Free on a path the gate already classified: `resolveWebCaller` reads the
  * caller back off `call.attributes`.
  */
@@ -95,8 +111,27 @@ internal suspend fun RoutingContext.handleAccess(
 ) {
   val caller = call.resolveWebCaller(authService, sessionConfig)
   if (caller == null) return call.respondGateRedirect(SIGN_IN_PATH)
+  if (call.request.httpMethod !in SAFE_METHODS) {
+    val refusal = call.csrfRefusal(caller.csrfToken)
+    if (refusal != null) {
+      // WARN, with the method, the path and WHY, and never the token: a stale
+      // page after a fresh sign-in (a MISMATCH) and a request that never carried
+      // the form both land here, and the log is the only place the two can be
+      // counted apart.
+      csrfLog.warn(
+        "CSRF token refused [{} {}] for session [{}]: {}",
+        call.request.httpMethod.value,
+        call.request.path(),
+        caller.session.id.value,
+        refusal,
+      )
+      return call.respondForbiddenPage(caller.signedInNav)
+    }
+  }
   if (access == WebAccess.VERIFIED && caller.user.emailVerifiedAt == null) {
     return call.respondGateRedirect(VERIFY_EMAIL_PATH)
   }
   handler(caller)
 }
+
+private val csrfLog = LoggerFactory.getLogger("ed.unicoach.web.auth.Csrf")

@@ -5,17 +5,16 @@ import ed.unicoach.db.models.SupporterRelationship
 import ed.unicoach.family.SupporterCeiling
 import ed.unicoach.web.INVITE_PATH
 import ed.unicoach.web.auth.ACCOUNT_PATH
+import ed.unicoach.web.auth.CsrfToken
 import ed.unicoach.web.auth.HOME_PATH
 import ed.unicoach.web.auth.REGISTER_PATH
 import ed.unicoach.web.auth.SIGN_IN_PATH
 import io.ktor.server.application.ApplicationCall
 import io.ktor.server.html.respondHtml
 import kotlinx.html.ButtonType
-import kotlinx.html.FormMethod
 import kotlinx.html.SECTION
 import kotlinx.html.a
 import kotlinx.html.button
-import kotlinx.html.form
 import kotlinx.html.h1
 import kotlinx.html.h2
 import kotlinx.html.li
@@ -42,11 +41,18 @@ const val INVITE_OWN_LINK_NOTICE =
  * (RFC 232): a stranger is pointed at the two signed-out doors, a signed-in
  * recipient gets the one-click accept, and the inviter is told it is their own
  * link rather than offered a button that cannot work for them.
+ *
+ * [SignedIn] carries the session's CSRF token (RFC 265), because the accept
+ * form is a signed-in POST and must echo it.
  */
-enum class InviteViewer {
-  SIGNED_OUT,
-  SIGNED_IN,
-  INVITER,
+sealed interface InviteViewer {
+  data object SignedOut : InviteViewer
+
+  data class SignedIn(
+    val csrf: CsrfToken,
+  ) : InviteViewer
+
+  data object Inviter : InviteViewer
 }
 
 /**
@@ -156,9 +162,9 @@ private fun SECTION.inviteActions(
   token: String,
 ) {
   when (viewer) {
-    InviteViewer.INVITER -> ownLinkNotice()
-    InviteViewer.SIGNED_IN -> acceptForm(token)
-    InviteViewer.SIGNED_OUT -> signedOutDoors(token)
+    InviteViewer.Inviter -> ownLinkNotice()
+    is InviteViewer.SignedIn -> acceptForm(token, viewer.csrf)
+    InviteViewer.SignedOut -> signedOutDoors(token)
   }
 }
 
@@ -170,8 +176,11 @@ private fun SECTION.ownLinkNotice() {
   }
 }
 
-private fun SECTION.acceptForm(token: String) {
-  form(action = INVITE_PATH, method = FormMethod.post) {
+private fun SECTION.acceptForm(
+  token: String,
+  csrf: CsrfToken,
+) {
+  signedInForm(action = INVITE_PATH, csrf = csrf) {
     tokenField(token)
     button(type = ButtonType.submit) { +"Accept invitation" }
   }

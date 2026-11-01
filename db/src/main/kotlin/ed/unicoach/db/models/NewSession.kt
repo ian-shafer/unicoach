@@ -1,5 +1,6 @@
 package ed.unicoach.db.models
 
+import ed.unicoach.db.session.SessionMetadata
 import java.time.Duration
 
 data class NewSession(
@@ -7,7 +8,8 @@ data class NewSession(
   val tokenHash: TokenHash,
   val userAgent: String?,
   val initialIp: String?,
-  val metadata: String?,
+  /** The row's first metadata; see [Session.metadata]. */
+  val metadata: SessionMetadata,
   val expiration: Duration,
   val loginMethod: LoginMethod? = null,
 )

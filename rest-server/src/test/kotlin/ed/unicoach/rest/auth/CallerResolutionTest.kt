@@ -120,7 +120,9 @@ class CallerResolutionTest {
                 tokenHash = tokenHash,
                 userAgent = "test",
                 initialIp = "127.0.0.1",
-                metadata = null,
+                metadata =
+                  ed.unicoach.db.session.SessionMetadata
+                    .getDefaultInstance(),
                 expiration = Duration.ofDays(7),
                 loginMethod = LoginMethod.PASSWORD,
               ),

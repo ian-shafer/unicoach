@@ -6,13 +6,16 @@ import ed.unicoach.auth.EmailVerificationService
 import ed.unicoach.auth.EmailVerifier
 import ed.unicoach.auth.LoginResult
 import ed.unicoach.auth.RegisterResult
+import ed.unicoach.auth.SessionMetadataService
 import ed.unicoach.auth.VerifyEmailResult
 import ed.unicoach.coaching.CoachingService
 import ed.unicoach.common.config.TOKEN_QUERY_PARAM
 import ed.unicoach.db.models.User
 import ed.unicoach.db.models.UserId
+import ed.unicoach.db.session.ChangeEmailDraft
 import ed.unicoach.family.AcceptInviteOutcome
 import ed.unicoach.family.ClaimOutcome
+import ed.unicoach.family.ClaimView
 import ed.unicoach.family.InviteMissReason
 import ed.unicoach.family.InvitePreviewOutcome
 import ed.unicoach.family.SupporterInviteService
@@ -47,7 +50,9 @@ import ed.unicoach.web.common.http.setContentSecurityPolicy
 import ed.unicoach.web.common.http.setLinkHolderPrivacyHeaders
 import ed.unicoach.web.common.logging.secretQueryParams
 import ed.unicoach.web.fafsa.FafsaDeadlineSource
+import ed.unicoach.web.render.CHANGE_EMAIL_DRAFT
 import ed.unicoach.web.render.ChangeEmailFormState
+import ed.unicoach.web.render.ClaimOffer
 import ed.unicoach.web.render.EMAIL_FIELD
 import ed.unicoach.web.render.FAFSA_PATH
 import ed.unicoach.web.render.InviteViewer
@@ -78,6 +83,7 @@ import ed.unicoach.web.render.respondVerifyEmailConfirm
 import ed.unicoach.web.render.respondVerifyEmailHold
 import ed.unicoach.web.render.respondVerifyEmailResult
 import ed.unicoach.web.render.respondWhoPaysPage
+import ed.unicoach.web.render.signedInNav
 import ed.unicoach.web.report.CostReportOutcome
 import ed.unicoach.web.report.CostReportSource
 import ed.unicoach.web.report.MissReason
@@ -282,6 +288,7 @@ fun Application.installPublicWebRouting(
   linkRequestService: SupporterLinkRequestService,
   coachingService: CoachingService,
   studentService: StudentService,
+  sessionMetadataService: SessionMetadataService,
 ) {
   install(StatusPages) {
     status(HttpStatusCode.NotFound) { call, _ ->
@@ -375,7 +382,15 @@ fun Application.installPublicWebRouting(
       call.respondVerifyEmailResult(outcome, openInAppUrl, isIPhone, call.shellNav(authService, sessionConfig))
     }
 
-    authRoutes(authService, emailVerificationService, sessionConfig, supporterInviteService, supporterService, linkRequestService)
+    authRoutes(
+      authService,
+      emailVerificationService,
+      sessionConfig,
+      supporterInviteService,
+      supporterService,
+      linkRequestService,
+      sessionMetadataService,
+    )
 
     reportRoute(costReportSource, authService, sessionConfig, linkRequestService)
 
@@ -612,9 +627,11 @@ private fun claimLandingUrl(
  * the browser's back button does not offer to.
  *
  * Every failing POST re-renders its own form at a status a client can read,
- * carrying the typed values. That re-render is ordinary form handling and is
- * NOT the session form-state rule D12; see the page KDocs and the D12 honesty
- * test in `SignInRoutingTest`.
+ * carrying the typed values. On the signed-out doors that re-render is
+ * ordinary form handling and is NOT the session form-state rule D12, because
+ * there is no session (see the D12 honesty test in `SignInRoutingTest`). A
+ * signed-in form ALSO keeps the values as a draft in the session (RFC 265),
+ * through [sessionMetadata].
  */
 private fun Route.authRoutes(
   authService: AuthService,
@@ -623,6 +640,7 @@ private fun Route.authRoutes(
   supporterInviteService: SupporterInviteService,
   supporterService: SupporterService,
   linkRequestService: SupporterLinkRequestService,
+  sessionMetadata: SessionMetadataService,
 ) {
   // `/invite` sends a signed-out recipient to these two doors with the RAW
   // invite token in the query string, so both scope it secret exactly as
@@ -831,44 +849,88 @@ private fun Route.authRoutes(
 
   getVerified(ACCOUNT_PATH, authService, sessionConfig) { caller ->
     val isSupporter = supporterService.find(caller.user.id).getOrThrow() != null
-    call.respondAccountPage(caller.user, isSupporter, notice = call.requestedNotice())
+    call.respondAccountPage(caller.user, isSupporter, caller.signedInNav, notice = call.requestedNotice())
   }
 
   getVerified(CHANGE_EMAIL_PATH, authService, sessionConfig) { caller ->
-    call.respondChangeEmailPage(caller.user)
+    // The draft a refused submission left, values only: its error belonged to
+    // that attempt (RFC 265).
+    val draft = caller.draftFor(CHANGE_EMAIL_DRAFT)
+    call.respondChangeEmailPage(
+      caller.user,
+      caller.signedInNav,
+      if (draft == null) ChangeEmailFormState.Fresh else ChangeEmailFormState.Drafted(draft),
+    )
   }
 
   postVerified(CHANGE_EMAIL_PATH, authService, sessionConfig) { caller ->
     // A body that is not a form, or that carries zero or two `email` fields, is
     // not this form's submission: re-render at 400 without inventing a rule the
     // web tier does not own. The empty message says no `:service` rule fired
-    // because `:service` was never called.
-    val newEmail = call.formParametersOrNull()?.formField(EMAIL_FIELD)
-    if (newEmail == null) {
-      return@postVerified call.respondChangeEmailPage(caller.user, ChangeEmailFormState.Invalid("", ""))
-    }
+    // because `:service` was never called. Nothing is saved: there is no
+    // typing of the family's here to keep.
+    val newEmail =
+      call.formParametersOrNull()?.formField(EMAIL_FIELD)
+        ?: return@postVerified call.respondChangeEmailPage(caller.user, caller.signedInNav, ChangeEmailFormState.Invalid("", ""))
 
     when (val result = authService.changeEmail(caller.user, newEmail).getOrThrow()) {
-      // To the VERIFICATION HOLD SCREEN, not to /account. `:service` clears
-      // `email_verified_at` as part of the change, so the gate classes /account
-      // as VERIFIED and bounces the family to /verify-email — dropping the query
-      // string, and with it the confirmation, on the way. The notice rides to
-      // the page they actually land on, and the message ("Check the new address
-      // for a verification link") was written for that page anyway.
       is ChangeEmailResult.Success -> {
-        call.respondSeeOther(noticeUrl(VERIFY_EMAIL_PATH, WebNotice.EMAIL_CHANGED))
+        call.respondEmailChanged(sessionMetadata, caller)
       }
 
       // :service's own message, carried verbatim by the state that renders it
       // (see ChangeEmailFormState.Invalid); the duplicate sentence is the page's.
       is ChangeEmailResult.ValidationFailure -> {
-        call.respondChangeEmailPage(caller.user, ChangeEmailFormState.Invalid(newEmail, result.message))
+        call.respondEmailRefused(sessionMetadata, caller, newEmail, ChangeEmailFormState.Invalid(newEmail, result.message))
       }
 
       is ChangeEmailResult.DuplicateEmail -> {
-        call.respondChangeEmailPage(caller.user, ChangeEmailFormState.Duplicate(newEmail))
+        call.respondEmailRefused(sessionMetadata, caller, newEmail, ChangeEmailFormState.Duplicate(newEmail))
       }
     }
+  }
+}
+
+/**
+ * The answer to a change-email POST `:service` accepted: the draft is dropped
+ * (best effort — the change has committed whatever that write does), then the
+ * family is sent on.
+ *
+ * To the VERIFICATION HOLD SCREEN, not to /account. `:service` clears
+ * `email_verified_at` as part of the change, so the gate classes /account as
+ * VERIFIED and bounces the family to /verify-email — dropping the query string,
+ * and with it the confirmation, on the way. The notice rides to the page they
+ * actually land on, and the message ("Check the new address for a verification
+ * link") was written for that page anyway.
+ */
+private suspend fun ApplicationCall.respondEmailChanged(
+  sessionMetadata: SessionMetadataService,
+  caller: WebCaller,
+) {
+  clearDraft(sessionMetadata, caller, CHANGE_EMAIL_DRAFT)
+  respondSeeOther(noticeUrl(VERIFY_EMAIL_PATH, WebNotice.EMAIL_CHANGED))
+}
+
+/**
+ * The answer to a change-email POST `:service` refused: the family's typing is
+ * kept in the session (D12) and the form renders straight back with it, as
+ * [refused]. One UPDATE: this save, and no clear.
+ *
+ * The save is best effort ([saveDraft]): when it does not keep the draft the
+ * same page renders with a notice saying so, and only a session gone since the
+ * request resolved changes the answer, to the sign-in form.
+ */
+private suspend fun ApplicationCall.respondEmailRefused(
+  sessionMetadata: SessionMetadataService,
+  caller: WebCaller,
+  newEmail: String,
+  refused: ChangeEmailFormState,
+) {
+  val draft = ChangeEmailDraft.newBuilder().setNewEmail(newEmail).build()
+  when (val saved = saveDraft(sessionMetadata, caller, CHANGE_EMAIL_DRAFT, draft)) {
+    DraftSave.Kept -> respondChangeEmailPage(caller.user, caller.signedInNav, refused)
+    is DraftSave.NotKept -> respondChangeEmailPage(caller.user, caller.signedInNav, refused, draftNotKept = saved.why)
+    DraftSave.SessionGone -> respondGateRedirect(SIGN_IN_PATH)
   }
 }
 
@@ -921,7 +983,7 @@ private fun noticeUrl(
 private suspend fun ApplicationCall.shellNav(
   authService: AuthService,
   sessionConfig: WebSessionConfig,
-): ShellNav = if (resolveWebCaller(authService, sessionConfig) != null) ShellNav.SignedIn else ShellNav.SignedOut
+): ShellNav = resolveWebCaller(authService, sessionConfig)?.signedInNav ?: ShellNav.SignedOut
 
 /**
  * [shellNav] for every page rendered BECAUSE something already failed.
@@ -964,7 +1026,7 @@ private suspend fun ApplicationCall.respondVerificationHold(
   sessionConfig: WebSessionConfig,
 ) {
   val caller = resolveWebCaller(authService, sessionConfig) ?: return respondGateRedirect(SIGN_IN_PATH)
-  respondVerifyEmailHold(caller.user, notice = requestedNotice())
+  respondVerifyEmailHold(caller.user, caller.signedInNav, notice = requestedNotice())
 }
 
 /**
@@ -1076,13 +1138,13 @@ private suspend fun ApplicationCall.respondPresentedReport(
   authService: AuthService,
   sessionConfig: WebSessionConfig,
 ) {
-  val viewer = resolveWebCaller(authService, sessionConfig)?.user?.id
-  when (val outcome = costReportSource.getByShareToken(rawToken, viewer).getOrThrow()) {
+  val caller = resolveWebCaller(authService, sessionConfig)
+  when (val outcome = costReportSource.getByShareToken(rawToken, caller?.user?.id).getOrThrow()) {
     is CostReportOutcome.Found -> {
       respondCostReportPage(
         profile = outcome.profile,
-        nav = if (viewer != null) ShellNav.SignedIn else ShellNav.SignedOut,
-        claim = outcome.claim,
+        nav = caller?.signedInNav ?: ShellNav.SignedOut,
+        offer = claimOffer(outcome.claim, caller),
         token = rawToken,
       )
     }
@@ -1092,6 +1154,27 @@ private suspend fun ApplicationCall.respondPresentedReport(
     }
   }
 }
+
+/**
+ * The page's offer: `:service`'s [claim] for this reader, paired with the
+ * [caller] it was decided for, so the signed-in offer carries the session's CSRF
+ * token its form echoes (RFC 265).
+ *
+ * `:service` offers [ClaimView.ASK_TO_CONNECT] only to a viewer it was handed,
+ * and this request handed it `caller?.user?.id` — so a null [caller] with that
+ * claim is a broken port contract, refused here, at the one place the claim and
+ * the caller meet, rather than in the renderer.
+ */
+private fun claimOffer(
+  claim: ClaimView,
+  caller: WebCaller?,
+): ClaimOffer =
+  when (claim) {
+    ClaimView.SIGN_UP -> ClaimOffer.SignUp
+    ClaimView.ASK_TO_CONNECT -> ClaimOffer.AskToConnect(checkNotNull(caller) { "ASK_TO_CONNECT offered to a signed-out viewer" }.csrfToken)
+    ClaimView.PENDING -> ClaimOffer.Pending
+    ClaimView.NONE -> ClaimOffer.None
+  }
 
 /**
  * The reason is LOGGED, never rendered: the 404 body is byte-identical for
@@ -1223,7 +1306,7 @@ private suspend fun ApplicationCall.respondPreviewedInvite(
         inviterRole = outcome.inviterRole,
         relationship = outcome.relationship,
         token = token,
-        viewer = inviteViewer(caller?.user?.id, outcome.inviterUserId),
+        viewer = inviteViewer(caller, outcome.inviterUserId),
       )
     }
 
@@ -1235,13 +1318,13 @@ private suspend fun ApplicationCall.respondPreviewedInvite(
 
 /** WHO is reading the invite, which is what decides the action the page offers. */
 private fun inviteViewer(
-  callerUserId: UserId?,
+  caller: WebCaller?,
   inviterUserId: UserId,
 ): InviteViewer =
-  when (callerUserId) {
-    null -> InviteViewer.SIGNED_OUT
-    inviterUserId -> InviteViewer.INVITER
-    else -> InviteViewer.SIGNED_IN
+  when (caller?.user?.id) {
+    null -> InviteViewer.SignedOut
+    inviterUserId -> InviteViewer.Inviter
+    else -> InviteViewer.SignedIn(caller.csrfToken)
   }
 
 /**

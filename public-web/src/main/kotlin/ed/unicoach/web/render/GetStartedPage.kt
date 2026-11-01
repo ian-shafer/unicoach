@@ -15,9 +15,9 @@ const val GET_STARTED_DETAIL = "For now, set that up in the Unicoach app on iPho
  * placeholder until `web/06` builds the form here, so the chat's redirect to it
  * never has to move.
  */
-suspend fun ApplicationCall.respondGetStartedPage() {
+suspend fun ApplicationCall.respondGetStartedPage(nav: ShellNav.SignedIn) {
   respondHtml {
-    siteLayout(GET_STARTED_HEADING, width = ShellWidth.WIDE, nav = ShellNav.SignedIn) {
+    siteLayout(GET_STARTED_HEADING, width = ShellWidth.WIDE, nav = nav) {
       section("get-started") {
         h1 { +GET_STARTED_HEADING }
         p { +GET_STARTED_DETAIL }

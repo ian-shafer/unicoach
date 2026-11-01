@@ -86,6 +86,8 @@ suspend fun ApplicationCall.respondSignInPage(
       authFormCard(
         heading = SIGN_IN_HEADING,
         action = SIGN_IN_PATH,
+        // A signed-out door: there is no session whose token it could echo.
+        csrf = null,
         error =
           when (state) {
             SignInFormState.Fresh -> null

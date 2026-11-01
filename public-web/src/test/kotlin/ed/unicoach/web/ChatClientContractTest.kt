@@ -7,10 +7,14 @@ import ed.unicoach.web.ChatTestSupport.message
 import ed.unicoach.web.ChatTestSupport.sendMessage
 import ed.unicoach.web.ChatTestSupport.signedInStudent
 import ed.unicoach.web.ChatTestSupport.textReplay
+import io.ktor.client.request.forms.FormDataContent
 import io.ktor.client.request.get
 import io.ktor.client.request.header
+import io.ktor.client.request.post
+import io.ktor.client.request.setBody
 import io.ktor.client.statement.bodyAsText
 import io.ktor.http.HttpHeaders
+import io.ktor.http.HttpStatusCode
 import io.ktor.server.testing.testApplication
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonObject
@@ -73,6 +77,39 @@ class ChatClientContractTest {
         exchange.children().map { it.className() },
         "the page's exchange is not the student message and the coach message chat.ts builds",
       )
+    }
+  }
+
+  /**
+   * The CSRF half of the contract (RFC 265): the served composer carries the
+   * session's token in the field `chat.ts` reads, and a send carrying it in the
+   * header `chat.ts` names is admitted.
+   */
+  @Test
+  fun `the composer carries the token chat_ts reads and the server admits it in the header chat_ts sends`() {
+    testApplication {
+      application { testPublicWebModule(coachingService = coach(textReplay("Hello."))) }
+      val (_, token) = signedInStudent()
+      val csrf = assertNotNull(WebAuthTestSupport.csrfTokenFor(token))
+
+      val page = Jsoup.parse(client.get("/chat") { header(HttpHeaders.Cookie, WebAuthTestSupport.cookieHeader(token)) }.bodyAsText())
+      val field =
+        assertNotNull(
+          page.selectFirst("${ChatClientContract.composerSelector} input[name=${ChatClientContract.csrfField}]"),
+          "the composer carries no CSRF field for chat.ts to read",
+        )
+      assertEquals(csrf, field.attr("value"), "the composer's CSRF field is not the session's token")
+
+      val sent =
+        client.post("/chat") {
+          header(HttpHeaders.Origin, WebAuthTestSupport.urlBase)
+          header(HttpHeaders.Cookie, WebAuthTestSupport.cookieHeader(token))
+          header(HttpHeaders.Accept, "text/event-stream, text/html")
+          header(ChatClientContract.csrfHeader, csrf)
+          setBody(FormDataContent(message("Hi")))
+        }
+      assertEquals(HttpStatusCode.OK, sent.status, "a send carrying the token in the contract's header was refused")
+      assertTrue(sent.headers[HttpHeaders.ContentType].orEmpty().startsWith("text/event-stream"))
     }
   }
 

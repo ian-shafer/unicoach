@@ -88,6 +88,33 @@ export const FOLLOW_THRESHOLD_PX = 80;
 /** What the POST asks for: the stream, or one of our own HTML notices. */
 export const ACCEPT_HEADER = "text/event-stream, text/html";
 
+/**
+ * The composer's hidden field holding the session's CSRF token (RFC 265). The
+ * message body is built from the text area alone, so the token is read from
+ * here and sent as {@link CSRF_HEADER}.
+ */
+export const CSRF_FIELD = "_csrf";
+
+/** The request header the server reads a `fetch`'s CSRF token from. */
+export const CSRF_HEADER = "X-CSRF-Token";
+
+/**
+ * The `fetch` options for one turn's POST: the body, the session cookie, the
+ * {@link ACCEPT_HEADER} and the session's CSRF token. Without the token the
+ * server refuses the send before any stream opens (RFC 265).
+ */
+export function turnRequest(
+  body: URLSearchParams,
+  csrfToken: string,
+): RequestInit {
+  return {
+    method: "POST",
+    body,
+    credentials: "same-origin",
+    headers: { Accept: ACCEPT_HEADER, [CSRF_HEADER]: csrfToken },
+  };
+}
+
 // ---------------------------------------------------------------------------
 // The stream format
 // ---------------------------------------------------------------------------
@@ -273,6 +300,8 @@ export interface Composer {
   setAction(url: string): void;
   /** The form's body for [text], built from the form's own field names. */
   body(text: string): URLSearchParams;
+  /** The session's CSRF token, as the page rendered it in the composer. */
+  csrfToken(): string;
   /** Send is disabled while a turn is in flight; the text area NEVER is (D-C). */
   setSending(sending: boolean): void;
 }
@@ -311,6 +340,7 @@ export interface TurnResponse {
 export type Post = (
   url: string,
   body: URLSearchParams,
+  csrfToken: string,
 ) => Promise<TurnResponse>;
 
 export interface ChatDeps {
@@ -366,7 +396,11 @@ export class ChatController {
 
     let response: TurnResponse;
     try {
-      response = await post(composer.action(), composer.body(text));
+      response = await post(
+        composer.action(),
+        composer.body(text),
+        composer.csrfToken(),
+      );
     } catch (error) {
       console.error("chat: the send's POST failed", error);
       return fail(this.deps.retriableFailure);
@@ -529,15 +563,19 @@ export function mount(document: Document): void {
   const button = form.querySelector<HTMLButtonElement>("button[type=submit]");
   const action = form.getAttribute("action");
   const retriableFailure = form.getAttribute(RETRIABLE_FAILURE_ATTRIBUTE);
+  const csrf = form.querySelector<HTMLInputElement>(
+    `input[name="${CSRF_FIELD}"]`,
+  );
   if (
     textarea === null || button === null || action === null ||
-    retriableFailure === null
+    retriableFailure === null || csrf === null
   ) {
     console.error("chat: the composer lacks a part this client needs", {
       textarea,
       button,
       action,
       retriableFailure,
+      csrf,
     });
     return;
   }
@@ -548,19 +586,14 @@ export function mount(document: Document): void {
   transcriptElement.scrollTop = transcriptElement.scrollHeight;
 
   const controller = new ChatController({
-    composer: domComposer(form, textarea, button, action),
+    composer: domComposer(form, textarea, button, action, csrf.value),
     transcript: domTranscript(document, transcriptElement, follower),
     page: {
       replaceUrl: (url) => view.history.replaceState(null, "", url),
       navigate: (url) => view.location.assign(url),
     },
-    post: (url, body) =>
-      view.fetch(url, {
-        method: "POST",
-        body,
-        credentials: "same-origin",
-        headers: { Accept: ACCEPT_HEADER },
-      }),
+    post: (url, body, csrfToken) =>
+      view.fetch(url, turnRequest(body, csrfToken)),
     retriableFailure,
   });
 
@@ -582,13 +615,16 @@ export function mount(document: Document): void {
  * The page's composer as the turn sees it. Exported for its test: `setSending`
  * is where "Send, never the text area" (D-C) is actually decided. [action] is
  * the form's destination as the page rendered it; [Composer.setAction] moves
- * both it and the form's attribute.
+ * both it and the form's attribute. [csrfToken] is the composer's
+ * {@link CSRF_FIELD} value, read once: it is the session's, and a page lives
+ * inside one session.
  */
 export function domComposer(
   form: HTMLFormElement,
   textarea: HTMLTextAreaElement,
   button: HTMLButtonElement,
   action: string,
+  csrfToken: string,
 ): Composer {
   let destination = action;
   return {
@@ -607,6 +643,7 @@ export function domComposer(
       body.set(textarea.name, text);
       return body;
     },
+    csrfToken: () => csrfToken,
     setSending: (sending) => {
       button.disabled = sending;
     },

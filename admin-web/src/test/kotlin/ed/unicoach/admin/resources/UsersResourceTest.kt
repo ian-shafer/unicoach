@@ -341,7 +341,9 @@ class UsersResourceTest {
                         ),
                     userAgent = "test",
                     initialIp = "127.0.0.1",
-                    metadata = null,
+                    metadata =
+                      ed.unicoach.db.session.SessionMetadata
+                        .getDefaultInstance(),
                     expiration = java.time.Duration.ofSeconds(3600),
                   ),
                 )

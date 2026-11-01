@@ -212,9 +212,14 @@ class ReportClaimRoutingTest {
       val ava = sharedStudent()
       val jane = WebAuthTestSupport.seedUser(WebAuthTestSupport.uniqueEmail(), name = "Jane Parent")
 
-      val block = assertNotNull(claimBlockOf(reportBody(ava.token, WebAuthTestSupport.login(jane.email.value))))
+      val janeSession = WebAuthTestSupport.login(jane.email.value)
+      val block = assertNotNull(claimBlockOf(reportBody(ava.token, janeSession)))
 
       assertTrue(block.contains("action=\"$REPORT_CONNECT_PATH\""), "a POST form to the connect door")
+      assertTrue(
+        block.contains("name=\"_csrf\" value=\"${WebAuthTestSupport.csrfTokenFor(janeSession)}\""),
+        "the form carries no CSRF token",
+      )
       assertTrue(block.contains("name=\"report\" value=\"${ava.token}\""), "the token rides in its own hidden field")
       assertTrue(block.contains(CLAIM_ASK_BUTTON))
       assertEquals(emptyList(), hrefsOf(block), "no signup links for a reader who is already signed in")
@@ -561,6 +566,20 @@ class ReportClaimRoutingTest {
       assertEquals(HttpStatusCode.Forbidden, opaque.status)
       assertEquals(0, requestCount(), "a refused POST made nothing")
 
+      // Same origin but no CSRF token (RFC 265): refused, and nothing made.
+      val tokenless =
+        formPost(
+          REPORT_CONNECT_PATH,
+          Parameters.build {
+            append("report", ava.token)
+          },
+          sessionToken = session,
+          client = noFollowClient(),
+          csrf = null,
+        )
+      assertEquals(HttpStatusCode.Forbidden, tokenless.status)
+      assertEquals(0, requestCount(), "a token-less POST made nothing")
+
       val real =
         formPost(REPORT_CONNECT_PATH, Parameters.build { append("report", ava.token) }, sessionToken = session, client = noFollowClient())
       assertEquals(HttpStatusCode.SeeOther, real.status)
@@ -579,14 +598,16 @@ class ReportClaimRoutingTest {
         val ava = sharedStudent()
         token = ava.token
         val jane = WebAuthTestSupport.seedUser(WebAuthTestSupport.uniqueEmail(), name = "Jane Parent")
-        val cookie = WebAuthTestSupport.cookieHeader(WebAuthTestSupport.login(jane.email.value))
+        val janeSession = WebAuthTestSupport.login(jane.email.value)
+        val cookie = WebAuthTestSupport.cookieHeader(janeSession)
+        val janeCsrf = WebAuthTestSupport.csrfTokenFor(janeSession)
 
         client.get("/report?token=$token")
         client.get("/register?report=$token")
         client.get("/sign-in?report=$token")
         noFollowClient().get("/register?report=$token") { header(HttpHeaders.Cookie, cookie) }
         formPost("/register", registerForm(WebAuthTestSupport.uniqueEmail(), "report" to token), client = noFollowClient())
-        formPost(REPORT_CONNECT_PATH, Parameters.build { append("report", token) }, client = noFollowClient()) {
+        formPost(REPORT_CONNECT_PATH, Parameters.build { append("report", token) }, client = noFollowClient(), csrf = janeCsrf) {
           header(HttpHeaders.Cookie, cookie)
           header(HttpHeaders.Referrer, "${WebAuthTestSupport.urlBase}/report?token=$token")
         }
