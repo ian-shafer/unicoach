@@ -78,7 +78,7 @@ object SubscriptionsDao {
   /**
    * Insert-or-refresh keyed on `original_transaction_id`. The conflict arm sets
    * `version = subscriptions.version + 1` (satisfying `enforce_versioning`) and
-   * writes in exactly two cases:
+   * writes in exactly three cases:
    *
    * - the existing row's `user_id` matches AND the incoming state actually
    *   differs (`IS DISTINCT FROM` over the four mutable columns). The
@@ -87,7 +87,14 @@ object SubscriptionsDao {
    * - the existing row is owned by a CLOSED account (RFC 252 §1b). The row
    *   REBINDS to the caller's account, because the person who closed it has
    *   come back on the same Apple ID, and nobody else can ride a closed
-   *   account's subscription. The history table records the move.
+   *   account's subscription. The history table records the move;
+   * - the existing row is keyed on an ERASED account (`deleted_user_id` set,
+   *   RFC 264 §7). It rebinds exactly as a closed account's does. Setting
+   *   `user_id` and clearing `deleted_user_id` in the one statement is the only
+   *   write `subscriptions_user_id_pair_check` admits.
+   *
+   * An erased account's row therefore always writes, so the follow-up below
+   * never meets one.
    *
    * Zero rows returned is therefore ambiguous, so the DAO classifies with a
    * follow-up SELECT by `original_transaction_id` in the same transaction: same
@@ -112,6 +119,7 @@ object SubscriptionsDao {
         ON CONFLICT (original_transaction_id) DO UPDATE SET
           version = subscriptions.version + 1,
           user_id = EXCLUDED.user_id,
+          deleted_user_id = NULL,
           product_id = EXCLUDED.product_id,
           status = EXCLUDED.status,
           period_start = EXCLUDED.period_start,
@@ -123,7 +131,7 @@ object SubscriptionsDao {
           ) OR (
             subscriptions.user_id <> EXCLUDED.user_id
             AND EXISTS (SELECT 1 FROM users u WHERE u.id = subscriptions.user_id AND u.deleted_at IS NOT NULL)
-          )
+          ) OR subscriptions.deleted_user_id IS NOT NULL
         RETURNING *
         """.trimIndent(),
         bind = { stmt ->

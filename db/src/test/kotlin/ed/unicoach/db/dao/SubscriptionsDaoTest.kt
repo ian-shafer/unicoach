@@ -261,6 +261,48 @@ class SubscriptionsDaoTest {
   }
 
   /**
+   * RFC 264 §7: an ERASED account's subscription is keyed on `deleted_user_id`,
+   * with `user_id` NULL. The closed-account arm cannot match it (`user_id <>
+   * EXCLUDED.user_id` is NULL), so the deleted-key arm is what rebinds it, and
+   * it clears the deleted key in the same statement, the only write the pair
+   * CHECK admits.
+   */
+  @Test
+  fun `upsert rebinds an erased account's subscription to the new account`() {
+    val erased = createAccount()
+    val returning = createAccount()
+    val first = assertIs<SubscriptionUpsert.Applied>(upsert(erased)).subscription
+    DeletedAccountRowFixture.eraseAccount(connection, erased.value)
+    DeletedAccountRowFixture.moveSubscriptionToDeletedKey(connection, first.id.value, erased.value)
+
+    val rebound = assertIs<SubscriptionUpsert.Applied>(upsert(returning)).subscription
+
+    assertEquals(first.id, rebound.id, "the same row moves; no second row is minted")
+    assertEquals(returning, rebound.userId)
+    assertEquals(3, rebound.version)
+    assertNull(
+      RawSql.single(connection, "SELECT deleted_user_id FROM subscriptions WHERE id = ?", first.id.value) {
+        it.getObject(1, UUID::class.java)
+      },
+      "the deleted key is cleared as the live one is set",
+    )
+    assertEquals(
+      listOf(erased.value to null, null to erased.value, returning.value to null),
+      connection
+        .prepareStatement("SELECT user_id, deleted_user_id FROM subscriptions_versions WHERE id = ? ORDER BY version")
+        .use { stmt ->
+          stmt.setObject(1, first.id.value)
+          stmt.executeQuery().use { rs ->
+            buildList {
+              while (rs.next()) add(rs.getObject("user_id", UUID::class.java) to rs.getObject("deleted_user_id", UUID::class.java))
+            }
+          }
+        },
+      "the history records the account, its erasure, and the rebind",
+    )
+  }
+
+  /**
    * The upsert's third classification — the row the conflict arm did not write
    * and the follow-up SELECT cannot find — fails in THIS module's exception
    * vocabulary, not the driver's. It is thrown from a `mapCatching` rather than

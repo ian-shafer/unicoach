@@ -432,4 +432,189 @@ class AccountLlmCostDaoTest {
     assertEquals(70L, cost.costNanodollars.value)
     assertEquals(0, cost.uncostedCalls, "and it is not counted as a gap either, because it is not attributed")
   }
+
+  // ---------------------------------------------------------------------------
+  // Erasure: the spend stays under the account (RFC 264 §5, D9)
+  //
+  // These tests write rows keyed only on a deleted account, which no other test
+  // class expects to meet, so each runs in a transaction that is rolled back.
+  // ---------------------------------------------------------------------------
+
+  private fun rolledBack(block: () -> Unit) {
+    connection.autoCommit = false
+    try {
+      block()
+    } finally {
+      connection.rollback()
+      connection.autoCommit = true
+    }
+  }
+
+  private fun LlmCostAggregate.numbers() = Triple(costNanodollars.value, uncostedCalls, estimatedCalls)
+
+  private fun accountIdsInView(): Set<UUID> =
+    connection.createStatement().use { stmt ->
+      stmt.executeQuery("SELECT DISTINCT user_id FROM account_llm_cost").use { rs ->
+        buildSet { while (rs.next()) add(rs.getObject(1, UUID::class.java)) }
+      }
+    }
+
+  @Test
+  fun `an account's spend is the same before and after its student moves to the deleted key`() {
+    rolledBack {
+      val userId = createUser()
+      val studentId = createStudent(userId)
+      val supporterId = createSupporter(userId)
+      val start = Instant.now().truncatedTo(ChronoUnit.SECONDS).minus(20, ChronoUnit.DAYS)
+      studentSpend(studentId, 100, createdAt = start)
+      studentSpend(studentId, costNanodollars = null, costIsEstimated = null, createdAt = start.plus(10, ChronoUnit.DAYS))
+      studentSpend(studentId, 200, costIsEstimated = true, createdAt = start.plus(10, ChronoUnit.DAYS))
+      supporterSpend(supporterId, 30, createdAt = start.plus(5, ChronoUnit.DAYS))
+      supporterSpend(supporterId, 4, createdAt = start.plus(15, ChronoUnit.DAYS))
+      val windows =
+        listOf(
+          start to start.plus(30, ChronoUnit.DAYS),
+          start to start.plus(8, ChronoUnit.DAYS),
+          start.plus(8, ChronoUnit.DAYS) to start.plus(30, ChronoUnit.DAYS),
+        )
+
+      fun totals() = windows.map { (from, to) -> AccountLlmCostDao.windowedCost(session, userId, from, to).getOrThrow().numbers() }
+
+      val before = totals()
+      assertEquals(
+        listOf(Triple(334L, 1, 1), Triple(130L, 0, 0), Triple(204L, 1, 1)),
+        before,
+        "the fixture's own numbers, so an empty read cannot pass as unchanged",
+      )
+
+      DeletedAccountRowFixture.eraseAccount(connection, userId.value)
+      DeletedAccountRowFixture.moveStudentToDeletedKey(connection, studentId.value, userId.value)
+
+      assertEquals(before, totals(), "every window reads the same total once the student's key has moved")
+      assertEquals(setOf(userId.value), accountIdsInView(), "and it is keyed on the same account id (D9)")
+    }
+  }
+
+  // The deleted-key owner rows: each arm of the spend views, written with its
+  // live key NULL and only the deleted key set, as an erased account leaves it.
+
+  private fun deletedStudentConvo(studentId: StudentId): UUID {
+    val convoId = UUID.randomUUID()
+    RawSql.execute(
+      connection,
+      "INSERT INTO convos (id, deleted_student_id, name, party) VALUES (?, ?, 'Convo', 'student')",
+      convoId,
+      studentId.value,
+    )
+    return convoId
+  }
+
+  /** A chat turn in [convoId]; answers the turn's request id, which an extraction run reads through. */
+  private fun deletedStudentTurnSpend(
+    convoId: UUID,
+    costNanodollars: Long,
+  ): Long =
+    RawSql.single(
+      connection,
+      """
+      INSERT INTO convo_requests (convo_id, system_prompt_id, llm_request_id, turn_id)
+      VALUES (?, ?, ?, nextval('convo_turn_id_seq')) RETURNING id
+      """.trimIndent(),
+      convoId,
+      createSystemPrompt(),
+      appendCall(costNanodollars, false),
+    ) { it.getLong(1) }
+
+  private fun deletedStudentExtractionSpend(
+    studentId: StudentId,
+    convoId: UUID,
+    throughRequest: Long,
+    costNanodollars: Long,
+  ) = RawSql.execute(
+    connection,
+    """
+    INSERT INTO extraction_runs
+      (convo_id, deleted_student_id, through_request_id, outcome, system_prompt_id, llm_request_id)
+    VALUES (?, ?, ?, 'applied', ?, ?)
+    """.trimIndent(),
+    convoId,
+    studentId.value,
+    throughRequest,
+    createSystemPrompt(),
+    appendCall(costNanodollars, false),
+  )
+
+  private fun deletedStudentSynthesisSpend(
+    studentId: StudentId,
+    costNanodollars: Long,
+  ) = RawSql.execute(
+    connection,
+    "INSERT INTO synthesis_runs (deleted_student_id, outcome, system_prompt_id, llm_request_id) VALUES (?, 'applied', ?, ?)",
+    studentId.value,
+    createSystemPrompt(),
+    appendCall(costNanodollars, false),
+  )
+
+  private fun deletedStudentFitLensSpend(
+    studentId: StudentId,
+    queryNanodollars: Long,
+    reasonNanodollars: Long,
+  ) = RawSql.execute(
+    connection,
+    """
+    INSERT INTO fit_lens_runs
+      (deleted_student_id, outcome, query_system_prompt_id, reason_system_prompt_id,
+       query_llm_request_id, reason_llm_request_id, suggestions_written, matches_considered)
+    VALUES (?, 'applied', ?, ?, ?, ?, 0, 0)
+    """.trimIndent(),
+    studentId.value,
+    createSystemPrompt(),
+    createSystemPrompt(),
+    appendCall(queryNanodollars, false),
+    appendCall(reasonNanodollars, false),
+  )
+
+  private fun deletedSupporterSpend(
+    supporterId: SupporterId,
+    costNanodollars: Long,
+  ) = RawSql.execute(
+    connection,
+    "INSERT INTO supporter_llm_costs (llm_request_id, deleted_supporter_id) VALUES (?, ?)",
+    appendCall(costNanodollars, false),
+    supporterId.value,
+  )
+
+  @Test
+  fun `spend keyed on a deleted student or supporter reports under the same id`() {
+    rolledBack {
+      val userId = createUser()
+      val studentId = createStudent(userId)
+      val supporterId = createSupporter(userId)
+      DeletedAccountRowFixture.eraseAccount(connection, userId.value)
+      DeletedAccountRowFixture.moveStudentToDeletedKey(connection, studentId.value, userId.value)
+      DeletedAccountRowFixture.eraseStudent(connection, studentId.value, userId.value)
+      DeletedAccountRowFixture.eraseSupporter(connection, supporterId.value, userId.value)
+
+      // One owner row per student_llm_cost arm, each keyed only on the deleted student.
+      val convoId = deletedStudentConvo(studentId)
+      val throughRequest = deletedStudentTurnSpend(convoId, 1)
+      deletedStudentExtractionSpend(studentId, convoId, throughRequest, 2)
+      deletedStudentSynthesisSpend(studentId, 4)
+      deletedStudentFitLensSpend(studentId, queryNanodollars = 8, reasonNanodollars = 16)
+      deletedSupporterSpend(supporterId, 32)
+
+      assertEquals(
+        1L + 2L + 4L + 8L + 16L,
+        spineTotal("student_llm_cost", "student_id", studentId.value).costNanodollars.value,
+        "every student arm reads the deleted key, under the deleted id, which is the student's id",
+      )
+      assertEquals(
+        32L,
+        spineTotal("supporter_llm_cost", "supporter_id", supporterId.value).costNanodollars.value,
+        "the supporter arm reads the deleted key too",
+      )
+      assertEquals(63L, lifetime(userId).costNanodollars.value, "and the account's meter sees all of it")
+      assertEquals(setOf(userId.value), accountIdsInView(), "under the account's own id")
+    }
+  }
 }

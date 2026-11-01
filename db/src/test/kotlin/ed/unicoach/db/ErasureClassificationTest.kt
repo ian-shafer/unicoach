@@ -18,7 +18,7 @@ import kotlin.test.assertTrue
  * words in the LLM log. Nothing in production reads a column list. So the only
  * thing that keeps a column added next year from escaping erasure is this test,
  * which walks the catalog and names every column, key and table that breaks one
- * of three rules.
+ * of four rules.
  *
  * THE REACH is what an erasure walk starting at an account can get to: the
  * seeds `users`, `students`, `supporters`; every table with a foreign key onto a
@@ -32,7 +32,14 @@ import kotlin.test.assertTrue
  * (`llm_responses.request_id`) points back up the path the walk came down, at
  * a row already walked, and needs no annotation.
  *
- * ANTI-VACUITY IS PROVEN, not asserted: a probe column and two probe tables,
+ * Rule 4 (RFC 264, slice deletion/02/the-deleted-tables, D1/D3) checks keys
+ * ONTO an account table. Erasure keeps the row that holds such a key and moves
+ * the key onto `deleted_users`, `deleted_students` or `deleted_supporters`, so
+ * every such key needs a sibling key onto the matching deleted table and a
+ * CHECK over exactly that pair. The pair is read from the CHECK's columns
+ * (`pg_constraint.conkey`), never from a column name (D8).
+ *
+ * ANTI-VACUITY IS PROVEN, not asserted: a probe column and three probe tables,
  * created inside a rolled-back transaction, are each named by their rule, so a
  * typo in a catalog query cannot produce a guard that always passes.
  */
@@ -59,6 +66,10 @@ class ErasureClassificationTest {
 
     /** The account tables an erasure walk starts from. */
     private val SEEDS = listOf("users", "students", "supporters")
+
+    /** Each account table, mapped to the table its keys move onto at erasure (D1). */
+    private val DELETED_TABLE =
+      mapOf("users" to "deleted_users", "students" to "deleted_students", "supporters" to "deleted_supporters")
 
     // One reason per KIND of column. Each says why the value, on a row whose
     // owner is erased, says nothing the person told us or we wrote about them
@@ -143,7 +154,7 @@ class ErasureClassificationTest {
         ),
         entries(
           listOf("email_sends"),
-          KEY to listOf("id", "user_id"),
+          KEY to listOf("id", "user_id", "deleted_user_id"),
           LIFECYCLE to listOf("created_at", "row_created_at", "deleted_at"),
           OUR_ADDRESS to listOf("sender_email"),
           VOCABULARY to listOf("status"),
@@ -151,27 +162,27 @@ class ErasureClassificationTest {
         ),
         entries(
           versioned("subscriptions"),
-          KEY to listOf("id", "user_id"),
+          KEY to listOf("id", "user_id", "deleted_user_id"),
           VERSION to listOf("version"),
           LIFECYCLE to ENTITY_TIMESTAMPS,
           SUBSCRIPTION to listOf("original_transaction_id", "product_id", "status", "period_start", "period_end"),
         ),
         entries(
           versioned("students"),
-          KEY to listOf("id", "user_id"),
+          KEY to listOf("id", "user_id", "deleted_user_id"),
           VERSION to listOf("version"),
           LIFECYCLE to ENTITY_TIMESTAMPS + listOf("deleted_at"),
           ANSWER_STATE to listOf("expected_high_school_graduation_precision"),
         ),
         entries(
           versioned("supporters"),
-          KEY to listOf("id", "user_id"),
+          KEY to listOf("id", "user_id", "deleted_user_id"),
           VERSION to listOf("version"),
           LIFECYCLE to ENTITY_TIMESTAMPS + listOf("deleted_at"),
         ),
         entries(
           versioned("supporter_student_links"),
-          KEY to listOf("id", "supporter_id", "student_id"),
+          KEY to listOf("id", "supporter_id", "student_id", "deleted_supporter_id", "deleted_student_id"),
           VERSION to listOf("version"),
           LIFECYCLE to ENTITY_TIMESTAMPS + listOf("deleted_at"),
           KEPT_FOR_OTHER_PARTY to listOf("relationship"),
@@ -186,38 +197,47 @@ class ErasureClassificationTest {
         ),
         entries(
           listOf("supporter_link_requests"),
-          KEY to listOf("id", "supporter_id", "student_id", "cost_report_share_id", "link_id"),
+          KEY to
+            listOf(
+              "id",
+              "supporter_id",
+              "student_id",
+              "cost_report_share_id",
+              "link_id",
+              "deleted_supporter_id",
+              "deleted_student_id",
+            ),
           LIFECYCLE to listOf("created_at", "row_created_at", "notified_at", "resolved_at"),
           VOCABULARY to listOf("resolution"),
         ),
         entries(
           listOf("supporter_llm_costs"),
           OWNED_KEY to listOf("llm_request_id"),
-          KEY to listOf("supporter_id"),
+          KEY to listOf("supporter_id", "deleted_supporter_id"),
           LIFECYCLE to listOf("created_at"),
         ),
         entries(
           versioned("sharing_permissions"),
-          KEY to listOf("id", "student_id"),
+          KEY to listOf("id", "student_id", "deleted_student_id"),
           VERSION to listOf("version"),
           LIFECYCLE to ENTITY_TIMESTAMPS + listOf("deleted_at"),
           VOCABULARY to listOf("permission", "status"),
         ),
         entries(
           listOf("cost_report_shares"),
-          KEY to listOf("id", "student_id"),
+          KEY to listOf("id", "student_id", "deleted_student_id"),
           LIFECYCLE to listOf("created_at", "row_created_at", "revoked_at"),
           TOKEN_HASH to listOf("token_hash"),
         ),
         entries(
           listOf("share_events"),
-          KEY to listOf("id", "student_id", "share_id"),
+          KEY to listOf("id", "student_id", "share_id", "deleted_student_id"),
           LIFECYCLE to listOf("created_at"),
           VOCABULARY to listOf("kind"),
         ),
         entries(
           listOf("convos"),
-          KEY to listOf("id", "student_id", "supporter_id"),
+          KEY to listOf("id", "student_id", "supporter_id", "deleted_student_id", "deleted_supporter_id"),
           LIFECYCLE to ENTITY_TIMESTAMPS + listOf("deleted_at", "archived_at"),
           VOCABULARY to listOf("party"),
         ),
@@ -230,12 +250,12 @@ class ErasureClassificationTest {
         ),
         entries(
           listOf("observations"),
-          KEY to listOf("id", "student_id", "convo_id", "source_request_id"),
+          KEY to listOf("id", "student_id", "convo_id", "source_request_id", "deleted_student_id"),
           LIFECYCLE to listOf("created_at", "uttered_at", "deleted_at"),
         ),
         entries(
           listOf("claims"),
-          KEY to listOf("id", "student_id", "superseded_by_id"),
+          KEY to listOf("id", "student_id", "superseded_by_id", "deleted_student_id"),
           LIFECYCLE to ENTITY_TIMESTAMPS + listOf("superseded_at", "retracted_at", "deleted_at"),
           VOCABULARY to listOf("origin", "status", "kind", "subject", "topic", "visibility"),
           MEASURE to listOf("confidence"),
@@ -247,7 +267,7 @@ class ErasureClassificationTest {
         ),
         entries(
           listOf("commitments"),
-          KEY to listOf("id", "student_id", "disclosed_in_convo_id"),
+          KEY to listOf("id", "student_id", "disclosed_in_convo_id", "deleted_student_id"),
           LIFECYCLE to ENTITY_TIMESTAMPS + listOf("trigger_at", "fulfilled_at", "dropped_at", "deleted_at"),
           VOCABULARY to listOf("lens", "disclosure", "status", "trigger_kind"),
         ),
@@ -258,7 +278,7 @@ class ErasureClassificationTest {
         ),
         entries(
           listOf("extraction_runs"),
-          KEY to listOf("id", "convo_id", "student_id", "through_request_id", "system_prompt_id"),
+          KEY to listOf("id", "convo_id", "student_id", "through_request_id", "system_prompt_id", "deleted_student_id"),
           OWNED_KEY to listOf("llm_request_id"),
           LIFECYCLE to listOf("created_at", "deleted_at"),
           VOCABULARY to listOf("outcome", "failure_category"),
@@ -266,7 +286,7 @@ class ErasureClassificationTest {
         ),
         entries(
           listOf("synthesis_runs"),
-          KEY to listOf("id", "student_id", "system_prompt_id"),
+          KEY to listOf("id", "student_id", "system_prompt_id", "deleted_student_id"),
           OWNED_KEY to listOf("llm_request_id"),
           LIFECYCLE to listOf("created_at", "deleted_at"),
           VOCABULARY to listOf("outcome", "failure_category"),
@@ -274,7 +294,7 @@ class ErasureClassificationTest {
         ),
         entries(
           listOf("fit_lens_runs"),
-          KEY to listOf("id", "student_id", "query_system_prompt_id", "reason_system_prompt_id"),
+          KEY to listOf("id", "student_id", "query_system_prompt_id", "reason_system_prompt_id", "deleted_student_id"),
           OWNED_KEY to listOf("query_llm_request_id", "reason_llm_request_id"),
           LIFECYCLE to listOf("created_at", "deleted_at"),
           VOCABULARY to listOf("outcome", "failure_category"),
@@ -282,13 +302,13 @@ class ErasureClassificationTest {
         ),
         entries(
           listOf("fit_suggestions"),
-          KEY to listOf("id", "student_id", "surfaced_in_convo_id"),
+          KEY to listOf("id", "student_id", "surfaced_in_convo_id", "deleted_student_id"),
           LIFECYCLE to ENTITY_TIMESTAMPS + listOf("surfaced_at", "deleted_at"),
           VOCABULARY to listOf("status"),
         ),
         entries(
           versioned("college_list_entries"),
-          KEY to listOf("id", "student_id"),
+          KEY to listOf("id", "student_id", "deleted_student_id"),
           VERSION to listOf("version"),
           LIFECYCLE to ENTITY_TIMESTAMPS + listOf("deleted_at"),
         ),
@@ -299,14 +319,14 @@ class ErasureClassificationTest {
         ),
         entries(
           versioned("money_profiles"),
-          KEY to listOf("id", "student_id"),
+          KEY to listOf("id", "student_id", "deleted_student_id"),
           VERSION to listOf("version"),
           LIFECYCLE to ENTITY_TIMESTAMPS + listOf("deleted_at"),
           ANSWER_STATE to listOf("income_band_status", "residency_status", "living_plan_status", "dependency_status"),
         ),
         entries(
           versioned("admission_test_scores"),
-          KEY to listOf("id", "student_id"),
+          KEY to listOf("id", "student_id", "deleted_student_id"),
           VERSION to listOf("version"),
           LIFECYCLE to ENTITY_TIMESTAMPS + listOf("deleted_at"),
           VOCABULARY to listOf("test", "component"),
@@ -314,21 +334,31 @@ class ErasureClassificationTest {
         ),
         entries(
           listOf("admission_test_score_declines"),
-          KEY to listOf("id", "student_id"),
+          KEY to listOf("id", "student_id", "deleted_student_id"),
           LIFECYCLE to listOf("created_at", "row_created_at", "withdrawn_at"),
         ),
         entries(
           versioned("intended_subjects"),
-          KEY to listOf("id", "student_id"),
+          KEY to listOf("id", "student_id", "deleted_student_id"),
           VERSION to listOf("version"),
           LIFECYCLE to ENTITY_TIMESTAMPS + listOf("deleted_at"),
         ),
         entries(
           versioned("intended_subject_status"),
-          KEY to listOf("id", "student_id"),
+          KEY to listOf("id", "student_id", "deleted_student_id"),
           VERSION to listOf("version"),
           LIFECYCLE to ENTITY_TIMESTAMPS + listOf("deleted_at"),
           ANSWER_STATE to listOf("status"),
+        ),
+        entries(
+          listOf("deleted_users"),
+          KEY to listOf("id"),
+          LIFECYCLE to listOf("created_at", "closed_at", "erased_at"),
+        ),
+        entries(
+          listOf("deleted_students", "deleted_supporters"),
+          KEY to listOf("id", "user_id"),
+          LIFECYCLE to listOf("erased_at"),
         ),
         entries(
           listOf("llm_requests"),
@@ -366,6 +396,28 @@ class ErasureClassificationTest {
      * reason. Empty: every such key today is an `owned.*` key (RFC 263 D-C).
      */
     private val NOT_OWNED: Map<String, String> = emptyMap()
+
+    private const val PHYSICALLY_DELETED =
+      "physically deleted at erasure (D10); the row never survives to have its key moved"
+    private const val ROOT_HISTORY =
+      "the account table's own history, keyed by the account's id as part of its primary key; " +
+        "the account row is kept by D1, so the id it names always exists"
+    private const val DELETED_ROW_ID =
+      "the deleted row's own id is the account's id (D9); the account row is kept by D1"
+
+    /**
+     * Keys onto an account table that need no sibling key onto a deleted table,
+     * as `table.column`, with the reason (RFC 264 D-A, D-B).
+     */
+    private val NOT_KEYED: Map<String, String> =
+      listOf(
+        listOf("sessions.user_id", "verification_tokens.user_id", "user_auth_identities.user_id")
+          .map { it to PHYSICALLY_DELETED },
+        listOf("supporter_invites.inviter_user_id", "supporter_invites.student_id", "supporter_invites.supporter_id")
+          .map { it to PHYSICALLY_DELETED },
+        listOf("users_versions.id", "students_versions.id", "supporters_versions.id").map { it to ROOT_HISTORY },
+        listOf("deleted_users.id", "deleted_students.id", "deleted_supporters.id").map { it to DELETED_ROW_ID },
+      ).flatten().toMap()
   }
 
   private data class Column(
@@ -384,12 +436,19 @@ class ErasureClassificationTest {
     val qualified get() = "$table.$column"
   }
 
+  /** A CHECK constraint, by the set of columns it reads. */
+  private data class Check(
+    val table: String,
+    val columns: Set<String>,
+  )
+
   /** What the catalog says, read in one place so every rule reads the same snapshot. */
   private data class Catalog(
     /** Every table in the reach, mapped to whether it is reached child-ward. */
     val reach: Map<String, Boolean>,
     val columns: List<Column>,
     val keys: List<Key>,
+    val checks: List<Check>,
   ) {
     val childward: Set<String> get() = reach.filterValues { it }.keys
     val personalTables: Set<String> get() = columns.filter { it.personal }.map { it.table }.toSet()
@@ -412,6 +471,27 @@ class ErasureClassificationTest {
 
     /** Rule 3: every table holding a personal column that the walk cannot get to. */
     fun unreachedPersonalTables(): List<String> = personalTables.filter { it !in reach }.sorted()
+
+    /** The keys rule 4 inspects: every key onto an account table. */
+    fun keysOntoAccounts(): List<Key> = keys.filter { it.target in DELETED_TABLE }.distinct()
+
+    /** Rule 4: every inspected key with no CHECK-paired sibling onto its deleted table, and not named not keyed. */
+    fun keysWithoutSibling(): List<String> =
+      keysOntoAccounts()
+        .filter { it.qualified !in NOT_KEYED && !hasSibling(it) }
+        .map { it.qualified }
+
+    /**
+     * Whether [live]'s table holds a key onto the matching deleted table that a
+     * CHECK pairs with [live]: a CHECK whose columns are exactly the two.
+     */
+    private fun hasSibling(live: Key): Boolean {
+      val deletedTable = DELETED_TABLE.getValue(live.target)
+      val siblings = keys.filter { it.table == live.table && it.target == deletedTable }.map { it.column }
+      return checks.any { check ->
+        check.table == live.table && siblings.any { check.columns == setOf(live.column, it) }
+      }
+    }
   }
 
   /** The `owned.*`-typed columns, as `table.column`. */
@@ -429,7 +509,7 @@ class ErasureClassificationTest {
       """.trimIndent(),
     ) { it.getString(1) }.toSet()
 
-  private fun catalog(): Catalog = Catalog(readReach(), readColumns(), readKeys())
+  private fun catalog(): Catalog = Catalog(readReach(), readColumns(), readKeys(), readChecks())
 
   // The reach, in one recursive query. A child-ward edge runs from a
   // referenced table to the table holding the key; a forward edge runs from
@@ -502,6 +582,24 @@ class ErasureClassificationTest {
       """.trimIndent(),
     ) { Key(it.getString(1), it.getString(2), it.getString(3)) }
 
+  /** Every CHECK constraint in `public`, with the columns it reads (`conkey`). */
+  private fun readChecks(): List<Check> =
+    query(
+      """
+      SELECT c.relname, array_agg(a.attname::text)
+      FROM pg_constraint con
+      JOIN pg_class c ON c.oid = con.conrelid
+      JOIN pg_namespace cn ON cn.oid = c.relnamespace
+      JOIN pg_attribute a ON a.attrelid = con.conrelid AND a.attnum = ANY (con.conkey)
+      WHERE con.contype = 'c' AND cn.nspname = 'public'
+      GROUP BY con.oid, c.relname
+      """.trimIndent(),
+    ) { rs ->
+      @Suppress("UNCHECKED_CAST")
+      val columns = (rs.getArray(2).array as Array<String>).toSet()
+      Check(rs.getString(1), columns)
+    }
+
   private fun <T> query(
     sql: String,
     bind: (java.sql.PreparedStatement) -> Unit = {},
@@ -568,9 +666,30 @@ class ErasureClassificationTest {
   }
 
   @Test
+  fun `every key onto an account has its sibling`() {
+    val catalog = catalog()
+    // Anti-vacuity by identity: a student's account key, and both keys a
+    // conversation holds onto a person. If the guard cannot see them, a typo has
+    // made the rule check nothing.
+    val inspected = catalog.keysOntoAccounts().map { it.qualified }
+    assertTrue(
+      inspected.containsAll(listOf("students.user_id", "convos.student_id", "convos.supporter_id")),
+      "rule 4 must inspect students.user_id, convos.student_id and convos.supporter_id; it inspected $inspected",
+    )
+    val offenders = catalog.keysWithoutSibling()
+    assertEquals(
+      emptyList(),
+      offenders,
+      "${offenders.size} key(s) onto an account table have no sibling key onto the matching deleted_* " +
+        "table paired with them by a CHECK over exactly the two columns, and are not on NOT_KEYED: " +
+        "$offenders. Add the sibling and its pair CHECK, or add the key to NOT_KEYED with its reason.",
+    )
+  }
+
+  @Test
   fun `the named lists give a reason for every entry`() {
     assertTrue(NOT_PERSONAL.isNotEmpty(), "NOT_PERSONAL must not be empty")
-    val blank = (NOT_PERSONAL + NOT_OWNED).filterValues { it.isBlank() }.keys
+    val blank = (NOT_PERSONAL + NOT_OWNED + NOT_KEYED).filterValues { it.isBlank() }.keys
     assertEquals(emptySet(), blank, "every named entry needs a reason: $blank")
   }
 
@@ -593,6 +712,12 @@ class ErasureClassificationTest {
       "NOT_OWNED names column(s) that are no longer a key onto a personal table the walk does not " +
         "reach child-ward: $staleOwned. Delete each entry.",
     )
+    val staleKeyed = NOT_KEYED.keys - catalog.keysOntoAccounts().map { it.qualified }.toSet()
+    assertEquals(
+      emptySet(),
+      staleKeyed,
+      "NOT_KEYED names column(s) that are no longer a key onto an account table: $staleKeyed. Delete each entry.",
+    )
   }
 
   @Test
@@ -605,6 +730,7 @@ class ErasureClassificationTest {
           "CREATE TABLE probe_owner (student_id UUID REFERENCES students(id), call_id BIGINT REFERENCES llm_requests(id))",
         )
         stmt.execute("CREATE TABLE probe_keyless (note pii.text)")
+        stmt.execute("CREATE TABLE probe_keyed (student_id UUID REFERENCES students(id))")
       }
       val probed = catalog()
       assertTrue(
@@ -619,6 +745,10 @@ class ErasureClassificationTest {
         "probe_keyless" in probed.unreachedPersonalTables(),
         "rule 3 must name probe_keyless; it named ${probed.unreachedPersonalTables()}",
       )
+      assertTrue(
+        "probe_keyed.student_id" in probed.keysWithoutSibling(),
+        "rule 4 must name probe_keyed.student_id; it named ${probed.keysWithoutSibling()}",
+      )
     } finally {
       connection.rollback()
       connection.autoCommit = true
@@ -627,6 +757,7 @@ class ErasureClassificationTest {
     assertFalse("claims.probe_note" in after.unclassified(), "the rolled-back probe column must be gone")
     assertFalse("probe_owner.call_id" in after.unownedKeys(ownedColumns()), "the rolled-back probe key must be gone")
     assertFalse("probe_keyless" in after.unreachedPersonalTables(), "the rolled-back probe table must be gone")
+    assertFalse("probe_keyed.student_id" in after.keysWithoutSibling(), "the rolled-back probe key must be gone")
   }
 
   @Test
