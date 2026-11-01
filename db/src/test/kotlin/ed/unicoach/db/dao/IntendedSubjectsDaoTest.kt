@@ -154,7 +154,10 @@ class IntendedSubjectsDaoTest {
     }
   }
 
-  private fun exec(sql: String) = connection.createStatement().use { it.execute(sql) }
+  private fun exec(
+    sql: String,
+    vararg args: Any?,
+  ) = RawSql.execute(connection, sql, *args)
 
   /**
    * Removes subjects the way EVERY writer on these tables must: an UPDATE that
@@ -182,53 +185,40 @@ class IntendedSubjectsDaoTest {
       slugs.map { insertSubjectRow(studentId, it) }
     }
 
-  private fun scalar(sql: String): Int =
-    connection.createStatement().use { stmt ->
-      stmt.executeQuery(sql).use { rs ->
-        rs.next()
-        rs.getInt(1)
-      }
-    }
+  private fun scalar(
+    sql: String,
+    vararg args: Any?,
+  ): Int = RawSql.single(connection, sql, *args) { it.getInt(1) }
 
   private fun insertSubjectRow(
     studentId: StudentId,
     slug: String,
   ): String =
-    connection
-      .prepareStatement("INSERT INTO intended_subjects (student_id, subject_slug) VALUES (?, ?) RETURNING id")
-      .use { stmt ->
-        stmt.setObject(1, studentId.value)
-        stmt.setString(2, slug)
-        stmt.executeQuery().use { rs ->
-          rs.next()
-          rs.getString("id")
-        }
-      }
+    RawSql.single(
+      connection,
+      "INSERT INTO intended_subjects (student_id, subject_slug) VALUES (?, ?) RETURNING id",
+      studentId.value,
+      slug,
+    ) { it.getString("id") }
 
   private fun setStatus(
     studentId: StudentId,
     status: String,
   ) {
-    connection
-      .prepareStatement(
-        """
-        INSERT INTO intended_subject_status (student_id, status) VALUES (?, ?)
-        ON CONFLICT DO NOTHING
-        """.trimIndent(),
-      ).use { stmt ->
-        stmt.setObject(1, studentId.value)
-        stmt.setString(2, status)
-        stmt.executeUpdate()
-      }
-    connection
-      .prepareStatement(
-        "UPDATE intended_subject_status SET status = ?, version = version + 1 " +
-          "WHERE student_id = ? AND deleted_at IS NULL",
-      ).use { stmt ->
-        stmt.setString(1, status)
-        stmt.setObject(2, studentId.value)
-        stmt.executeUpdate()
-      }
+    exec(
+      """
+      INSERT INTO intended_subject_status (student_id, status) VALUES (?, ?)
+      ON CONFLICT DO NOTHING
+      """.trimIndent(),
+      studentId.value,
+      status,
+    )
+    exec(
+      "UPDATE intended_subject_status SET status = ?, version = version + 1 " +
+        "WHERE student_id = ? AND deleted_at IS NULL",
+      status,
+      studentId.value,
+    )
   }
 
   // ---------------------------------------------------------------------------
@@ -297,7 +287,7 @@ class IntendedSubjectsDaoTest {
       }
     // A NEW row with its own history, never a resurrection of the removed one.
     assertNotEquals(firstId, secondId)
-    assertEquals(1, scalar("SELECT version FROM intended_subjects WHERE id = '$secondId'"))
+    assertEquals(1, scalar("SELECT version FROM intended_subjects WHERE id = ?::uuid", secondId))
   }
 
   // ---------------------------------------------------------------------------
@@ -308,17 +298,17 @@ class IntendedSubjectsDaoTest {
   fun `an insert and every later update are snapshotted, and a physical delete is refused`() {
     val student = createStudent()
     val id = giveAnswer(student, "nursing").single()
-    assertEquals(1, scalar("SELECT count(*) FROM intended_subjects_versions WHERE id = '$id'"))
+    assertEquals(1, scalar("SELECT count(*) FROM intended_subjects_versions WHERE id = ?::uuid", id))
 
     // The later UPDATE is snapshotted too — one history row per committed state.
     inTransaction {
       setStatus(student, AnswerStatus.UNDECIDED.value)
       softDeleteSubjects("id = '$id'")
     }
-    assertEquals(2, scalar("SELECT count(*) FROM intended_subjects_versions WHERE id = '$id'"))
-    assertEquals(2, scalar("SELECT version FROM intended_subjects WHERE id = '$id'"))
+    assertEquals(2, scalar("SELECT count(*) FROM intended_subjects_versions WHERE id = ?::uuid", id))
+    assertEquals(2, scalar("SELECT version FROM intended_subjects WHERE id = ?::uuid", id))
 
-    val thrown = assertFailsWith<PSQLException> { exec("DELETE FROM intended_subjects WHERE id = '$id'") }
+    val thrown = assertFailsWith<PSQLException> { exec("DELETE FROM intended_subjects WHERE id = ?::uuid", id) }
     assertContains(thrown.message!!, "Physical deletions are strictly blocked")
   }
 
@@ -334,10 +324,10 @@ class IntendedSubjectsDaoTest {
     // The removal ITSELF is in the history, not merely the last state before it.
     assertEquals(
       1,
-      scalar("SELECT count(*) FROM intended_subjects_versions WHERE id = '$id' AND deleted_at IS NOT NULL"),
+      scalar("SELECT count(*) FROM intended_subjects_versions WHERE id = ?::uuid AND deleted_at IS NOT NULL", id),
       "the versions table must record the removal, not stop at the row before it",
     )
-    assertEquals(2, scalar("SELECT count(*) FROM intended_subjects_versions WHERE id = '$id'"))
+    assertEquals(2, scalar("SELECT count(*) FROM intended_subjects_versions WHERE id = ?::uuid", id))
   }
 
   @Test
@@ -358,7 +348,7 @@ class IntendedSubjectsDaoTest {
       ),
       "the history must reference the live row ON DELETE RESTRICT, so it cannot be orphaned",
     )
-    assertTrue(scalar("SELECT count(*) FROM intended_subjects_versions WHERE id = '$id'") > 0)
+    assertTrue(scalar("SELECT count(*) FROM intended_subjects_versions WHERE id = ?::uuid", id) > 0)
   }
 
   @Test
@@ -373,7 +363,8 @@ class IntendedSubjectsDaoTest {
     assertEquals(
       3,
       scalar(
-        "SELECT count(*) FROM intended_subjects_versions WHERE student_id = '${student.value}'",
+        "SELECT count(*) FROM intended_subjects_versions WHERE student_id = ?",
+        student.value,
       ),
     )
   }
@@ -392,13 +383,13 @@ class IntendedSubjectsDaoTest {
     // refuse them is the column guard.
     val movedStudent =
       assertFailsWith<PSQLException> {
-        exec("UPDATE intended_subjects SET student_id = '${other.value}', version = version + 1 WHERE id = '$id'")
+        exec("UPDATE intended_subjects SET student_id = ?, version = version + 1 WHERE id = ?::uuid", other.value, id)
       }
     assertContains(movedStudent.message!!, "student_id field is immutable")
 
     val movedSubject =
       assertFailsWith<PSQLException> {
-        exec("UPDATE intended_subjects SET subject_slug = 'biology', version = version + 1 WHERE id = '$id'")
+        exec("UPDATE intended_subjects SET subject_slug = 'biology', version = version + 1 WHERE id = ?::uuid", id)
       }
     assertContains(movedSubject.message!!, "subject_slug field is immutable")
 
@@ -408,7 +399,7 @@ class IntendedSubjectsDaoTest {
       setStatus(student, AnswerStatus.UNDECIDED.value)
       softDeleteSubjects("id = '$id'")
     }
-    assertEquals(1, scalar("SELECT count(*) FROM intended_subjects WHERE id = '$id' AND deleted_at IS NOT NULL"))
+    assertEquals(1, scalar("SELECT count(*) FROM intended_subjects WHERE id = ?::uuid AND deleted_at IS NOT NULL", id))
   }
 
   @Test
@@ -420,8 +411,9 @@ class IntendedSubjectsDaoTest {
     val thrown =
       assertFailsWith<PSQLException> {
         exec(
-          "UPDATE intended_subject_status SET student_id = '${other.value}', version = version + 1 " +
-            "WHERE student_id = '${student.value}'",
+          "UPDATE intended_subject_status SET student_id = ?, version = version + 1 WHERE student_id = ?",
+          other.value,
+          student.value,
         )
       }
     assertContains(thrown.message!!, "student_id field is immutable")
@@ -506,7 +498,9 @@ class IntendedSubjectsDaoTest {
         assertFailsWith<PSQLException> {
           exec(
             "INSERT INTO money_profiles (student_id, $column) " +
-              "VALUES ('${student.value}', '${AnswerStatus.UNDECIDED.value}')",
+              "VALUES (?, ?)",
+            student.value,
+            AnswerStatus.UNDECIDED.value,
           )
         }
       assertEquals(
@@ -563,7 +557,7 @@ class IntendedSubjectsDaoTest {
     assertEquals(AnswerStatus.ANSWERED, again.status)
     assertEquals(listOf("nursing"), again.subjects.map { it.slug })
     // The restored subject is a NEW row: the removal's history is untouched.
-    assertEquals(2, scalar("SELECT count(*) FROM intended_subjects WHERE student_id = '${student.value}'"))
+    assertEquals(2, scalar("SELECT count(*) FROM intended_subjects WHERE student_id = ?", student.value))
   }
 
   @Test
@@ -582,16 +576,16 @@ class IntendedSubjectsDaoTest {
     inTransaction {
       IntendedSubjectsDao.replaceAnswer(session, student, IntendedSubjectWrite.Subjects(listOf("nursing"))).getOrThrow()
     }
-    val versionsBefore = scalar("SELECT count(*) FROM intended_subjects_versions WHERE student_id = '${student.value}'")
+    val versionsBefore = scalar("SELECT count(*) FROM intended_subjects_versions WHERE student_id = ?", student.value)
     val statusVersionsBefore =
-      scalar("SELECT count(*) FROM intended_subject_status_versions WHERE student_id = '${student.value}'")
+      scalar("SELECT count(*) FROM intended_subject_status_versions WHERE student_id = ?", student.value)
     inTransaction {
       IntendedSubjectsDao.replaceAnswer(session, student, IntendedSubjectWrite.Subjects(listOf("nursing"))).getOrThrow()
     }
-    assertEquals(versionsBefore, scalar("SELECT count(*) FROM intended_subjects_versions WHERE student_id = '${student.value}'"))
+    assertEquals(versionsBefore, scalar("SELECT count(*) FROM intended_subjects_versions WHERE student_id = ?", student.value))
     assertEquals(
       statusVersionsBefore,
-      scalar("SELECT count(*) FROM intended_subject_status_versions WHERE student_id = '${student.value}'"),
+      scalar("SELECT count(*) FROM intended_subject_status_versions WHERE student_id = ?", student.value),
       "writing the same status over itself would put a state change in the history that never happened",
     )
   }
@@ -608,12 +602,11 @@ class IntendedSubjectsDaoTest {
   }
 
   private fun statusOf(studentId: StudentId): String? =
-    connection
-      .prepareStatement("SELECT status FROM intended_subject_status WHERE student_id = ? AND deleted_at IS NULL")
-      .use { stmt ->
-        stmt.setObject(1, studentId.value)
-        stmt.executeQuery().use { rs -> if (rs.next()) rs.getString("status") else null }
-      }
+    RawSql.singleOrNull(
+      connection,
+      "SELECT status FROM intended_subject_status WHERE student_id = ? AND deleted_at IS NULL",
+      studentId.value,
+    ) { it.getString("status") }
 
   /**
    * The cap belongs to the DATABASE, not to one careful caller.
@@ -652,7 +645,8 @@ class IntendedSubjectsDaoTest {
       3,
       scalar(
         "SELECT count(*) FROM intended_subjects " +
-          "WHERE student_id = '${student.value}' AND deleted_at IS NULL",
+          "WHERE student_id = ? AND deleted_at IS NULL",
+        student.value,
       ),
       "the two writers must not have landed four rows between them",
     )
@@ -713,7 +707,7 @@ class IntendedSubjectsDaoTest {
     )
     assertEquals(
       1,
-      scalar("SELECT count(*) FROM intended_subject_status WHERE student_id = '${student.value}' AND deleted_at IS NULL"),
+      scalar("SELECT count(*) FROM intended_subject_status WHERE student_id = ? AND deleted_at IS NULL", student.value),
       "one live status row per student, whatever the interleaving",
     )
   }
@@ -761,10 +755,6 @@ class IntendedSubjectsDaoTest {
     studentId: StudentId,
     slug: String,
   ) {
-    target.prepareStatement("INSERT INTO intended_subjects (student_id, subject_slug) VALUES (?, ?)").use { stmt ->
-      stmt.setObject(1, studentId.value)
-      stmt.setString(2, slug)
-      stmt.executeUpdate()
-    }
+    RawSql.execute(target, "INSERT INTO intended_subjects (student_id, subject_slug) VALUES (?, ?)", studentId.value, slug)
   }
 }

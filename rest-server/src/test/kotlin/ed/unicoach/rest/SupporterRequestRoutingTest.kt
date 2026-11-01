@@ -3,6 +3,7 @@ package ed.unicoach.rest
 import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
 import ed.unicoach.common.config.AppConfig
 import ed.unicoach.db.DatabaseConfig
+import ed.unicoach.db.dao.RawSql
 import ed.unicoach.rest.models.RegisterRequest
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.cio.CIO
@@ -89,12 +90,7 @@ class SupporterRequestRoutingTest {
       }
     assertEquals(HttpStatusCode.Created, response.status)
     if (verified) {
-      dbConnection
-        .prepareStatement("UPDATE users SET version = version + 1, email_verified_at = NOW() WHERE email = ?")
-        .use { stmt ->
-          stmt.setString(1, email)
-          stmt.executeUpdate()
-        }
+      RawSql.execute(dbConnection, "UPDATE users SET version = version + 1, email_verified_at = NOW() WHERE email = ?", email)
     }
     val cookie =
       response.headers[HttpHeaders.SetCookie]!!
@@ -135,52 +131,55 @@ class SupporterRequestRoutingTest {
     verified: Boolean = true,
   ): Pair<Caller, UUID> {
     val parent = register(parentName)
-    val minted = client.post(buildUrl("/api/v1/supporters")) { header(HttpHeaders.Cookie, parent.cookie) }
+    val supporterId = mintSupporter(parent)
+    if (!verified) unverify(parent)
+    val requestId = insertPendingRequest(supporterId, studentId, liveShareFor(studentId))
+    return parent to requestId
+  }
+
+  /** [caller]'s supporter row, made through its own door; its id. */
+  private suspend fun mintSupporter(caller: Caller): UUID {
+    val minted = client.post(buildUrl("/api/v1/supporters")) { header(HttpHeaders.Cookie, caller.cookie) }
     assertEquals(HttpStatusCode.Created, minted.status)
-    val supporterId =
-      UUID.fromString(
-        mapper
-          .readTree(minted.bodyAsText())
-          .get("supporter")
-          .get("id")
-          .asText(),
-      )
-    if (!verified) {
-      sql("UPDATE users SET version = version + 1, email_verified_at = NULL WHERE email = ?", parent.email)
-    }
-    val shareId =
-      single("SELECT id FROM cost_report_shares WHERE student_id = ? AND revoked_at IS NULL", studentId)
-        ?: single(
-          "INSERT INTO cost_report_shares (student_id, token_hash) VALUES (?, ?) RETURNING id",
-          studentId,
-          UUID.randomUUID().toString().toByteArray(),
-        )
-    val requestId =
-      single(
-        "INSERT INTO supporter_link_requests (supporter_id, student_id, cost_report_share_id) VALUES (?, ?, ?) RETURNING id",
-        supporterId,
+    return UUID.fromString(
+      mapper
+        .readTree(minted.bodyAsText())
+        .get("supporter")
+        .get("id")
+        .asText(),
+    )
+  }
+
+  private fun unverify(caller: Caller) {
+    RawSql.execute(dbConnection, "UPDATE users SET version = version + 1, email_verified_at = NULL WHERE email = ?", caller.email)
+  }
+
+  /** The student's live share, made if they have none; its id. */
+  private fun liveShareFor(studentId: UUID): UUID =
+    RawSql.singleOrNull(
+      dbConnection,
+      "SELECT id FROM cost_report_shares WHERE student_id = ? AND revoked_at IS NULL",
+      studentId,
+    ) { it.getObject(1) as UUID }
+      ?: RawSql.single(
+        dbConnection,
+        "INSERT INTO cost_report_shares (student_id, token_hash) VALUES (?, ?) RETURNING id",
         studentId,
-        shareId!!,
-      )
-    return parent to requestId!!
-  }
+        UUID.randomUUID().toString().toByteArray(),
+      ) { it.getObject(1) as UUID }
 
-  private fun sql(
-    statement: String,
-    vararg args: Any,
-  ) = dbConnection.prepareStatement(statement).use { stmt ->
-    args.forEachIndexed { i, arg -> stmt.setObject(i + 1, arg) }
-    stmt.executeUpdate()
-  }
-
-  private fun single(
-    statement: String,
-    vararg args: Any,
-  ): UUID? =
-    dbConnection.prepareStatement(statement).use { stmt ->
-      args.forEachIndexed { i, arg -> stmt.setObject(i + 1, arg) }
-      stmt.executeQuery().use { rs -> if (rs.next()) rs.getObject(1) as UUID else null }
-    }
+  private fun insertPendingRequest(
+    supporterId: UUID,
+    studentId: UUID,
+    shareId: UUID,
+  ): UUID =
+    RawSql.single(
+      dbConnection,
+      "INSERT INTO supporter_link_requests (supporter_id, student_id, cost_report_share_id) VALUES (?, ?, ?) RETURNING id",
+      supporterId,
+      studentId,
+      shareId,
+    ) { it.getObject(1) as UUID }
 
   private suspend fun get(
     path: String,
@@ -273,7 +272,7 @@ class SupporterRequestRoutingTest {
       val (_, noorsRequest) = pendingRequest("Noor's Parent", noorId)
       val (_, unverifiedRequest) = pendingRequest("Unverified Stranger", avaId, verified = false)
       val (closed, closedRequest) = pendingRequest("Closed Parent", avaId)
-      sql("UPDATE users SET version = version + 1, deleted_at = NOW() WHERE email = ?", closed.email)
+      RawSql.execute(dbConnection, "UPDATE users SET version = version + 1, deleted_at = NOW() WHERE email = ?", closed.email)
 
       for (id in listOf(noorsRequest, UUID.randomUUID(), unverifiedRequest, closedRequest)) {
         for (path in listOf(approvePath(id), declinePath(id))) {

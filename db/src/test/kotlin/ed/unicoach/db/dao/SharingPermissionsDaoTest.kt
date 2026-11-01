@@ -15,6 +15,7 @@ import java.util.UUID
 import kotlin.test.assertContains
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
@@ -64,20 +65,20 @@ class SharingPermissionsDaoTest {
   private fun createStudent(): StudentId {
     val userId = UUID.randomUUID()
     val studentId = UUID.randomUUID()
-    exec("INSERT INTO users (id, email, name, password_hash) VALUES ('$userId', 'sp-$userId@test.com', 'SP User', 'ahash')")
+    exec("INSERT INTO users (id, email, name, password_hash) VALUES (?, ?, 'SP User', 'ahash')", userId, "sp-$userId@test.com")
     StudentRowFixture.insert(connection, studentId, userId)
     return StudentId(studentId)
   }
 
-  private fun exec(sql: String) = connection.createStatement().use { it.execute(sql) }
+  private fun exec(
+    sql: String,
+    vararg args: Any?,
+  ) = RawSql.execute(connection, sql, *args)
 
-  private fun scalar(sql: String): Int =
-    connection.createStatement().use { stmt ->
-      stmt.executeQuery(sql).use { rs ->
-        rs.next()
-        rs.getInt(1)
-      }
-    }
+  private fun scalar(
+    sql: String,
+    vararg args: Any?,
+  ): Int = RawSql.single(connection, sql, *args) { it.getInt(1) }
 
   private fun set(
     student: StudentId,
@@ -85,7 +86,7 @@ class SharingPermissionsDaoTest {
   ) = SharingPermissionsDao.set(session, student, intendedSubjects, status).getOrThrow()
 
   private fun historyCount(student: StudentId): Int =
-    scalar("SELECT count(*) FROM sharing_permissions_versions WHERE student_id = '${student.value}'")
+    scalar("SELECT count(*) FROM sharing_permissions_versions WHERE student_id = ?", student.value)
 
   /** Runs [block] with [constraint] dropped, inside a transaction that is always rolled back. */
   private fun <T> withCheckDropped(
@@ -104,20 +105,18 @@ class SharingPermissionsDaoTest {
 
   /** The definition Postgres renders for the named CHECK on `sharing_permissions`. */
   private fun constraintDefinition(name: String): String =
-    connection
-      .prepareStatement(
+    assertNotNull(
+      RawSql.singleOrNull(
+        connection,
         """
         SELECT pg_get_constraintdef(oid) AS def
         FROM pg_constraint
         WHERE conrelid = 'sharing_permissions'::regclass AND conname = ?
         """.trimIndent(),
-      ).use { stmt ->
-        stmt.setString(1, name)
-        stmt.executeQuery().use { rs ->
-          assertTrue(rs.next(), "the named CHECK [$name] must exist")
-          rs.getString("def")
-        }
-      }
+        name,
+      ) { it.getString("def") },
+      "the named CHECK [$name] must exist",
+    )
 
   /**
    * `col IN ('a', 'b')` in Postgres's own spelling, which is all
@@ -201,7 +200,7 @@ class SharingPermissionsDaoTest {
     val student = createStudent()
     val permission =
       assertFailsWith<PSQLException> {
-        exec("INSERT INTO sharing_permissions (student_id, permission, status) VALUES ('${student.value}', 'college_list', 'granted')")
+        exec("INSERT INTO sharing_permissions (student_id, permission, status) VALUES (?, 'college_list', 'granted')", student.value)
       }
     assertEquals("sharing_permissions_permission_check", constraintOf(permission))
 
@@ -209,7 +208,9 @@ class SharingPermissionsDaoTest {
       assertFailsWith<PSQLException> {
         exec(
           "INSERT INTO sharing_permissions (student_id, permission, status) " +
-            "VALUES ('${student.value}', '${intendedSubjects.value}', 'withheld')",
+            "VALUES (?, ?, 'withheld')",
+          student.value,
+          intendedSubjects.value,
         )
       }
     assertEquals("sharing_permissions_status_check", constraintOf(status))
@@ -241,7 +242,9 @@ class SharingPermissionsDaoTest {
       assertFailsWith<PSQLException> {
         exec(
           "INSERT INTO sharing_permissions (student_id, permission, status) " +
-            "VALUES ('${student.value}', '${intendedSubjects.value}', 'refused')",
+            "VALUES (?, ?, 'refused')",
+          student.value,
+          intendedSubjects.value,
         )
       }
     assertEquals("sharing_permissions_student_permission_active_idx", constraintOf(duplicate))
@@ -252,7 +255,7 @@ class SharingPermissionsDaoTest {
     val student = createStudent()
     val row = set(student, SharingPermissionStatus.GRANTED)
     val thrown =
-      assertFailsWith<PSQLException> { exec("DELETE FROM sharing_permissions WHERE id = '${row.id.value}'") }
+      assertFailsWith<PSQLException> { exec("DELETE FROM sharing_permissions WHERE id = ?", row.id.value) }
     assertContains(thrown.message!!, "Physical deletions are strictly blocked")
   }
 
@@ -266,7 +269,7 @@ class SharingPermissionsDaoTest {
     // refuse them is the column guard.
     val moved =
       assertFailsWith<PSQLException> {
-        exec("UPDATE sharing_permissions SET student_id = '${other.value}', version = version + 1 WHERE id = '${row.id.value}'")
+        exec("UPDATE sharing_permissions SET student_id = ?, version = version + 1 WHERE id = ?", other.value, row.id.value)
       }
     assertContains(moved.message!!, "student_id field is immutable")
     assertEquals("student_id", columnOf(moved))
@@ -281,7 +284,7 @@ class SharingPermissionsDaoTest {
     val renamed =
       withCheckDropped("sharing_permissions_permission_check") {
         assertFailsWith<PSQLException> {
-          exec("UPDATE sharing_permissions SET permission = 'college_list', version = version + 1 WHERE id = '${row.id.value}'")
+          exec("UPDATE sharing_permissions SET permission = 'college_list', version = version + 1 WHERE id = ?", row.id.value)
         }
       }
     assertContains(renamed.message!!, "permission field is immutable")
@@ -303,7 +306,7 @@ class SharingPermissionsDaoTest {
     val student = createStudent()
     val row = set(student, SharingPermissionStatus.GRANTED)
     val thrown =
-      assertFailsWith<PSQLException> { exec("UPDATE sharing_permissions SET status = 'refused' WHERE id = '${row.id.value}'") }
+      assertFailsWith<PSQLException> { exec("UPDATE sharing_permissions SET status = 'refused' WHERE id = ?", row.id.value) }
     assertEquals("40001", thrown.sqlState)
   }
 
@@ -316,7 +319,7 @@ class SharingPermissionsDaoTest {
     // with the CHECK dropped inside a transaction that is rolled back.
     val error =
       withCheckDropped("sharing_permissions_status_check") {
-        exec("UPDATE sharing_permissions SET status = 'maybe', version = version + 1 WHERE id = '${row.id.value}'")
+        exec("UPDATE sharing_permissions SET status = 'maybe', version = version + 1 WHERE id = ?", row.id.value)
         SharingPermissionsDao.findLive(session, student, intendedSubjects).exceptionOrNull()
       }
 
@@ -336,7 +339,7 @@ class SharingPermissionsDaoTest {
     // never see it.
     val error =
       withCheckDropped("sharing_permissions_permission_check") {
-        exec("INSERT INTO sharing_permissions (student_id, permission, status) VALUES ('${student.value}', 'college_list', 'granted')")
+        exec("INSERT INTO sharing_permissions (student_id, permission, status) VALUES (?, 'college_list', 'granted')", student.value)
         SharingPermissionsDao.listLiveForStudent(session, student).exceptionOrNull()
       }
 

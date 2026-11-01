@@ -120,7 +120,7 @@ class BorrowingDaoTest {
     // The defect RFC 148, 162 and 170 each hit, reaching the store anyway: an
     // average over PRIVATE borrowers filed at 'all' would tell a family that
     // everyone who graduated owed $43,865.
-    execute("UPDATE cohort_money_stats SET aid_scope = 'all' WHERE measure = 'private_loan_debt_average'")
+    RawSql.execute(connection, "UPDATE cohort_money_stats SET aid_scope = 'all' WHERE measure = 'private_loan_debt_average'")
 
     val thrown =
       assertFailsWith<CorruptPersistedValueException> {
@@ -397,7 +397,7 @@ class BorrowingDaoTest {
     // exact row was served to a family as -$539,222,987 with a citation beside
     // it.
     val college = seedBorrowingFiling()
-    execute("UPDATE cohort_money_stats SET value = 12345678901 WHERE measure = 'federal_loan_debt_average'")
+    RawSql.execute(connection, "UPDATE cohort_money_stats SET value = 12345678901 WHERE measure = 'federal_loan_debt_average'")
 
     val thrown =
       assertFailsWith<CorruptPersistedValueException> {
@@ -410,7 +410,7 @@ class BorrowingDaoTest {
   @Test
   fun `a negative stored average is refused rather than spoken as money owed`() {
     val college = seedBorrowingFiling()
-    execute("UPDATE cohort_money_stats SET value = -4000 WHERE measure = 'federal_loan_debt_average'")
+    RawSql.execute(connection, "UPDATE cohort_money_stats SET value = -4000 WHERE measure = 'federal_loan_debt_average'")
 
     val thrown =
       assertFailsWith<CorruptPersistedValueException> {
@@ -459,8 +459,6 @@ class BorrowingDaoTest {
   // ---------------------------------------------------------------------------
   // Helpers
   // ---------------------------------------------------------------------------
-
-  private fun execute(sql: String) = connection.createStatement().use { it.execute(sql) }
 
   private fun seedCollege(ipedsUnitId: Int): CollegeId =
     CollegesDao

@@ -1,5 +1,6 @@
 package ed.unicoach.db
 
+import ed.unicoach.db.dao.RawSql
 import ed.unicoach.db.dao.StudentRowFixture
 import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.BeforeAll
@@ -10,6 +11,7 @@ import java.sql.SQLException
 import java.util.UUID
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
 /**
@@ -46,22 +48,13 @@ class PersonalColumnPresenceTest {
     private const val CHECK_VIOLATION = "23514"
   }
 
-  private fun execute(
-    sql: String,
-    vararg params: Any?,
-  ): Int =
-    connection.prepareStatement(sql).use { stmt ->
-      params.forEachIndexed { i, p -> stmt.setObject(i + 1, p) }
-      stmt.executeUpdate()
-    }
-
   /** Runs [sql] and asserts it is refused as a CHECK violation by one of [constraints]. */
   private fun assertRefusedBy(
     constraints: List<String>,
     sql: String,
     vararg params: Any?,
   ) {
-    val refused = assertFailsWith<SQLException> { execute(sql, *params) }
+    val refused = assertFailsWith<SQLException> { RawSql.execute(connection, sql, *params) }
     assertEquals(CHECK_VIOLATION, refused.sqlState, "expected a CHECK violation, got: ${refused.message}")
     assertTrue(
       constraints.any { refused.message.orEmpty().contains("\"$it\"") },
@@ -71,7 +64,7 @@ class PersonalColumnPresenceTest {
 
   private fun user(): UUID {
     val id = UUID.randomUUID()
-    execute("INSERT INTO users (id, email, name) VALUES (?, ?, ?)", id, "presence-$id@example.com", "Presence User")
+    RawSql.execute(connection, "INSERT INTO users (id, email, name) VALUES (?, ?, ?)", id, "presence-$id@example.com", "Presence User")
     return id
   }
 
@@ -82,24 +75,17 @@ class PersonalColumnPresenceTest {
   }
 
   private fun llmRequest(): Long =
-    connection
-      .prepareStatement(
-        "INSERT INTO llm_requests (provider, model_requested, content, max_tokens) " +
-          "VALUES ('log', 'm', '[]'::jsonb, 1) RETURNING id",
-      ).use { stmt ->
-        stmt.executeQuery().use { rs ->
-          rs.next()
-          rs.getLong(1)
-        }
-      }
+    RawSql.single(
+      connection,
+      "INSERT INTO llm_requests (provider, model_requested, content, max_tokens) " +
+        "VALUES ('log', 'm', '[]'::jsonb, 1) RETURNING id",
+    ) { it.getLong(1) }
 
   private fun systemPromptId(): UUID =
-    connection.prepareStatement("SELECT id FROM system_prompts LIMIT 1").use { stmt ->
-      stmt.executeQuery().use { rs ->
-        assertTrue(rs.next(), "the migrations seed at least one system prompt")
-        rs.getObject(1, UUID::class.java)
-      }
-    }
+    assertNotNull(
+      RawSql.singleOrNull(connection, "SELECT id FROM system_prompts LIMIT 1") { it.getObject(1, UUID::class.java) },
+      "the migrations seed at least one system prompt",
+    )
 
   @Test
   fun `a live user cannot lose their name`() {
@@ -114,8 +100,9 @@ class PersonalColumnPresenceTest {
   @Test
   fun `a deleted user can lose every personal column`() {
     val id = user()
-    execute("UPDATE users SET deleted_at = NOW(), version = version + 1 WHERE id = ?", id)
-    execute(
+    RawSql.execute(connection, "UPDATE users SET deleted_at = NOW(), version = version + 1 WHERE id = ?", id)
+    RawSql.execute(
+      connection,
       "UPDATE users SET email = NULL, name = NULL, display_name = NULL, password_hash = NULL, " +
         "version = version + 1 WHERE id = ?",
       id,
@@ -169,7 +156,7 @@ class PersonalColumnPresenceTest {
       "INSERT INTO llm_responses (request_id, outcome, content, model_resolved, stop_reason, latency_ms, deleted_at) " +
         "VALUES (?, 'completed', NULL, 'm', 'end_turn', 1, ?)"
     assertRefusedBy(listOf("llm_responses_completed_content_check"), insert, llmRequest(), null)
-    assertEquals(1, execute(insert, llmRequest(), java.sql.Timestamp(System.currentTimeMillis())))
+    assertEquals(1, RawSql.execute(connection, insert, llmRequest(), java.sql.Timestamp(System.currentTimeMillis())))
   }
 
   @Test
@@ -178,7 +165,7 @@ class PersonalColumnPresenceTest {
       "INSERT INTO money_profiles (student_id, income_band_status, income_band, deleted_at) " +
         "VALUES (?, 'answered', NULL, ?)"
     assertRefusedBy(listOf("money_profiles_income_band_value_iff_answered_check"), insert, student(), null)
-    assertEquals(1, execute(insert, student(), java.sql.Timestamp(System.currentTimeMillis())))
+    assertEquals(1, RawSql.execute(connection, insert, student(), java.sql.Timestamp(System.currentTimeMillis())))
   }
 
   @Test
@@ -198,7 +185,10 @@ class PersonalColumnPresenceTest {
       llmRequest(),
       null,
     )
-    assertEquals(1, execute(insert, student(), prompt, prompt, llmRequest(), java.sql.Timestamp(System.currentTimeMillis())))
+    assertEquals(
+      1,
+      RawSql.execute(connection, insert, student(), prompt, prompt, llmRequest(), java.sql.Timestamp(System.currentTimeMillis())),
+    )
   }
 
   @Test

@@ -3,6 +3,7 @@ package ed.unicoach.rest
 import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
 import ed.unicoach.common.config.AppConfig
 import ed.unicoach.db.DatabaseConfig
+import ed.unicoach.db.dao.RawSql
 import ed.unicoach.db.models.SupporterRelationship
 import ed.unicoach.rest.models.AcceptSupporterInviteRequest
 import ed.unicoach.rest.models.AcceptSupporterInviteStatus
@@ -76,13 +77,11 @@ class SupporterInviteRoutingTest {
   private fun uniqueEmail(prefix: String) = "$prefix${java.util.UUID.randomUUID()}@company.com"
 
   private fun markEmailVerified(email: String) {
-    dbConnection
-      .prepareStatement(
-        "UPDATE users SET version = version + 1, email_verified_at = NOW() WHERE email = ? AND email_verified_at IS NULL",
-      ).use { stmt ->
-        stmt.setString(1, email)
-        stmt.executeUpdate()
-      }
+    RawSql.execute(
+      dbConnection,
+      "UPDATE users SET version = version + 1, email_verified_at = NOW() WHERE email = ? AND email_verified_at IS NULL",
+      email,
+    )
   }
 
   /** Registers a fresh user and returns the session cookie, leaving the address UNVERIFIED. */
@@ -120,14 +119,7 @@ class SupporterInviteRoutingTest {
 
   private fun inviteCount(): Int = count("SELECT count(*) FROM supporter_invites")
 
-  private fun count(sql: String): Int {
-    dbConnection.createStatement().use { stmt ->
-      stmt.executeQuery(sql).use { rs ->
-        rs.next()
-        return rs.getInt(1)
-      }
-    }
-  }
+  private fun count(sql: String): Int = RawSql.single(dbConnection, sql) { it.getInt(1) }
 
   @Test
   fun `mint unauthenticated returns 401`() =
@@ -215,14 +207,12 @@ class SupporterInviteRoutingTest {
       )
     }
 
-  private fun storedRelationship(inviteId: String): String? {
-    dbConnection.prepareStatement("SELECT relationship FROM supporter_invites WHERE id = ?").use { stmt ->
-      stmt.setObject(1, java.util.UUID.fromString(inviteId))
-      stmt.executeQuery().use { rs ->
-        return if (rs.next()) rs.getString(1) else null
-      }
-    }
-  }
+  private fun storedRelationship(inviteId: String): String? =
+    RawSql.singleOrNull(
+      dbConnection,
+      "SELECT relationship FROM supporter_invites WHERE id = ?",
+      java.util.UUID.fromString(inviteId),
+    ) { it.getString(1) }
 
   /**
    * The word the caller sent is NOT in the vocabulary. This is the arm that was

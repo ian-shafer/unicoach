@@ -79,15 +79,14 @@ class SupporterLinkRequestsDaoTest {
     verified: Boolean = true,
   ): UserId {
     val userId = UUID.randomUUID()
-    connection
-      .prepareStatement("INSERT INTO users (id, email, name, password_hash, email_verified_at) VALUES (?, ?, ?, 'ahash', ?)")
-      .use { stmt ->
-        stmt.setObject(1, userId)
-        stmt.setString(2, "request-$userId@test.com")
-        stmt.setString(3, name)
-        stmt.setObject(4, if (verified) java.sql.Timestamp.from(java.time.Instant.now()) else null)
-        stmt.executeUpdate()
-      }
+    RawSql.execute(
+      connection,
+      "INSERT INTO users (id, email, name, password_hash, email_verified_at) VALUES (?, ?, ?, 'ahash', ?)",
+      userId,
+      "request-$userId@test.com",
+      name,
+      if (verified) java.sql.Timestamp.from(java.time.Instant.now()) else null,
+    )
     return UserId(userId)
   }
 
@@ -114,8 +113,6 @@ class SupporterLinkRequestsDaoTest {
     student: StudentId,
   ): SupporterLinkRequest? =
     SupporterLinkRequestsDao.create(session, NewSupporterLinkRequest(supporter.id, student, shareOf(student))).getOrThrow()
-
-  private fun execute(sql: String) = connection.createStatement().use { it.executeUpdate(sql) }
 
   @Test
   fun `a pair holds one pending request, and a resolved one is history`() {
@@ -145,7 +142,9 @@ class SupporterLinkRequestsDaoTest {
       "created_at = NOW() - INTERVAL '1 day'",
     )) {
       val refused =
-        assertFailsWith<SQLException> { execute("UPDATE supporter_link_requests SET $assignment WHERE id = '${pending.id.value}'") }
+        assertFailsWith<SQLException> {
+          RawSql.execute(connection, "UPDATE supporter_link_requests SET $assignment WHERE id = ?", pending.id.value)
+        }
       assertEquals("P0001", refused.sqlState, "[$assignment] must be refused by a guard")
     }
 
@@ -154,7 +153,7 @@ class SupporterLinkRequestsDaoTest {
     val newSupporter = other.id.value.toString()
     val refused =
       assertFailsWith<SQLException> {
-        execute("UPDATE supporter_link_requests SET supporter_id = '$newSupporter' WHERE id = '${pending.id.value}'")
+        RawSql.execute(connection, "UPDATE supporter_link_requests SET supporter_id = ? WHERE id = ?", other.id.value, pending.id.value)
       }
     val message = refused.message.orEmpty()
     assertTrue(message.contains(pending.id.value.toString()) && message.contains(newSupporter), "names row and value: [$message]")
@@ -174,7 +173,7 @@ class SupporterLinkRequestsDaoTest {
     )
     val refused =
       assertFailsWith<SQLException> {
-        execute("UPDATE supporter_link_requests SET resolution = 'cancelled' WHERE id = '${pending.id.value}'")
+        RawSql.execute(connection, "UPDATE supporter_link_requests SET resolution = 'cancelled' WHERE id = ?", pending.id.value)
       }
     assertEquals("P0001", refused.sqlState, "and a raw write past the DAO is refused by the guard")
     assertTrue(refused.message.orEmpty().contains("refused write: resolution [cancelled]"), "and names the write: [${refused.message}]")
@@ -184,7 +183,8 @@ class SupporterLinkRequestsDaoTest {
   fun `a request cannot be deleted`() {
     val pending = assertNotNull(request(createSupporter(), createStudent()))
 
-    val refused = assertFailsWith<SQLException> { execute("DELETE FROM supporter_link_requests WHERE id = '${pending.id.value}'") }
+    val refused =
+      assertFailsWith<SQLException> { RawSql.execute(connection, "DELETE FROM supporter_link_requests WHERE id = ?", pending.id.value) }
     assertEquals("P0001", refused.sqlState)
     assertTrue(refused.message.orEmpty().contains(pending.id.value.toString()), "the refusal names the row: [${refused.message}]")
   }
@@ -225,7 +225,11 @@ class SupporterLinkRequestsDaoTest {
 
     val refused =
       assertFailsWith<SQLException> {
-        execute("UPDATE supporter_link_requests SET resolution = 'approved', resolved_at = NOW() WHERE id = '${pending.id.value}'")
+        RawSql.execute(
+          connection,
+          "UPDATE supporter_link_requests SET resolution = 'approved', resolved_at = NOW() WHERE id = ?",
+          pending.id.value,
+        )
       }
     assertEquals("23514", refused.sqlState, "an approval without its link is refused by supporter_link_requests_link_check")
 

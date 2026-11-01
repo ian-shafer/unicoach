@@ -19,6 +19,7 @@ import ed.unicoach.common.config.AppConfig
 import ed.unicoach.common.json.asJson
 import ed.unicoach.db.Database
 import ed.unicoach.db.DatabaseConfig
+import ed.unicoach.db.dao.RawSql
 import ed.unicoach.queue.EnqueueResult
 import ed.unicoach.queue.JobHandler
 import ed.unicoach.queue.JobType
@@ -210,13 +211,11 @@ class OfflineCoachingE2eTest {
   private fun url(path: String) = "http://localhost:$port$path"
 
   private fun markEmailVerified(email: String) {
-    connection
-      .prepareStatement(
-        "UPDATE users SET version = version + 1, email_verified_at = NOW() WHERE email = ? AND email_verified_at IS NULL",
-      ).use { stmt ->
-        stmt.setString(1, email)
-        stmt.executeUpdate()
-      }
+    RawSql.execute(
+      connection,
+      "UPDATE users SET version = version + 1, email_verified_at = NOW() WHERE email = ? AND email_verified_at IS NULL",
+      email,
+    )
   }
 
   private suspend fun seedClosedConversation(): String {
@@ -253,30 +252,17 @@ class OfflineCoachingE2eTest {
     return mapper.readTree(convo.bodyAsText())["conversation"]["id"].asText()
   }
 
-  private fun singleJobId(jobType: String): String =
-    connection.prepareStatement("SELECT id::text FROM jobs WHERE job_type = ?").use { stmt ->
-      stmt.setString(1, jobType)
-      stmt.executeQuery().use { rs ->
-        assertTrue(rs.next(), "expected a $jobType job")
-        rs.getString(1)
-      }
-    }
+  private fun singleJobId(jobType: String): String = singleString("SELECT id::text FROM jobs WHERE job_type = ?", jobType)
 
-  private fun count(sql: String): Int =
-    connection.prepareStatement(sql).use { stmt ->
-      stmt.executeQuery().use { rs ->
-        rs.next()
-        rs.getInt(1)
-      }
-    }
+  private fun count(
+    sql: String,
+    vararg args: Any?,
+  ): Int = RawSql.single(connection, sql, *args) { it.getInt(1) }
 
-  private fun singleString(sql: String): String =
-    connection.prepareStatement(sql).use { stmt ->
-      stmt.executeQuery().use { rs ->
-        assertTrue(rs.next())
-        rs.getString(1)
-      }
-    }
+  private fun singleString(
+    sql: String,
+    vararg args: Any?,
+  ): String = RawSql.single(connection, sql, *args) { it.getString(1) }
 
   private fun runWorkerUntil(
     handler: JobHandler,
@@ -316,14 +302,15 @@ class OfflineCoachingE2eTest {
 
     assertEquals(
       1,
-      count("SELECT COUNT(*) FROM extraction_runs WHERE convo_id = '$convoId'"),
+      count("SELECT COUNT(*) FROM extraction_runs WHERE convo_id = ?::uuid", convoId),
       "extraction must append exactly one run row",
     )
     // RFC 106 moved provider off extraction_runs onto the logged call (llm_requests).
     assertEquals(
       "anthropic",
       singleString(
-        "SELECT lr.provider FROM extraction_runs er JOIN llm_requests lr ON er.llm_request_id = lr.id WHERE er.convo_id = '$convoId'",
+        "SELECT lr.provider FROM extraction_runs er JOIN llm_requests lr ON er.llm_request_id = lr.id WHERE er.convo_id = ?::uuid",
+        convoId,
       ),
     )
     assertTrue(count("SELECT COUNT(*) FROM claims") >= 1, "extraction must persist the NEW claim")
@@ -365,13 +352,14 @@ class OfflineCoachingE2eTest {
 
     assertEquals(
       1,
-      count("SELECT COUNT(*) FROM synthesis_runs WHERE student_id = '$studentId'"),
+      count("SELECT COUNT(*) FROM synthesis_runs WHERE student_id = ?::uuid", studentId),
       "synthesis must append exactly one run row",
     )
     assertEquals(
       "anthropic",
       singleString(
-        "SELECT lr.provider FROM synthesis_runs sr JOIN llm_requests lr ON sr.llm_request_id = lr.id WHERE sr.student_id = '$studentId'",
+        "SELECT lr.provider FROM synthesis_runs sr JOIN llm_requests lr ON sr.llm_request_id = lr.id WHERE sr.student_id = ?::uuid",
+        studentId,
       ),
     )
     // THE PROPOSED COMMITMENT, BY ITS OWN LENS, and not "one commitment row"
@@ -382,7 +370,7 @@ class OfflineCoachingE2eTest {
     // Counting every row made this assertion a statement about the calendar.
     assertEquals(
       1,
-      count("SELECT COUNT(*) FROM commitments WHERE student_id = '$studentId' AND lens = 'gap'"),
+      count("SELECT COUNT(*) FROM commitments WHERE student_id = ?::uuid AND lens = 'gap'", studentId),
       "synthesis must persist the proposed commitment",
     )
   }

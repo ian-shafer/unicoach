@@ -13,6 +13,7 @@ import ed.unicoach.coaching.budget.BudgetConfig
 import ed.unicoach.common.config.AppConfig
 import ed.unicoach.db.Database
 import ed.unicoach.db.DatabaseConfig
+import ed.unicoach.db.dao.RawSql
 import ed.unicoach.rest.models.CreateConversationRequest
 import ed.unicoach.rest.models.CreateSupporterConversationRequest
 import ed.unicoach.rest.models.PostMessageRequest
@@ -135,13 +136,7 @@ class ParentCoachServer private constructor(
   fun json(body: String): JsonNode = mapper.readTree(body)
 
   /** The highest `llm_requests.id` so far: the watermark a test's own calls are counted above. */
-  fun llmRequestWatermark(): Long =
-    db.prepareStatement("SELECT COALESCE(MAX(id), 0) FROM llm_requests").use { stmt ->
-      stmt.executeQuery().use { rs ->
-        rs.next()
-        rs.getLong(1)
-      }
-    }
+  fun llmRequestWatermark(): Long = RawSql.single(db, "SELECT COALESCE(MAX(id), 0) FROM llm_requests") { it.getLong(1) }
 
   /** Every `llm_requests` body above [watermark], whole: system, messages (tool results included) and tools. */
   fun llmRequestBodiesAbove(watermark: Long): List<String> =
@@ -158,14 +153,7 @@ class ParentCoachServer private constructor(
   fun count(
     sql: String,
     vararg args: Any,
-  ): Int =
-    db.prepareStatement(sql).use { stmt ->
-      args.forEachIndexed { i, arg -> stmt.setObject(i + 1, arg) }
-      stmt.executeQuery().use { rs ->
-        rs.next()
-        rs.getInt(1)
-      }
-    }
+  ): Int = RawSql.single(db, sql, *args) { it.getInt(1) }
 
   /**
    * A [ChatProvider] answering from a queue of terminals: each call takes the

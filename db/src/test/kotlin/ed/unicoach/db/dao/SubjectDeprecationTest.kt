@@ -139,34 +139,29 @@ class SubjectDeprecationTest {
     }
   }
 
-  private fun exec(sql: String) = connection.createStatement().use { it.execute(sql) }
+  private fun exec(
+    sql: String,
+    vararg args: Any?,
+  ) = RawSql.execute(connection, sql, *args)
 
-  private fun scalar(sql: String): Int =
-    connection.createStatement().use { stmt ->
-      stmt.executeQuery(sql).use { rs ->
-        rs.next()
-        rs.getInt(1)
-      }
-    }
+  private fun scalar(sql: String): Int = RawSql.single(connection, sql) { it.getInt(1) }
 
-  private fun text(sql: String): String? =
-    connection.createStatement().use { stmt ->
-      stmt.executeQuery(sql).use { rs ->
-        if (rs.next()) rs.getString(1) else null
-      }
-    }
+  private fun text(
+    sql: String,
+    vararg args: Any?,
+  ): String? = RawSql.singleOrNull(connection, sql, *args) { it.getString(1) }
 
-  private fun statusOf(slug: String): String? = text("SELECT status FROM subjects WHERE slug = '$slug'")
+  private fun statusOf(slug: String): String? = text("SELECT status FROM subjects WHERE slug = ?", slug)
 
-  private fun updatedAt(slug: String): String? = text("SELECT updated_at::text FROM subjects WHERE slug = '$slug'")
+  private fun updatedAt(slug: String): String? = text("SELECT updated_at::text FROM subjects WHERE slug = ?", slug)
 
   /** One student who has answered with [slug] — the reference that makes a drop a deprecation. */
   private fun answerWith(
     studentId: UUID,
     slug: String,
   ) = inTransaction {
-    exec("INSERT INTO intended_subject_status (student_id, status) VALUES ('$studentId', 'answered')")
-    exec("INSERT INTO intended_subjects (student_id, subject_slug) VALUES ('$studentId', '$slug')")
+    exec("INSERT INTO intended_subject_status (student_id, status) VALUES (?, 'answered')", studentId)
+    exec("INSERT INTO intended_subjects (student_id, subject_slug) VALUES (?, ?)", studentId, slug)
   }
 
   /** The student REMOVES their answer: the row is SOFT-deleted and the status stops being `answered`. */
@@ -176,11 +171,13 @@ class SubjectDeprecationTest {
       // update that does not carry the next version is a 40001, not a write.
       exec(
         "UPDATE intended_subject_status SET status = 'undecided', version = version + 1 " +
-          "WHERE student_id = '$studentId'",
+          "WHERE student_id = ?",
+        studentId,
       )
       exec(
         "UPDATE intended_subjects SET deleted_at = NOW(), version = version + 1 " +
-          "WHERE student_id = '$studentId' AND deleted_at IS NULL",
+          "WHERE student_id = ? AND deleted_at IS NULL",
+        studentId,
       )
     }
 
@@ -325,7 +322,7 @@ class SubjectDeprecationTest {
   @Test
   fun `the subjects status CHECK accepts exactly active and deprecated and refuses a third value`() {
     SubjectStatus.entries.forEach { status ->
-      exec("UPDATE subjects SET status = '${status.value}' WHERE slug = 'nursing'")
+      exec("UPDATE subjects SET status = ? WHERE slug = 'nursing'", status.value)
       assertEquals(status.value, statusOf("nursing"), "the CHECK must admit [${status.value}]")
     }
     val thrown = assertFailsWith<PSQLException> { exec("UPDATE subjects SET status = 'retired' WHERE slug = 'nursing'") }
