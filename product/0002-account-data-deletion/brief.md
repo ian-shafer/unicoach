@@ -575,3 +575,15 @@ _(one line per landed slice: ID, RFC, code SHA, date, one-line what.)_
       the roots' own history ids exempt; nullable keys
       (`email_sends.user_id`, `convos.supporter_id`) pair at-most-one; names
       kept (`deleted_*`, `erased_at`, `closed_at`); no sibling indexes.
+    deletion/03/the-walk LANDED as RFC 266 (main@81f30c5a, 2026-11-01) —
+      `erase_account` walks `pg_constraint` from a closed account's roots, moves
+      every key onto its `deleted_*` sibling, NULLs every `pii.*` column through
+      `soft_delete_entity`, follows `owned.*` keys into the LLM log (text NULL,
+      tokens and cost kept) and deletes D10's rows, jobs matched by payload; one
+      predicate (`erasure_admits`) opens eight guards; erased rows are excluded
+      from every Kotlin read; admin-web `POST /user/{id}/erase` (D12) with
+      per-table counts; expression indexes restore the meter's index scans.
+      Approval (Ian, 2026-11-01): D-A revised — a conversation belongs to its
+      party, and a row keyed on another account is never erased by any path
+      (the student's data copied into a parent's conversation is a known
+      limit); D-B..D-I on defaults; at review §10/§2 amended to match the code.
