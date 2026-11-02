@@ -212,3 +212,7 @@ deleted-key-supporter-link-requests.sql
 deleted-key-supporter-llm-costs.sql
 spend-views-read-deleted-keys.sql
 raise-sessions-metadata-cap.sql
+erasure-edge.sql
+erasure-functions.sql
+erasure-guard-arm.sql
+spend-views-account-indexes.sql

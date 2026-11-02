@@ -357,6 +357,32 @@ class SubscriptionServiceTest {
   }
 
   @Test
+  fun `a refresh of an erased account's subscription is NotBound, with zero transport calls`() {
+    // RFC 266 §8: the erased account's key has moved to deleted_user_id, and the
+    // read filters the row rather than mapping it -- a mapper that fell back to
+    // the deleted key would hand refresh the erased account to upsert under.
+    val userId = createAccount()
+    assertIs<VerifyResult.Verified>(verify(userId, activeTransport()))
+    connection.createStatement().use { stmt ->
+      stmt.execute("UPDATE users SET deleted_at = NOW(), version = version + 1 WHERE id = '${userId.value}'")
+      stmt.execute("SELECT * FROM erase_account('${userId.value}')")
+    }
+    val transport = activeTransport()
+
+    val result = refresh(transport)
+
+    assertIs<RefreshResult.NotBound>(result)
+    assertEquals(0, transport.calls.size, "an erased account's subscription costs no Apple call")
+    connection.prepareStatement("SELECT user_id, deleted_user_id FROM subscriptions").use { stmt ->
+      stmt.executeQuery().use { rs ->
+        assertTrue(rs.next(), "the subscription outlives the person (D6)")
+        assertNull(rs.getObject("user_id"))
+        assertEquals(userId.value, rs.getObject("deleted_user_id", UUID::class.java))
+      }
+    }
+  }
+
+  @Test
   fun `a refresh applies changed state under the row's own account`() {
     // refresh is passed no account at all — the binding comes from the row.
     val userId = createAccount()

@@ -33,6 +33,9 @@ object ExtractionRunsDao :
     val failureReason: String?,
   )
 
+  /** This table's [ErasedRows] predicate: a row is owned by its student. */
+  internal fun notErased(alias: String): String = ErasedRows.notErased(alias, ErasedRows.Owner.STUDENT)
+
   private fun mapRun(rs: ResultSet): ExtractionRun =
     ExtractionRun(
       id = ExtractionRunId(rs.getLong("id")),
@@ -161,7 +164,7 @@ object ExtractionRunsDao :
     id: ExtractionRunId,
   ): Result<ExtractionRun> =
     session.queryOne(
-      "SELECT * FROM extraction_runs WHERE id = ?",
+      "SELECT * FROM extraction_runs WHERE id = ? AND ${notErased("extraction_runs")}",
       bind = { it.setLong(1, id.value) },
       map = ::mapRun,
     )
@@ -179,6 +182,7 @@ object ExtractionRunsDao :
     session.queryList(
       """
       SELECT * FROM extraction_runs
+      WHERE ${notErased("extraction_runs")}
       ORDER BY id
       LIMIT ? OFFSET ?
       """.trimIndent(),

@@ -223,10 +223,20 @@ object SubscriptionsDao {
   ): Result<Subscription?> =
     session
       .queryList(
-        "SELECT * FROM subscriptions WHERE original_transaction_id = ?",
+        "SELECT * FROM subscriptions WHERE original_transaction_id = ? AND ${boundToLiveAccount("subscriptions")}",
         bind = { it.setString(1, originalTransactionId) },
         map = ::mapSubscription,
       ).map { it.firstOrNull() }
+
+  /**
+   * The row [alias] names is still bound to a live account: the [ErasedRows]
+   * predicate for a row its account owns. Filtered, not mapped: a
+   * mapper that fell back to `deleted_user_id` would hand `refresh` the erased
+   * account to upsert under, and [upsert]'s erased-row arm would bind the
+   * subscription back to it. An erased account's subscription reads as absent,
+   * which `refresh` answers as not bound.
+   */
+  private fun boundToLiveAccount(alias: String): String = ErasedRows.notErased(alias, ErasedRows.Owner.ACCOUNT)
 
   /** Internal marker for an upsert whose conflict arm matched no row; never escapes [upsert]. */
   private class NoRowWritten : Exception()

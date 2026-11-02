@@ -273,6 +273,25 @@ class ExtractionServiceTest {
     return convoId
   }
 
+  /**
+   * Closes and erases the account that owns [studentId] (RFC 266): its key
+   * moves to deleted_students and every read of its rows answers as absent.
+   */
+  private fun eraseAccountOf(studentId: UUID) {
+    val userId =
+      connection.prepareStatement("SELECT user_id FROM students WHERE id = ?").use { stmt ->
+        stmt.setObject(1, studentId)
+        stmt.executeQuery().use { rs ->
+          rs.next()
+          rs.getObject(1, UUID::class.java)
+        }
+      }
+    connection.createStatement().use { stmt ->
+      stmt.execute("UPDATE users SET deleted_at = NOW(), version = version + 1 WHERE id = '$userId'")
+      stmt.execute("SELECT * FROM erase_account('$userId')")
+    }
+  }
+
   private fun softDeleteConvo(convoId: UUID) {
     connection.prepareStatement("UPDATE convos SET deleted_at = NOW() WHERE id = ?").use { stmt ->
       stmt.setObject(1, convoId)
@@ -967,6 +986,21 @@ class ExtractionServiceTest {
       val convo = createConvo(student)
       val req = appendUserTurn(convo, "hi")
       softDeleteConvo(convo)
+
+      val result =
+        service(TerminalProvider(terminal = ChatEvent.TransientFailure("should not be called", null, null)))
+          .extract(ConvoId(convo), ConvoRequestId(req))
+      assertTrue(result is ExtractionResult.Success, "got $result")
+      assertEquals(0, countWhere("extraction_runs", "convo_id", convo))
+    }
+
+  @Test
+  fun `an erased conversation's queued turn is a no-op success`() =
+    runBlocking {
+      val student = createStudent()
+      val convo = createConvo(student)
+      val req = appendUserTurn(convo, "hi")
+      eraseAccountOf(student)
 
       val result =
         service(TerminalProvider(terminal = ChatEvent.TransientFailure("should not be called", null, null)))

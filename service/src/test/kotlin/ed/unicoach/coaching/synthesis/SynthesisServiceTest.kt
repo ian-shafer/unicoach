@@ -269,6 +269,25 @@ class SynthesisServiceTest {
     return StudentId(studentId)
   }
 
+  /**
+   * Closes and erases the account that owns [studentId] (RFC 266): its key
+   * moves to deleted_students and every read of its rows answers as absent.
+   */
+  private fun eraseAccountOf(studentId: UUID) {
+    val userId =
+      connection.prepareStatement("SELECT user_id FROM students WHERE id = ?").use { stmt ->
+        stmt.setObject(1, studentId)
+        stmt.executeQuery().use { rs ->
+          rs.next()
+          rs.getObject(1, UUID::class.java)
+        }
+      }
+    connection.createStatement().use { stmt ->
+      stmt.execute("UPDATE users SET deleted_at = NOW(), version = version + 1 WHERE id = '$userId'")
+      stmt.execute("SELECT * FROM erase_account('$userId')")
+    }
+  }
+
   private fun softDeleteStudent(studentId: StudentId) {
     // students is OCC-versioned; go through the DAO so enforce_versioning is satisfied.
     ed.unicoach.db.dao.StudentsDao
@@ -774,6 +793,19 @@ class SynthesisServiceTest {
       createClaim(student)
       val result = service(TerminalProvider(terminal = ChatEvent.TransientFailure("later", null, null))).synthesize(student)
       assertTrue(result is SynthesisResult.TransientFailure, "got [$result]")
+      assertEquals(0, runRows(student))
+    }
+
+  @Test
+  fun `an erased student is a no-op success with no run and no provider call`() =
+    runBlocking {
+      val student = createStudent()
+      createClaim(student)
+      eraseAccountOf(student.value)
+      val provider = TerminalProvider(terminal = ChatEvent.TransientFailure("should not be called", null, null))
+      val result = service(provider).synthesize(student)
+      assertTrue(result is SynthesisResult.Success, "got [$result]")
+      assertEquals(0, provider.calls)
       assertEquals(0, runRows(student))
     }
 

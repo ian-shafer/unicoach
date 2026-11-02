@@ -176,7 +176,11 @@ object SharingPermissionsDao {
     id: SharingPermissionId,
   ): Result<List<Version<SharingPermissionRow>>> =
     session.queryList(
-      "SELECT * FROM sharing_permissions_versions WHERE id = ? ORDER BY version",
+      "SELECT * FROM sharing_permissions_versions v WHERE v.id = ? AND ${ErasedRows.historyNotErased(
+        "v",
+        TABLE,
+        ErasedRows.Owner.STUDENT,
+      )} ORDER BY version",
       bind = { it.setObject(1, id.value) },
       map = { Version(mapRow(it, VERSIONS_TABLE)) },
     )

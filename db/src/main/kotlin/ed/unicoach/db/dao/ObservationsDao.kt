@@ -20,6 +20,9 @@ object ObservationsDao :
   Findable<Observation, ObservationId>,
   Listable<Observation>,
   Creatable<NewObservation, Observation> {
+  /** This table's [ErasedRows] predicate: a row is owned by its student. */
+  internal fun notErased(alias: String): String = ErasedRows.notErased(alias, ErasedRows.Owner.STUDENT)
+
   private fun mapObservation(rs: ResultSet): Observation =
     Observation(
       id = ObservationId(rs.getLong("id")),
@@ -68,7 +71,7 @@ object ObservationsDao :
     val sql =
       """
       SELECT * FROM observations
-      WHERE convo_id = ? AND source_request_id > ? AND source_request_id <= ?
+      WHERE convo_id = ? AND source_request_id > ? AND source_request_id <= ? AND ${notErased("observations")}
       ORDER BY created_at, id
       """.trimIndent()
     return session.queryList(
@@ -99,7 +102,7 @@ object ObservationsDao :
     id: ObservationId,
   ): Result<Observation> =
     session.queryOne(
-      "SELECT * FROM observations WHERE id = ?",
+      "SELECT * FROM observations WHERE id = ? AND ${notErased("observations")}",
       bind = { it.setLong(1, id.value) },
       map = ::mapObservation,
     )
@@ -117,6 +120,7 @@ object ObservationsDao :
     session.queryList(
       """
       SELECT * FROM observations
+      WHERE ${notErased("observations")}
       ORDER BY id
       LIMIT ? OFFSET ?
       """.trimIndent(),

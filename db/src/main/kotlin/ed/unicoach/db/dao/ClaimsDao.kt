@@ -26,6 +26,9 @@ object ClaimsDao :
   Findable<Claim, ClaimId>,
   Listable<Claim>,
   Creatable<NewClaim, Claim> {
+  /** This table's [ErasedRows] predicate: a row is owned by its student. */
+  internal fun notErased(alias: String): String = ErasedRows.notErased(alias, ErasedRows.Owner.STUDENT)
+
   internal fun mapClaim(rs: ResultSet): Claim =
     Claim(
       id = ClaimId(UUID.fromString(rs.getString("id"))),
@@ -84,7 +87,7 @@ object ClaimsDao :
     id: ClaimId,
   ): Result<Claim> =
     session.queryOne(
-      "SELECT * FROM claims WHERE id = ?",
+      "SELECT * FROM claims WHERE id = ? AND ${notErased("claims")}",
       bind = { it.setObject(1, id.value) },
       map = ::mapClaim,
     )
@@ -101,6 +104,7 @@ object ClaimsDao :
     session.queryList(
       """
       SELECT * FROM claims
+      WHERE ${notErased("claims")}
       ORDER BY row_created_at, id
       LIMIT ? OFFSET ?
       """.trimIndent(),

@@ -23,6 +23,7 @@ import ed.unicoach.db.dao.ClaimSupportDao
 import ed.unicoach.db.dao.ClaimsDao
 import ed.unicoach.db.dao.ConvosDao
 import ed.unicoach.db.dao.ExtractionRunsDao
+import ed.unicoach.db.dao.NotFoundException
 import ed.unicoach.db.dao.ObservationsDao
 import ed.unicoach.db.dao.SqlSession
 import ed.unicoach.db.dao.StudentsDao
@@ -136,7 +137,12 @@ open class ExtractionService(
     throughRequestId: ConvoRequestId,
   ): ReadPhase =
     database.withConnection { session ->
-      val convo = ConvosDao.findById(session, convoId, SoftDeleteScope.ALL).getOrThrow()
+      val convoResult = ConvosDao.findById(session, convoId, SoftDeleteScope.ALL)
+      // An absent or erased conversation (RFC 266 §8) is a fast no-op success,
+      // not a retriable failure: retrying cannot conjure the row, so every
+      // attempt would be wasted. SynthesisService.readPhase's shape.
+      if (convoResult.exceptionOrNull() is NotFoundException) return@withConnection ReadPhase.NoOp
+      val convo = convoResult.getOrThrow()
       // Soft-deleted conversation: skip as a no-op success (no run appended).
       if (convo.deletedAt != null) return@withConnection ReadPhase.NoOp
       // A supporter's own conversation (RFC 258) is ABOUT the student and never

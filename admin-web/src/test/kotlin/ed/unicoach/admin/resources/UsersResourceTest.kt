@@ -2,6 +2,7 @@ package ed.unicoach.admin.resources
 
 import ed.unicoach.admin.AdminTestSupport
 import ed.unicoach.db.dao.CostReportSharesDao
+import ed.unicoach.db.dao.ErasureFixture
 import ed.unicoach.db.dao.NotFoundException
 import ed.unicoach.db.dao.UsersDao
 import ed.unicoach.db.models.NewCostReportShare
@@ -408,7 +409,11 @@ class UsersResourceTest {
       val body = detail.bodyAsText()
       assertTrue(body.contains("Mark email verified"), "Detail must offer the mark-verified action")
       assertTrue(body.contains("Send verification email"), "Detail must offer the send-verification action")
-      assertFalse(body.contains("disabled"), "Both action buttons must render enabled")
+      // Per button, not page-wide: a live user's Erase action renders disabled
+      // (RFC 266 §10), and that is not what this test is about.
+      for (label in listOf("Mark email verified", "Send verification email")) {
+        assertFalse(Regex("<button[^>]*disabled[^>]*>\\s*$label").containsMatchIn(body), "[$label] must render enabled")
+      }
       assertFalse(body.contains("Email already verified."), "No already-verified title for an unverified user")
     }
 
@@ -656,6 +661,128 @@ class UsersResourceTest {
           header(HttpHeaders.Cookie, cookie)
         }
       assertEquals(HttpStatusCode.NotFound, send.status, "send-verification-email on a soft-deleted user must 404")
+    }
+
+  // ---------------------------------------------------------------------------
+  // The operator's door to erasure (RFC 266 §10)
+  // ---------------------------------------------------------------------------
+
+  /** [ErasureFixture]'s account, built in one transaction, closed when [closed]. */
+  private fun erasableAccount(closed: Boolean): ErasureFixture.Account =
+    runBlocking {
+      AdminTestSupport.database.withConnection { session ->
+        ErasureFixture.build(session).also { if (closed) ErasureFixture.close(session, it.userId) }
+      }
+    }
+
+  @Test
+  fun `erase renders the counts page for a closed user, 409 for a live one, 404 for an unknown id`() =
+    testApplication {
+      application { with(AdminTestSupport) { installTestAdminModule() } }
+      val cookie = adminCookie()
+      val closed = erasableAccount(closed = true)
+      val live = AdminTestSupport.seedUser(AdminTestSupport.uniqueEmail(), name = "Still Live")
+
+      val erased =
+        client().submitForm(
+          url = "/user/${closed.userId.value}/erase",
+          formParameters =
+            parameters {
+            },
+        ) { header(HttpHeaders.Cookie, cookie) }
+      assertEquals(HttpStatusCode.OK, erased.status)
+      val page = erased.bodyAsText()
+      assertTrue(page.contains("Erased user ${closed.userId.value}"), "the counts page is titled with the user id")
+      listOf("Moved", "Erased", "Deleted", "users", "sessions", "llm_requests").forEach {
+        assertTrue(page.contains(it), "the counts page must list [$it]")
+      }
+
+      val refused =
+        client().submitForm(
+          url = "/user/${live.id.value}/erase",
+          formParameters =
+            parameters {
+            },
+        ) { header(HttpHeaders.Cookie, cookie) }
+      assertEquals(HttpStatusCode.Conflict, refused.status)
+      assertTrue(refused.bodyAsText().contains("Close the account before erasing it."))
+      assertNull(findUser(live.id).deletedAt, "a refused erasure writes nothing")
+
+      val unknown =
+        client().submitForm(
+          url = "/user/${java.util.UUID.randomUUID()}/erase",
+          formParameters =
+            parameters {
+            },
+        ) { header(HttpHeaders.Cookie, cookie) }
+      assertEquals(HttpStatusCode.NotFound, unknown.status)
+
+      val rerun =
+        client().submitForm(
+          url = "/user/${closed.userId.value}/erase",
+          formParameters =
+            parameters {
+            },
+        ) { header(HttpHeaders.Cookie, cookie) }
+      assertEquals(HttpStatusCode.OK, rerun.status, "a re-run on an erased account is harmless")
+      assertTrue(rerun.bodyAsText().contains("Nothing was left to erase"))
+    }
+
+  @Test
+  fun `erase without an admin session is the auth redirect`() =
+    testApplication {
+      application { with(AdminTestSupport) { installTestAdminModule() } }
+      val closed = erasableAccount(closed = true)
+
+      val response = client().submitForm(url = "/user/${closed.userId.value}/erase", formParameters = parameters {})
+
+      assertEquals(HttpStatusCode.Found, response.status)
+      assertEquals("/login", response.headers[HttpHeaders.Location])
+      assertEquals(
+        0L,
+        runBlocking {
+          AdminTestSupport.database.withConnection { session ->
+            session.prepareStatement("SELECT count(*) FROM deleted_users WHERE id = ?").use { stmt ->
+              stmt.setObject(1, closed.userId.value)
+              stmt.executeQuery().use { rs ->
+                rs.next()
+                rs.getLong(1)
+              }
+            }
+          }
+        },
+        "an unauthenticated erase must erase nothing",
+      )
+    }
+
+  @Test
+  fun `after an erasure the admin pages still render, and the erased user answers as absent`() =
+    testApplication {
+      application { with(AdminTestSupport) { installTestAdminModule() } }
+      val cookie = adminCookie()
+      val live = AdminTestSupport.seedUser(AdminTestSupport.uniqueEmail(), name = "Not Closed")
+      val closed = erasableAccount(closed = true)
+
+      val liveDetail = client().get("/user/${live.id.value}") { header(HttpHeaders.Cookie, cookie) }.bodyAsText()
+      assertTrue(liveDetail.contains("Close the account first."), "Erase is disabled for a live user, with the reason")
+      val closedDetail = client().get("/user/${closed.userId.value}") { header(HttpHeaders.Cookie, cookie) }.bodyAsText()
+      assertFalse(closedDetail.contains("Close the account first."), "Erase is enabled for a closed user")
+
+      client().submitForm(url = "/user/${closed.userId.value}/erase", formParameters = parameters {}) { header(HttpHeaders.Cookie, cookie) }
+
+      for (page in listOf("/user", "/student", "/convo", "/claim", "/llm-request", "/llm-request/unlinked")) {
+        val response = client().get(page) { header(HttpHeaders.Cookie, cookie) }
+        assertEquals(HttpStatusCode.OK, response.status, "$page must still render after an erasure")
+      }
+      // An erased account's reads exclude it (§8), so its page is the shared
+      // not-found page and Undelete cannot reach it.
+      assertEquals(HttpStatusCode.NotFound, client().get("/user/${closed.userId.value}") { header(HttpHeaders.Cookie, cookie) }.status)
+      val undelete =
+        client().submitForm(
+          url = "/user/${closed.userId.value}/undelete",
+          formParameters = parameters {},
+        ) { header(HttpHeaders.Cookie, cookie) }
+      assertEquals(HttpStatusCode.NotFound, undelete.status, "an erased account cannot be undeleted")
     }
 }
 

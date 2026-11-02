@@ -26,6 +26,9 @@ object FitSuggestionsDao :
   Findable<FitSuggestion, FitSuggestionId>,
   Listable<FitSuggestion>,
   Creatable<NewFitSuggestion, FitSuggestion> {
+  /** This table's [ErasedRows] predicate: a row is owned by its student. */
+  internal fun notErased(alias: String): String = ErasedRows.notErased(alias, ErasedRows.Owner.STUDENT)
+
   internal fun mapSuggestion(rs: ResultSet): FitSuggestion =
     FitSuggestion(
       id = FitSuggestionId(UUID.fromString(rs.getString("id"))),
@@ -70,7 +73,7 @@ object FitSuggestionsDao :
     id: FitSuggestionId,
   ): Result<FitSuggestion> =
     session.queryOne(
-      "SELECT * FROM fit_suggestions WHERE id = ?",
+      "SELECT * FROM fit_suggestions WHERE id = ? AND ${notErased("fit_suggestions")}",
       bind = { it.setObject(1, id.value) },
       map = ::mapSuggestion,
     )
@@ -184,6 +187,7 @@ object FitSuggestionsDao :
     session.queryList(
       """
       SELECT * FROM fit_suggestions
+      WHERE ${notErased("fit_suggestions")}
       ORDER BY row_created_at, id
       LIMIT ? OFFSET ?
       """.trimIndent(),

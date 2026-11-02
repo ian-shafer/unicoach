@@ -32,6 +32,9 @@ object FitLensRunsDao :
     val failureReason: String?,
   )
 
+  /** This table's [ErasedRows] predicate: a row is owned by its student. */
+  internal fun notErased(alias: String): String = ErasedRows.notErased(alias, ErasedRows.Owner.STUDENT)
+
   private fun mapRun(rs: ResultSet): FitLensRun {
     // query_llm_request_id is NOT NULL by schema; getLong returns 0 on SQL NULL,
     // so a null here means a corrupt/constraint-bypassed row. Throw rather than
@@ -194,7 +197,7 @@ object FitLensRunsDao :
     id: FitLensRunId,
   ): Result<FitLensRun> =
     session.queryOne(
-      "SELECT * FROM fit_lens_runs WHERE id = ?",
+      "SELECT * FROM fit_lens_runs WHERE id = ? AND ${notErased("fit_lens_runs")}",
       bind = { it.setLong(1, id.value) },
       map = ::mapRun,
     )
@@ -212,6 +215,7 @@ object FitLensRunsDao :
     session.queryList(
       """
       SELECT * FROM fit_lens_runs
+      WHERE ${notErased("fit_lens_runs")}
       ORDER BY id
       LIMIT ? OFFSET ?
       """.trimIndent(),

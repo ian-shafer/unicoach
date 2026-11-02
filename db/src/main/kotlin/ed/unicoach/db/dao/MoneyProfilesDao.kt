@@ -34,6 +34,9 @@ object MoneyProfilesDao :
   OccDeletable<MoneyProfile, MoneyProfileId>,
   SoftDeleteListable<MoneyProfile>,
   VersionHistory<MoneyProfileId, Version<MoneyProfile>> {
+  /** This table's [ErasedRows] predicate: a row is owned by its student. */
+  internal fun notErased(alias: String): String = ErasedRows.notErased(alias, ErasedRows.Owner.STUDENT)
+
   internal fun mapProfile(rs: ResultSet): MoneyProfile {
     val id = MoneyProfileId(UUID.fromString(rs.getString("id")))
     return MoneyProfile(
@@ -134,7 +137,7 @@ object MoneyProfilesDao :
   ): Result<MoneyProfile> =
     session
       .queryOne(
-        "SELECT * FROM money_profiles WHERE id = ?",
+        "SELECT * FROM money_profiles WHERE id = ? AND ${notErased("money_profiles")}",
         bind = { it.setObject(1, id.value) },
         map = ::mapProfile,
         onNoRow = { NotFoundException("Money profile [${id.value}] not found") },
@@ -334,7 +337,7 @@ object MoneyProfilesDao :
     val sql =
       """
       SELECT * FROM money_profiles
-      WHERE ${scope.predicate()}
+      WHERE ${scope.predicate()} AND ${notErased("money_profiles")}
       ORDER BY created_at DESC, id
       LIMIT ? OFFSET ?
       """.trimIndent()
@@ -354,7 +357,11 @@ object MoneyProfilesDao :
     id: MoneyProfileId,
   ): Result<List<Version<MoneyProfile>>> =
     session.queryList(
-      "SELECT * FROM money_profiles_versions WHERE id = ? ORDER BY version",
+      "SELECT * FROM money_profiles_versions WHERE id = ? AND ${ErasedRows.historyNotErased(
+        "money_profiles_versions",
+        "money_profiles",
+        ErasedRows.Owner.STUDENT,
+      )} ORDER BY version",
       bind = { it.setObject(1, id.value) },
       map = { Version(mapProfile(it)) },
     )

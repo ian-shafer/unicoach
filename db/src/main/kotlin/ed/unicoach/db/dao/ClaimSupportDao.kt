@@ -105,7 +105,7 @@ object ClaimSupportDao : Creatable<NewClaimSupport, ClaimSupport> {
       """
       SELECT o.* FROM claim_support cs
       JOIN observations o ON o.id = cs.observation_id
-      WHERE cs.claim_id = ?
+      WHERE cs.claim_id = ? AND ${ObservationsDao.notErased("o")}
       ORDER BY o.created_at, o.id
       """.trimIndent(),
       bind = { it.setObject(1, claimId.value) },
@@ -126,7 +126,7 @@ object ClaimSupportDao : Creatable<NewClaimSupport, ClaimSupport> {
       """
       SELECT c.* FROM claim_support cs
       JOIN claims c ON c.id = cs.claim_id
-      WHERE cs.observation_id = ?
+      WHERE cs.observation_id = ? AND ${ClaimsDao.notErased("c")}
       ORDER BY c.created_at, c.id
       """.trimIndent(),
       bind = { it.setLong(1, observationId.value) },

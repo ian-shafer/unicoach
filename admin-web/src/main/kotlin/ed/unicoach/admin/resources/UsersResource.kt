@@ -1,5 +1,7 @@
 package ed.unicoach.admin.resources
 
+import ed.unicoach.account.AccountErasureService
+import ed.unicoach.account.ErasureOutcome
 import ed.unicoach.admin.engine.AdminEdge
 import ed.unicoach.admin.engine.AdminField
 import ed.unicoach.admin.engine.AdminKind
@@ -7,7 +9,11 @@ import ed.unicoach.admin.engine.AdminResource
 import ed.unicoach.admin.engine.CustomAction
 import ed.unicoach.admin.engine.EdgePanel
 import ed.unicoach.admin.engine.FieldType
+import ed.unicoach.admin.render.adminPage
+import ed.unicoach.admin.render.renderErasure
 import ed.unicoach.admin.render.respondDaoError
+import ed.unicoach.admin.render.respondErrorPage
+import ed.unicoach.admin.render.respondNotFound
 import ed.unicoach.auth.EmailVerificationService
 import ed.unicoach.auth.ResendResult
 import ed.unicoach.common.models.EmailAddress
@@ -31,7 +37,9 @@ import ed.unicoach.db.models.UserEdit
 import ed.unicoach.db.models.UserId
 import ed.unicoach.student.StudentService
 import ed.unicoach.util.Argon2Hasher
+import io.ktor.http.HttpStatusCode
 import io.ktor.server.application.call
+import io.ktor.server.html.respondHtml
 import io.ktor.server.request.receiveParameters
 import io.ktor.server.response.respondRedirect
 import io.ktor.server.routing.Route
@@ -55,6 +63,8 @@ class UsersResource(
   private val studentsResource: StudentsResource,
   /** Runs inside the operator's mark-verified transaction, as `DbEmailVerifier`'s hook does (RFC 254). */
   private val afterVerified: (SqlSession, UserId) -> Unit,
+  /** The operator's door to erasure (RFC 266 §10). */
+  private val accountErasureService: AccountErasureService,
 ) : AdminResource<User, UserId> {
   private val logger = LoggerFactory.getLogger(UsersResource::class.java)
 
@@ -148,10 +158,24 @@ class UsersResource(
       else -> null
     }
 
+  /**
+   * Erase is offered only for a CLOSED account: the walk refuses a live one,
+   * and the close itself was the deliberate act, so there is no second
+   * confirmation step (RFC 266 D-H). An erased account has no detail page --
+   * its reads exclude it (§8) -- so this never renders for one.
+   */
+  private fun erasureDisabledReason(row: User): String? = if (row.deletedAt == null) "Close the account first." else null
+
   override val customActions =
     listOf(
       CustomAction<User>("Mark email verified", "verify-email", ::verificationDisabledReason),
       CustomAction<User>("Send verification email", "send-verification-email", ::verificationDisabledReason),
+      CustomAction<User>(
+        "Erase",
+        "erase",
+        ::erasureDisabledReason,
+        helpText = "Erases every personal value the account holds. It cannot be undone.",
+      ),
     )
 
   private suspend fun createUser(
@@ -348,6 +372,31 @@ class UsersResource(
       // deep in the hook is not this user being missing.
       db.withConnection { session -> recordEmailVerified(session, userId, afterVerified) }
       call.respondRedirect("/$slug/${userId.value}")
+    }
+
+    // The operator's door to erasure (RFC 266 §10). An already-erased account
+    // answers Erased with nothing left to do: a re-run is how a dead-lettered
+    // erase job is finished (deletion/04), and it is harmless.
+    scope.post("/$slug/{id}/erase") {
+      val userId = parseId(call.parameters["id"].orEmpty()) ?: return@post call.respondNotFound()
+      accountErasureService.erase(userId).fold(
+        onSuccess = { outcome ->
+          when (outcome) {
+            is ErasureOutcome.Erased -> {
+              call.respondHtml { adminPage("Erased user ${userId.asString}") { renderErasure(userId, outcome.tables) } }
+            }
+
+            ErasureOutcome.NotClosed -> {
+              call.respondErrorPage(HttpStatusCode.Conflict, "409 Conflict", "Close the account before erasing it.")
+            }
+
+            ErasureOutcome.NotFound -> {
+              call.respondNotFound()
+            }
+          }
+        },
+        onFailure = { call.respondDaoError(it) },
+      )
     }
 
     scope.post("/$slug/{id}/send-verification-email") {

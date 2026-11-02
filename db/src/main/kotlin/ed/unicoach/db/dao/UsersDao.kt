@@ -51,6 +51,15 @@ object UsersDao :
 
   private fun mapUserVersion(rs: ResultSet): Version<User> = Version(mapUser(rs))
 
+  /**
+   * The row [alias] names is not erased (RFC 266 §8): no `deleted_users` row
+   * carries its id. An erased account holds no email or name, so [mapUser]
+   * cannot map it and every read that could meet one filters it here, in SQL,
+   * before the mapper runs. A `users_versions` row copies the account id, so
+   * the same fragment filters an erased account's history.
+   */
+  internal fun notErased(alias: String): String = "NOT EXISTS (SELECT 1 FROM deleted_users du WHERE du.id = $alias.id)"
+
   /** Reconstructs the nullable password credential directly from `password_hash`. */
   private fun readPasswordHash(rs: ResultSet): PasswordHash? =
     rs.getString("password_hash")?.let { (PasswordHash.create(it) as ValidationResult.Valid).value }
@@ -62,7 +71,7 @@ object UsersDao :
   ): Result<User> =
     session
       .queryOne(
-        "SELECT * FROM users WHERE id = ?",
+        "SELECT * FROM users WHERE id = ? AND ${notErased("users")}",
         bind = { it.setObject(1, id.value) },
         map = ::mapUser,
       ).mapCatching { user ->
@@ -91,7 +100,7 @@ object UsersDao :
     scope: SoftDeleteScope = SoftDeleteScope.ACTIVE,
   ): Result<User> {
     return try {
-      session.prepareStatement("SELECT * FROM users WHERE id = ? FOR UPDATE NOWAIT").use { stmt ->
+      session.prepareStatement("SELECT * FROM users WHERE id = ? AND ${notErased("users")} FOR UPDATE NOWAIT").use { stmt ->
         stmt.setObject(1, id.value)
         stmt.executeQuery().use { rs ->
           if (!rs.next()) {
@@ -138,7 +147,7 @@ object UsersDao :
     targetVersion: Int,
   ): Result<Version<User>> =
     session.queryOne(
-      "SELECT * FROM users_versions WHERE id = ? AND version = ?",
+      "SELECT * FROM users_versions WHERE id = ? AND version = ? AND ${notErased("users_versions")}",
       bind = {
         it.setObject(1, id.value)
         it.setInt(2, targetVersion)
@@ -403,7 +412,7 @@ object UsersDao :
     val sql =
       """
       SELECT * FROM users
-      WHERE ${scope.predicate()}
+      WHERE ${scope.predicate()} AND ${notErased("users")}
       ORDER BY created_at DESC, id
       LIMIT ? OFFSET ?
       """.trimIndent()
@@ -423,7 +432,7 @@ object UsersDao :
     id: UserId,
   ): Result<List<Version<User>>> =
     session.queryList(
-      "SELECT * FROM users_versions WHERE id = ? ORDER BY version",
+      "SELECT * FROM users_versions WHERE id = ? AND ${notErased("users_versions")} ORDER BY version",
       bind = { it.setObject(1, id.value) },
       map = ::mapUserVersion,
     )

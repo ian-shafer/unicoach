@@ -49,7 +49,10 @@ object ConvosDao :
   private fun mapConvo(rs: ResultSet): Convo =
     Convo(
       id = ConvoId(UUID.fromString(rs.getString("id"))),
-      studentId = StudentId(UUID.fromString(rs.getString("student_id"))),
+      // Read through the pair (RFC 266 §8): a supporter's conversation outlives
+      // the student it is about, whose key has moved onto deleted_students. D9
+      // makes the deleted id the id the conversation always named.
+      studentId = StudentId(UUID.fromString(rs.getString("student_id") ?: rs.getString("deleted_student_id"))),
       party = parseParty(rs),
       name = parseConvoName(rs.getString("name")),
       createdAt = rs.getInstant("created_at"),
@@ -57,6 +60,18 @@ object ConvosDao :
       deletedAt = rs.getInstantOrNull("deleted_at"),
       archivedAt = rs.getInstantOrNull("archived_at"),
     )
+
+  /**
+   * The row [alias] names is not erased (RFC 266 §8). A conversation belongs to
+   * its `party` (RFC 266 D-A): a student's is erased with the student, a
+   * supporter's with the supporter, and either is erased exactly when its
+   * owner's key has moved. A supporter's conversation about an erased student
+   * keeps its live supporter key and is not erased; [mapConvo] reads its
+   * student through the pair, the same id by D9.
+   */
+  internal fun notErased(alias: String): String =
+    "(($alias.party = '${ConvoPartyKind.STUDENT.value}' AND ${ErasedRows.notErased(alias, ErasedRows.Owner.STUDENT)}) OR " +
+      "($alias.party = '${ConvoPartyKind.SUPPORTER.value}' AND ${ErasedRows.notErased(alias, ErasedRows.Owner.SUPPORTER)}))"
 
   /**
    * Reconstructs who the conversation is with from the stored pair (RFC 258) —
@@ -169,7 +184,7 @@ object ConvosDao :
   ): Result<Convo> =
     session
       .queryOne(
-        "SELECT * FROM convos WHERE id = ?",
+        "SELECT * FROM convos WHERE id = ? AND ${notErased("convos")}",
         bind = { it.setObject(1, id.value) },
         map = ::mapConvo,
       ).mapCatching { convo ->
@@ -428,7 +443,7 @@ object ConvosDao :
       SELECT c.*, MAX(r.created_at) AS last_activity_at
       FROM convos c
       LEFT JOIN convo_requests r ON r.convo_id = c.id
-      WHERE ${scope.predicate("c.deleted_at")}
+      WHERE ${scope.predicate("c.deleted_at")} AND ${notErased("c")}
       GROUP BY c.id
       ORDER BY c.created_at DESC, c.id
       LIMIT ? OFFSET ?
@@ -457,7 +472,7 @@ object ConvosDao :
       SELECT c.*, MAX(r.created_at) AS last_activity_at
       FROM convos c
       LEFT JOIN convo_requests r ON r.convo_id = c.id
-      WHERE c.id = ? AND ${scope.predicate("c.deleted_at")}
+      WHERE c.id = ? AND ${scope.predicate("c.deleted_at")} AND ${notErased("c")}
       GROUP BY c.id
       """.trimIndent()
     return session.queryOne(
@@ -569,7 +584,7 @@ object ConvosDao :
     val sql =
       """
       $turnSelect
-      WHERE r.convo_id = ? AND ${scope.predicate("c.deleted_at")}
+      WHERE r.convo_id = ? AND ${scope.predicate("c.deleted_at")} AND ${notErased("c")}
       ORDER BY r.created_at, r.id
       $pageClause
       """.trimIndent()
@@ -604,7 +619,7 @@ object ConvosDao :
     val sql =
       """
       $turnSelect
-      WHERE ${scope.predicate("c.deleted_at")}
+      WHERE ${scope.predicate("c.deleted_at")} AND ${notErased("c")}
       ORDER BY r.id DESC
       LIMIT ? OFFSET ?
       """.trimIndent()
@@ -631,7 +646,7 @@ object ConvosDao :
     val sql =
       """
       $turnSelect
-      WHERE r.id = ? AND ${scope.predicate("c.deleted_at")}
+      WHERE r.id = ? AND ${scope.predicate("c.deleted_at")} AND ${notErased("c")}
       """.trimIndent()
     return session.queryOne(
       sql,

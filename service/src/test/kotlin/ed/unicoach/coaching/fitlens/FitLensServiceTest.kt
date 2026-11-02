@@ -288,6 +288,25 @@ class FitLensServiceTest {
 
   private var ipedsUnitIdCounter = 600000
 
+  /**
+   * Closes and erases the account that owns [studentId] (RFC 266): its key
+   * moves to deleted_students and every read of its rows answers as absent.
+   */
+  private fun eraseAccountOf(studentId: UUID) {
+    val userId =
+      connection.prepareStatement("SELECT user_id FROM students WHERE id = ?").use { stmt ->
+        stmt.setObject(1, studentId)
+        stmt.executeQuery().use { rs ->
+          rs.next()
+          rs.getObject(1, UUID::class.java)
+        }
+      }
+    connection.createStatement().use { stmt ->
+      stmt.execute("UPDATE users SET deleted_at = NOW(), version = version + 1 WHERE id = '$userId'")
+      stmt.execute("SELECT * FROM erase_account('$userId')")
+    }
+  }
+
   private fun createStudent(): StudentId {
     val userId = UUID.randomUUID()
     val studentId = UUID.randomUUID()
@@ -678,6 +697,23 @@ class FitLensServiceTest {
       assertTrue(result is FitLensResult.Applied, "Expected Applied, got: $result")
       assertEquals(1, suggestionRows(student), "only the pre-existing suggestion remains; no duplicate")
       assertEquals(FitLensOutcome.Applied(suggestionsWritten = 0), latestRun(student).outcome)
+    }
+
+  @Test
+  fun `an erased student skips as not found with no LLM call and no run`() =
+    runBlocking {
+      val student = createStudent()
+      createClaims(student, 3)
+      createCollege()
+      eraseAccountOf(student.value)
+
+      val provider = scripted("""{"states":["CA"]}""")
+      val result = service(provider).discover(student)
+
+      assertTrue(result is FitLensResult.Skipped, "Expected Skipped, got: $result")
+      assertTrue(result.reason is SkipReason.StudentNotFound, "an erased student reads as absent, got: ${result.reason}")
+      assertEquals(0, provider.requests.size, "no LLM call is made for an erased student")
+      assertEquals(0, runRows(student))
     }
 
   @Test

@@ -1,5 +1,6 @@
 package ed.unicoach.admin
 
+import ed.unicoach.account.AccountErasureService
 import ed.unicoach.admin.auth.adminAuthRoutes
 import ed.unicoach.admin.auth.installAdminGate
 import ed.unicoach.admin.engine.AdminRegistry
@@ -159,7 +160,7 @@ fun Application.adminModule(
   val registry =
     AdminRegistry(
       listOf(
-        UsersResource(argon2Hasher, emailVerificationService, studentsResource, afterVerified),
+        UsersResource(argon2Hasher, emailVerificationService, studentsResource, afterVerified, AccountErasureService(database)),
         studentsResource,
         SessionsResource,
         SystemPromptsResource,

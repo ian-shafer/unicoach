@@ -27,6 +27,9 @@ object CommitmentsDao :
   Findable<Commitment, CommitmentId>,
   Listable<Commitment>,
   Creatable<NewCommitment, Commitment> {
+  /** This table's [ErasedRows] predicate: a row is owned by its student. */
+  internal fun notErased(alias: String): String = ErasedRows.notErased(alias, ErasedRows.Owner.STUDENT)
+
   internal fun mapCommitment(rs: ResultSet): Commitment =
     Commitment(
       id = CommitmentId(UUID.fromString(rs.getString("id"))),
@@ -90,7 +93,7 @@ object CommitmentsDao :
     id: CommitmentId,
   ): Result<Commitment> =
     session.queryOne(
-      "SELECT * FROM commitments WHERE id = ?",
+      "SELECT * FROM commitments WHERE id = ? AND ${notErased("commitments")}",
       bind = { it.setObject(1, id.value) },
       map = ::mapCommitment,
     )
@@ -256,6 +259,7 @@ object CommitmentsDao :
     session.queryList(
       """
       SELECT * FROM commitments
+      WHERE ${notErased("commitments")}
       ORDER BY row_created_at, id
       LIMIT ? OFFSET ?
       """.trimIndent(),

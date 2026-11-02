@@ -89,7 +89,7 @@ object CommitmentSupportDao : Creatable<NewCommitmentSupport, CommitmentSupport>
       """
       SELECT c.* FROM commitment_support cs
       JOIN claims c ON c.id = cs.claim_id
-      WHERE cs.commitment_id = ?
+      WHERE cs.commitment_id = ? AND ${ClaimsDao.notErased("c")}
       ORDER BY c.created_at, c.id
       """.trimIndent(),
       bind = { it.setObject(1, commitmentId.value) },
@@ -110,7 +110,7 @@ object CommitmentSupportDao : Creatable<NewCommitmentSupport, CommitmentSupport>
       """
       SELECT c.* FROM commitment_support cs
       JOIN commitments c ON c.id = cs.commitment_id
-      WHERE cs.claim_id = ?
+      WHERE cs.claim_id = ? AND ${CommitmentsDao.notErased("c")}
       ORDER BY c.created_at, c.id
       """.trimIndent(),
       bind = { it.setObject(1, claimId.value) },

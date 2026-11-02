@@ -170,6 +170,20 @@ class ClosedStudentLinkException(
   PermanentError
 
 /**
+ * An erasure was asked of a LIVE account (RFC 266 §3): `erase_account` refuses
+ * until the account is closed, with `CONSTRAINT = 'erase_account_closed'`.
+ * Carries the server's diagnostics like its trigger-refusal siblings above.
+ */
+class AccountNotClosedException(
+  message: String? = null,
+  cause: Throwable? = null,
+  override val constraint: String? = null,
+  override val detail: String? = null,
+) : DaoException(message ?: "The account is not closed", cause),
+  ConstraintDiagnostics,
+  PermanentError
+
+/**
  * A write-path CHECK/unique violation. Carries the optional PostgreSQL
  * diagnostics — the violated [constraint] name and the server [detail] line — so
  * a caller can bucket the failure by constraint and surface the failing key

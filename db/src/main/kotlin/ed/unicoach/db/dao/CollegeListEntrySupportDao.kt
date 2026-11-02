@@ -106,7 +106,7 @@ object CollegeListEntrySupportDao : Creatable<NewCollegeListEntrySupport, Colleg
       """
       SELECT o.* FROM college_list_entry_support cls
       JOIN observations o ON o.id = cls.observation_id
-      WHERE cls.entry_id = ?
+      WHERE cls.entry_id = ? AND ${ObservationsDao.notErased("o")}
       ORDER BY o.created_at, o.id
       """.trimIndent(),
       bind = { it.setObject(1, entryId.value) },
@@ -128,7 +128,7 @@ object CollegeListEntrySupportDao : Creatable<NewCollegeListEntrySupport, Colleg
       """
       SELECT cle.* FROM college_list_entry_support cls
       JOIN college_list_entries cle ON cle.id = cls.entry_id
-      WHERE cls.observation_id = ?
+      WHERE cls.observation_id = ? AND ${CollegeListEntriesDao.notErased("cle")}
       ORDER BY cle.created_at, cle.id
       """.trimIndent(),
       bind = { it.setLong(1, observationId.value) },

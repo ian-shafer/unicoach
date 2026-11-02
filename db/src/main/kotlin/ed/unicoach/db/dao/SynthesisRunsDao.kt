@@ -32,6 +32,9 @@ object SynthesisRunsDao :
     val failureReason: String?,
   )
 
+  /** This table's [ErasedRows] predicate: a row is owned by its student. */
+  internal fun notErased(alias: String): String = ErasedRows.notErased(alias, ErasedRows.Owner.STUDENT)
+
   private fun mapRun(rs: ResultSet): SynthesisRun =
     SynthesisRun(
       id = SynthesisRunId(rs.getLong("id")),
@@ -153,7 +156,7 @@ object SynthesisRunsDao :
     id: SynthesisRunId,
   ): Result<SynthesisRun> =
     session.queryOne(
-      "SELECT * FROM synthesis_runs WHERE id = ?",
+      "SELECT * FROM synthesis_runs WHERE id = ? AND ${notErased("synthesis_runs")}",
       bind = { it.setLong(1, id.value) },
       map = ::mapRun,
     )
@@ -171,6 +174,7 @@ object SynthesisRunsDao :
     session.queryList(
       """
       SELECT * FROM synthesis_runs
+      WHERE ${notErased("synthesis_runs")}
       ORDER BY id
       LIMIT ? OFFSET ?
       """.trimIndent(),

@@ -34,6 +34,9 @@ object SupportersDao :
       deletedAt = rs.getInstantOrNull("deleted_at"),
     )
 
+  /** This table's [ErasedRows] predicate: a supporter is owned by its account. */
+  internal fun notErased(alias: String): String = ErasedRows.notErased(alias, ErasedRows.Owner.ACCOUNT)
+
   /**
    * Creates the supporter row for a user. The id comes from the column's
    * `uuidv7()` default: nothing is derived from it, so no caller needs it first.
@@ -80,7 +83,7 @@ object SupportersDao :
     scope: SoftDeleteScope,
   ): Result<Supporter> =
     session.queryOne(
-      "SELECT * FROM supporters WHERE id = ? AND ${scope.predicate()}",
+      "SELECT * FROM supporters WHERE id = ? AND ${scope.predicate()} AND ${notErased("supporters")}",
       bind = { it.setObject(1, id.value) },
       map = ::mapSupporter,
       onNoRow = { NotFoundException("No supporter [${id.asString}] in scope [$scope]") },

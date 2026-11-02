@@ -39,7 +39,11 @@ import kotlin.test.assertTrue
  * CHECK over exactly that pair. The pair is read from the CHECK's columns
  * (`pg_constraint.conkey`), never from a column name (D8).
  *
- * ANTI-VACUITY IS PROVEN, not asserted: a probe column and three probe tables,
+ * THE EDGES come from the `erasure_edge` view (RFC 266, slice
+ * deletion/03/the-walk), which the erasure walk reads too, so this guard and
+ * the walk cannot disagree about what is reachable.
+ *
+ * ANTI-VACUITY IS PROVEN, not asserted: a probe column and four probe tables,
  * created inside a rolled-back transaction, are each named by their rule, so a
  * typo in a catalog query cannot produce a guard that always passes.
  */
@@ -511,30 +515,20 @@ class ErasureClassificationTest {
 
   private fun catalog(): Catalog = Catalog(readReach(), readColumns(), readKeys(), readChecks())
 
-  // The reach, in one recursive query. A child-ward edge runs from a
-  // referenced table to the table holding the key; a forward edge runs from
-  // the table holding an owned.* key to the table it references. A table
-  // stays "child-ward" only while every step to it was child-ward.
-  //
-  // Types are matched by the NAME of their schema (pg_namespace), never by a
-  // cast to `pii.text`: before the schemas exist the query must still run,
-  // and simply find nothing personal.
+  // The reach, in one recursive query over `erasure_edge` (RFC 266 §6), the
+  // edge set the erasure walk itself reads, so the guard proves the reach the
+  // walk takes. A child-ward edge runs from a referenced table to the table
+  // holding the key; a forward edge runs from the table holding an owned.* key
+  // to the table it references. A table stays "child-ward" only while every
+  // step to it was child-ward.
   private fun readReach(): Map<String, Boolean> =
     query(
       """
       WITH RECURSIVE
-        key_column AS (
-          SELECT con.conrelid AS child, con.confrelid AS parent, tn.nspname = 'owned' AS owned
-          FROM pg_constraint con
-          JOIN pg_attribute a ON a.attrelid = con.conrelid AND a.attnum = ANY (con.conkey)
-          JOIN pg_type t ON t.oid = a.atttypid
-          JOIN pg_namespace tn ON tn.oid = t.typnamespace
-          WHERE con.contype = 'f'
-        ),
         edge(src, dst, childward) AS (
-          SELECT parent, child, TRUE FROM key_column
+          SELECT parent::oid, child::oid, TRUE FROM erasure_edge
           UNION
-          SELECT child, parent, FALSE FROM key_column WHERE owned
+          SELECT child::oid, parent::oid, FALSE FROM erasure_edge WHERE owned
         ),
         reach(rel, childward) AS (
           SELECT c.oid, TRUE
@@ -731,11 +725,19 @@ class ErasureClassificationTest {
         )
         stmt.execute("CREATE TABLE probe_keyless (note pii.text)")
         stmt.execute("CREATE TABLE probe_keyed (student_id UUID REFERENCES students(id))")
+        // The slice's own case (RFC 266 §9): a new table keyed on a student with
+        // a plain TEXT column. The reach comes from erasure_edge, so this proves
+        // the view sees a key added inside the transaction.
+        stmt.execute("CREATE TABLE probe_child (student_id UUID REFERENCES students(id), note TEXT)")
       }
       val probed = catalog()
       assertTrue(
         "claims.probe_note" in probed.unclassified(),
         "rule 1 must name claims.probe_note; it named ${probed.unclassified()}",
+      )
+      assertTrue(
+        "probe_child.note" in probed.unclassified(),
+        "rule 1 must name probe_child.note; it named ${probed.unclassified()}",
       )
       assertTrue(
         "probe_owner.call_id" in probed.unownedKeys(ownedColumns()),
@@ -755,6 +757,7 @@ class ErasureClassificationTest {
     }
     val after = catalog()
     assertFalse("claims.probe_note" in after.unclassified(), "the rolled-back probe column must be gone")
+    assertFalse("probe_child.note" in after.unclassified(), "the rolled-back probe table must be gone")
     assertFalse("probe_owner.call_id" in after.unownedKeys(ownedColumns()), "the rolled-back probe key must be gone")
     assertFalse("probe_keyless" in after.unreachedPersonalTables(), "the rolled-back probe table must be gone")
     assertFalse("probe_keyed.student_id" in after.keysWithoutSibling(), "the rolled-back probe key must be gone")

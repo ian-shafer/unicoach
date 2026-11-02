@@ -31,6 +31,9 @@ object CollegeListEntriesDao :
   OccDeletable<CollegeListEntry, CollegeListEntryId>,
   SoftDeleteListable<CollegeListEntry>,
   VersionHistory<CollegeListEntryId, Version<CollegeListEntry>> {
+  /** This table's [ErasedRows] predicate: a row is owned by its student. */
+  internal fun notErased(alias: String): String = ErasedRows.notErased(alias, ErasedRows.Owner.STUDENT)
+
   internal fun mapEntry(rs: ResultSet): CollegeListEntry =
     CollegeListEntry(
       id = CollegeListEntryId(UUID.fromString(rs.getString("id"))),
@@ -98,7 +101,7 @@ object CollegeListEntriesDao :
   ): Result<CollegeListEntry> =
     session
       .queryOne(
-        "SELECT * FROM college_list_entries WHERE id = ?",
+        "SELECT * FROM college_list_entries WHERE id = ? AND ${notErased("college_list_entries")}",
         bind = { it.setObject(1, id.value) },
         map = ::mapEntry,
       ).mapCatching { entry ->
@@ -219,7 +222,7 @@ object CollegeListEntriesDao :
     val sql =
       """
       SELECT * FROM college_list_entries
-      WHERE ${scope.predicate()}
+      WHERE ${scope.predicate()} AND ${notErased("college_list_entries")}
       ORDER BY created_at DESC, id
       LIMIT ? OFFSET ?
       """.trimIndent()
@@ -239,7 +242,11 @@ object CollegeListEntriesDao :
     id: CollegeListEntryId,
   ): Result<List<Version<CollegeListEntry>>> =
     session.queryList(
-      "SELECT * FROM college_list_entries_versions WHERE id = ? ORDER BY version",
+      "SELECT * FROM college_list_entries_versions WHERE id = ? AND ${ErasedRows.historyNotErased(
+        "college_list_entries_versions",
+        "college_list_entries",
+        ErasedRows.Owner.STUDENT,
+      )} ORDER BY version",
       bind = { it.setObject(1, id.value) },
       map = { Version(mapEntry(it)) },
     )

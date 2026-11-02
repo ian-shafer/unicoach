@@ -66,6 +66,9 @@ object StudentsDao :
       deletedAt = rs.getInstantOrNull("deleted_at"),
     )
 
+  /** This table's [ErasedRows] predicate: a student is owned by its account. */
+  internal fun notErased(alias: String): String = ErasedRows.notErased(alias, ErasedRows.Owner.ACCOUNT)
+
   /** Whether a [SoftDeleteScope] admits a row with the given `deletedAt`. */
   private fun SoftDeleteScope.admits(deletedAt: java.time.Instant?): Boolean =
     when (this) {
@@ -81,7 +84,7 @@ object StudentsDao :
   ): Result<Student> =
     session
       .queryOne(
-        "SELECT * FROM students WHERE id = ?",
+        "SELECT * FROM students WHERE id = ? AND ${notErased("students")}",
         bind = { it.setObject(1, id.value) },
         map = ::mapStudent,
       ).mapCatching { student ->
@@ -137,7 +140,7 @@ object StudentsDao :
     id: StudentId,
   ): Result<Student> =
     try {
-      session.prepareStatement("SELECT * FROM students WHERE id = ? FOR UPDATE NOWAIT").use { stmt ->
+      session.prepareStatement("SELECT * FROM students WHERE id = ? AND ${notErased("students")} FOR UPDATE NOWAIT").use { stmt ->
         stmt.setObject(1, id.value)
         stmt.executeQuery().use { rs ->
           if (!rs.next()) {
@@ -291,7 +294,7 @@ object StudentsDao :
     val sql =
       """
       SELECT * FROM students
-      WHERE ${scope.predicate()}
+      WHERE ${scope.predicate()} AND ${notErased("students")}
       ORDER BY created_at DESC, id
       LIMIT ? OFFSET ?
       """.trimIndent()
@@ -311,7 +314,11 @@ object StudentsDao :
     id: StudentId,
   ): Result<List<Version<Student>>> =
     session.queryList(
-      "SELECT * FROM students_versions WHERE id = ? ORDER BY version",
+      "SELECT * FROM students_versions WHERE id = ? AND ${ErasedRows.historyNotErased(
+        "students_versions",
+        "students",
+        ErasedRows.Owner.ACCOUNT,
+      )} ORDER BY version",
       bind = { it.setObject(1, id.value) },
       map = { Version(mapStudent(it)) },
     )

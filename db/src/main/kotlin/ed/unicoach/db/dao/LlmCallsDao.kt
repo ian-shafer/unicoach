@@ -343,6 +343,15 @@ object LlmCallsDao {
   // ---------------------------------------------------------------------------
 
   /**
+   * The call [alias] names (an `llm_requests` alias) is not erased (RFC 266
+   * §8). Nothing but the erasure walk sets `llm_requests.deleted_at` (RFC 263
+   * added it), and it erases the response and raw rows with the request, so a
+   * call read through its request is filtered here, in SQL, before
+   * [mapCallColumns] meets a NULL body.
+   */
+  private fun notErased(alias: String): String = "$alias.deleted_at IS NULL"
+
+  /**
    * The shared call projection: the [joinedCallColumns] fragment over the DAO's own
    * `r` / `resp` / `raw` table aliases, so [mapCallColumns] reads all three parts
    * from one row. Built from the same fragment a joining DAO splices in, so the two
@@ -369,7 +378,7 @@ object LlmCallsDao {
     requestId: LlmRequestId,
   ): Result<LlmCall> =
     session.queryOne(
-      "$callSelect WHERE r.id = ?",
+      "$callSelect WHERE r.id = ? AND ${notErased("r")}",
       bind = { it.setLong(1, requestId.value) },
       map = ::mapCallColumns,
     )
@@ -388,7 +397,7 @@ object LlmCallsDao {
     require(limit > 0) { "limit must be positive, got $limit" }
     require(offset >= 0) { "offset must be non-negative, got $offset" }
     return session.queryList(
-      "$callSelect ORDER BY r.id DESC LIMIT ? OFFSET ?",
+      "$callSelect WHERE ${notErased("r")} ORDER BY r.id DESC LIMIT ? OFFSET ?",
       bind = { stmt ->
         stmt.setInt(1, limit)
         stmt.setInt(2, offset)
@@ -419,6 +428,7 @@ object LlmCallsDao {
       """
       $callSelect
       WHERE r.created_at < NOW() - (? || ' seconds')::interval
+        AND ${notErased("r")}
         AND NOT EXISTS (SELECT 1 FROM convo_requests cq WHERE cq.llm_request_id = r.id)
         AND NOT EXISTS (SELECT 1 FROM extraction_runs er WHERE er.llm_request_id = r.id)
         AND NOT EXISTS (SELECT 1 FROM synthesis_runs sr WHERE sr.llm_request_id = r.id)
