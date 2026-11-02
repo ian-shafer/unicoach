@@ -1311,8 +1311,7 @@ closed**: only the deferred `shape/09/exchange-participation` remains.
    (D-A):** a conversation belongs to its party, and no row keyed on another
    account is ever erased — so a parent's conversations survive the student's
    erasure, with the student's name and shared list still inside them (a stated
-   limit; whether `deletion/05`'s copy says so is /chart's). **Now READY:
-   `deletion/04/the-sweep`** — say _"/slice start work on
+   limit). **Now READY: `deletion/04/the-sweep`** — say _"/slice start work on
    `deletion/04/the-sweep`"_. It is the App Store blocker and the aha. **Two
    drifts for /chart before it starts:** the walk deletes every `jobs` row whose
    payload names the account, which would include `04`'s own erase job and a
@@ -6289,8 +6288,6 @@ but `EmailSendHandler` writes `user_id` from the payload. Notes it can rely on:
 `AccountErasureService.erase` is the call (outcomes `Erased`, `NotClosed`,
 `NotFound`; an empty `Erased` on a re-run); the walk reads the account's
 addresses before NULLing them; erased rows are invisible to every DAO read.
-`deletion/05` inherits one product question: whether the copy says that a
-student's name and shared list survive inside a parent's conversation.
 
 **Brief 0002 after `deletion/02` (2026-11-01).**
 `deletion/02/the-deleted-tables` LANDED as RFC 264 (`main@c1476182`) and leaves
