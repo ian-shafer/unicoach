@@ -618,3 +618,23 @@ states.
 The slices above were amended in place for D11 before this file was committed
 (`deletion/03` and `deletion/04` no longer mention an orphan sweep); the
 decisions are immutable from here.
+
+---
+
+# D13 — answered 2026-11-01 (Ian, verbatim), after `deletion/03` landed
+
+Put to Ian when RFC 266 landed: the walk deletes every `jobs` row whose payload
+names the account (D10), which would delete `deletion/04`'s own erase job and,
+on a re-run, a confirmation email not yet sent. The queue's reaper deletes only
+completed jobs, 30 days after they finish; failed and dead-lettered jobs are
+kept forever.
+
+> Widen the reaper
+
+- **D13 — finished jobs age out; the walk leaves `jobs` alone.** Amends D10: the
+  walk does not delete `jobs` or `job_attempts`. The queue's reaper deletes
+  every finished job — completed, failed or dead-lettered — 30 days after it
+  finished, for every account. D10's other four kinds (`sessions`,
+  `verification_tokens`, `user_auth_identities`, the account's
+  `supporter_invites`) are unchanged. Lands with `deletion/04/the-sweep`, which
+  runs the walk; RFC 266 is committed and is superseded there, not edited.
