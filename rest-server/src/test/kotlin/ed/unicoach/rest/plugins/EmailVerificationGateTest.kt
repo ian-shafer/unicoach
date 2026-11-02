@@ -5,11 +5,13 @@ import ed.unicoach.coaching.budget.BudgetConfig
 import ed.unicoach.common.config.AppConfig
 import ed.unicoach.db.Database
 import ed.unicoach.db.DatabaseConfig
+import ed.unicoach.db.dao.RawSql
 import ed.unicoach.rest.appModule
 import ed.unicoach.rest.auth.SessionConfig
 import ed.unicoach.rest.config.ClientKeyGateConfig
 import ed.unicoach.rest.config.RequestSizeConfig
 import ed.unicoach.rest.costReportConfigFrom
+import ed.unicoach.rest.markEmailVerified
 import ed.unicoach.rest.models.RegisterRequest
 import ed.unicoach.rest.models.VerifyEmailRequest
 import ed.unicoach.rest.supporterCoachingConfigFrom
@@ -88,16 +90,6 @@ class EmailVerificationGateTest {
 
   private fun uniqueEmail(): String = "gate${java.util.UUID.randomUUID()}@company.com"
 
-  private fun markEmailVerified(email: String) {
-    dbConnection
-      .prepareStatement(
-        "UPDATE users SET version = version + 1, email_verified_at = NOW() WHERE email = ? AND email_verified_at IS NULL",
-      ).use { stmt ->
-        stmt.setString(1, email)
-        stmt.executeUpdate()
-      }
-  }
-
   private data class Registered(
     val email: String,
     val cookie: String,
@@ -145,7 +137,7 @@ class EmailVerificationGateTest {
   fun `verified user passes the gate on the same route`() =
     runBlocking {
       val (email, cookie) = register()
-      markEmailVerified(email)
+      markEmailVerified(dbConnection, email)
       val response =
         client.get(buildUrl("/api/v1/students/me")) {
           header(HttpHeaders.Cookie, cookie)

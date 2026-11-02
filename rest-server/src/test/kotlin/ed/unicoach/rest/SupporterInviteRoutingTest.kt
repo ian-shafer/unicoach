@@ -76,14 +76,6 @@ class SupporterInviteRoutingTest {
 
   private fun uniqueEmail(prefix: String) = "$prefix${java.util.UUID.randomUUID()}@company.com"
 
-  private fun markEmailVerified(email: String) {
-    RawSql.execute(
-      dbConnection,
-      "UPDATE users SET version = version + 1, email_verified_at = NOW() WHERE email = ? AND email_verified_at IS NULL",
-      email,
-    )
-  }
-
   /** Registers a fresh user and returns the session cookie, leaving the address UNVERIFIED. */
   private suspend fun register(email: String): String {
     val req = RegisterRequest(email, "Password123!", "Invite User")
@@ -103,7 +95,7 @@ class SupporterInviteRoutingTest {
   private suspend fun registerStudent(): Pair<String, String> {
     val email = uniqueEmail("student")
     val cookie = register(email)
-    markEmailVerified(email)
+    markEmailVerified(dbConnection, email)
     val body = CreateStudentRequest(expectedHighSchoolGraduationDate = "2028", dateOfBirth = "2009-07-10")
     val response =
       client.post(buildUrl("/api/v1/students")) {
@@ -119,7 +111,7 @@ class SupporterInviteRoutingTest {
 
   private fun inviteCount(): Int = count("SELECT count(*) FROM supporter_invites")
 
-  private fun count(sql: String): Int = RawSql.single(dbConnection, sql) { it.getInt(1) }
+  private fun count(sql: String): Int = RawSql.count(dbConnection, sql)
 
   @Test
   fun `mint unauthenticated returns 401`() =

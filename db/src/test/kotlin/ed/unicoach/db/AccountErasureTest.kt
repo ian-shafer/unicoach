@@ -3,6 +3,7 @@ package ed.unicoach.db
 import ed.unicoach.db.dao.AccountLlmCostDao
 import ed.unicoach.db.dao.ConvosDao
 import ed.unicoach.db.dao.ErasureFixture
+import ed.unicoach.db.dao.RawSql
 import ed.unicoach.db.dao.SqlSession
 import ed.unicoach.db.models.LlmCostAggregate
 import ed.unicoach.db.models.UserId
@@ -107,11 +108,7 @@ class AccountErasureTest {
     sql: String,
     vararg args: Any?,
     row: (ResultSet) -> T,
-  ): List<T> =
-    connection.prepareStatement(sql).use { stmt ->
-      args.forEachIndexed { i, arg -> stmt.setObject(i + 1, arg) }
-      stmt.executeQuery().use { rs -> buildList { while (rs.next()) add(row(rs)) } }
-    }
+  ): List<T> = RawSql.list(connection, sql, *args, read = row)
 
   private fun long(
     sql: String,

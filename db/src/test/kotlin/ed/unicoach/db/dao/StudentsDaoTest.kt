@@ -62,11 +62,12 @@ class StudentsDaoTest {
 
   private fun createUser(): UserId {
     val rawId = UUID.randomUUID()
-    connection.createStatement().use { stmt ->
-      stmt.execute(
-        "INSERT INTO users (id, email, name, password_hash) VALUES ('$rawId', 'stud-$rawId@test.com', 'Stud User', 'ahash')",
-      )
-    }
+    RawSql.execute(
+      connection,
+      "INSERT INTO users (id, email, name, password_hash) VALUES (?, ?, 'Stud User', 'ahash')",
+      rawId,
+      "stud-$rawId@test.com",
+    )
     return UserId(rawId)
   }
 
@@ -93,15 +94,7 @@ class StudentsDaoTest {
     dateOfBirth: java.time.LocalDate = StudentRowFixture.DEFAULT_DATE_OF_BIRTH,
   ): NewStudent = NewStudent(userId, graduation, dateOfBirth)
 
-  private fun countVersions(id: StudentId): Int {
-    connection.prepareStatement("SELECT COUNT(*) FROM students_versions WHERE id = ?").use { stmt ->
-      stmt.setObject(1, id.value)
-      stmt.executeQuery().use { rs ->
-        rs.next()
-        return rs.getInt(1)
-      }
-    }
-  }
+  private fun countVersions(id: StudentId): Int = RawSql.count(connection, "SELECT COUNT(*) FROM students_versions WHERE id = ?", id.value)
 
   @Test
   fun `create persists with version 1 and round-trips all three precisions`() {
@@ -201,19 +194,18 @@ class StudentsDaoTest {
       precision: String,
     ): java.sql.SQLException? =
       try {
-        connection
-          .prepareStatement(
-            """
-            INSERT INTO students (user_id, expected_high_school_graduation_on,
-              expected_high_school_graduation_precision, date_of_birth)
-            VALUES (?, ?, ?, DATE '${StudentRowFixture.DEFAULT_DATE_OF_BIRTH}')
-            """.trimIndent(),
-          ).use { stmt ->
-            stmt.setObject(1, u.value)
-            stmt.setObject(2, on)
-            stmt.setString(3, precision)
-            stmt.executeUpdate()
-          }
+        RawSql.execute(
+          connection,
+          """
+          INSERT INTO students (user_id, expected_high_school_graduation_on,
+            expected_high_school_graduation_precision, date_of_birth)
+          VALUES (?, ?, ?, ?)
+          """.trimIndent(),
+          u.value,
+          on,
+          precision,
+          StudentRowFixture.DEFAULT_DATE_OF_BIRTH,
+        )
         null
       } catch (e: java.sql.SQLException) {
         connection.rollback()
@@ -359,19 +351,13 @@ class StudentsDaoTest {
     ) {
       connection.autoCommit = false
       try {
-        connection
-          .prepareStatement(
-            "UPDATE students SET version = version + 1, $column = $value WHERE id = ?",
-          ).use { stmt ->
-            stmt.setObject(1, created.id.value)
-            var threw = false
-            try {
-              stmt.executeUpdate()
-            } catch (e: java.sql.SQLException) {
-              threw = true
-            }
-            assertTrue(threw, "Updating immutable column $column should be rejected")
-          }
+        var threw = false
+        try {
+          RawSql.execute(connection, "UPDATE students SET version = version + 1, $column = $value WHERE id = ?", created.id.value)
+        } catch (e: java.sql.SQLException) {
+          threw = true
+        }
+        assertTrue(threw, "Updating immutable column $column should be rejected")
       } finally {
         connection.rollback()
         connection.autoCommit = true

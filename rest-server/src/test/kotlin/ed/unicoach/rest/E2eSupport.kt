@@ -19,6 +19,7 @@ import ed.unicoach.coaching.LlmPriceBook
 import ed.unicoach.coaching.budget.BudgetConfig
 import ed.unicoach.coaching.extraction.ExtractionConfig
 import ed.unicoach.db.Database
+import ed.unicoach.db.dao.RawSql
 import ed.unicoach.db.dao.SqlSession
 import ed.unicoach.db.dao.StudentRowFixture
 import ed.unicoach.queue.JobType
@@ -106,13 +107,11 @@ internal fun markEmailVerified(
   email: String,
 ) {
   val verified =
-    dbConnection
-      .prepareStatement(
-        "UPDATE users SET version = version + 1, email_verified_at = NOW() WHERE email = ? AND email_verified_at IS NULL",
-      ).use { stmt ->
-        stmt.setString(1, email)
-        stmt.executeUpdate()
-      }
+    RawSql.execute(
+      dbConnection,
+      "UPDATE users SET version = version + 1, email_verified_at = NOW() WHERE email = ? AND email_verified_at IS NULL",
+      email,
+    )
   assertEquals(1, verified, "exactly one freshly registered user [$email] must be verified")
 }
 
@@ -220,49 +219,36 @@ suspend fun awaitJobAttempts(
 fun jobStatus(
   connection: Connection,
   jobId: String,
-): String? =
-  connection.prepareStatement("SELECT status FROM jobs WHERE id = ?::uuid").use { stmt ->
-    stmt.setString(1, jobId)
-    stmt.executeQuery().use { rs -> if (rs.next()) rs.getString(1) else null }
-  }
+): String? = RawSql.singleOrNull(connection, "SELECT status FROM jobs WHERE id = ?::uuid", jobId) { it.getString(1) }
 
 fun jobAttemptCount(
   connection: Connection,
   jobId: String,
-): Int =
-  connection.prepareStatement("SELECT COUNT(*) FROM job_attempts WHERE job_id = ?::uuid").use { stmt ->
-    stmt.setString(1, jobId)
-    stmt.executeQuery().use { rs ->
-      rs.next()
-      rs.getInt(1)
-    }
-  }
+): Int = RawSql.count(connection, "SELECT COUNT(*) FROM job_attempts WHERE job_id = ?::uuid", jobId)
 
 /** The latest `job_attempts.status` for [jobId], or null if none. */
 fun latestJobAttemptStatus(
   connection: Connection,
   jobId: String,
 ): String? =
-  connection
-    .prepareStatement(
-      "SELECT status FROM job_attempts WHERE job_id = ?::uuid ORDER BY attempt_number DESC LIMIT 1",
-    ).use { stmt ->
-      stmt.setString(1, jobId)
-      stmt.executeQuery().use { rs -> if (rs.next()) rs.getString(1) else null }
-    }
+  RawSql.singleOrNull(
+    connection,
+    "SELECT status FROM job_attempts WHERE job_id = ?::uuid ORDER BY attempt_number DESC LIMIT 1",
+    jobId,
+  ) { it.getString(1) }
 
 /** The latest `job_attempts.error_message` for [jobId], or null if none. */
 fun latestJobAttemptError(
   connection: Connection,
   jobId: String,
 ): String? =
-  connection
-    .prepareStatement(
-      "SELECT error_message FROM job_attempts WHERE job_id = ?::uuid ORDER BY attempt_number DESC LIMIT 1",
-    ).use { stmt ->
-      stmt.setString(1, jobId)
-      stmt.executeQuery().use { rs -> if (rs.next()) rs.getString(1) else null }
-    }
+  // A scalar subquery: one row always, NULL both for no attempt and for an
+  // attempt with no error, as the nullable answer already conflates.
+  RawSql.single(
+    connection,
+    "SELECT (SELECT error_message FROM job_attempts WHERE job_id = ?::uuid ORDER BY attempt_number DESC LIMIT 1)",
+    jobId,
+  ) { it.getString(1) }
 
 /**
  * Boots and starts `appModule` against [database] with [appStore] as the Apple

@@ -68,10 +68,13 @@ class SynthesisRunsDaoTest {
   private fun createStudent(): StudentId {
     val userId = UUID.randomUUID()
     val studentId = UUID.randomUUID()
-    connection.createStatement().use { stmt ->
-      stmt.execute("INSERT INTO users (id, email, name, password_hash) VALUES ('$userId', 'sr-$userId@test.com', 'Sr User', 'ahash')")
-      StudentRowFixture.insert(connection, studentId, userId)
-    }
+    RawSql.execute(
+      connection,
+      "INSERT INTO users (id, email, name, password_hash) VALUES (?, ?, 'Sr User', 'ahash')",
+      userId,
+      "sr-$userId@test.com",
+    )
+    StudentRowFixture.insert(connection, studentId, userId)
     return StudentId(studentId)
   }
 
@@ -80,25 +83,15 @@ class SynthesisRunsDaoTest {
   // instance per test, so a counter would collide on (name, version).
   private fun createSystemPrompt(): SystemPromptId {
     val id = UUID.randomUUID()
-    connection.prepareStatement("INSERT INTO system_prompts (id, name, version, body) VALUES (?, 'synthesis', ?, 'reflect')").use { stmt ->
-      stmt.setObject(1, id)
-      stmt.setString(2, "v-$id")
-      stmt.executeUpdate()
-    }
+    RawSql.execute(connection, "INSERT INTO system_prompts (id, name, version, body) VALUES (?, 'synthesis', ?, 'reflect')", id, "v-$id")
     return SystemPromptId(id)
   }
 
-  private fun appendLlmRequest(): Long {
-    connection
-      .prepareStatement(
-        "INSERT INTO llm_requests (provider, model_requested, content, max_tokens) VALUES ('anthropic', 'claude-opus-4-8', '[]'::jsonb, 1024) RETURNING id",
-      ).use { stmt ->
-        stmt.executeQuery().use { rs ->
-          rs.next()
-          return rs.getLong("id")
-        }
-      }
-  }
+  private fun appendLlmRequest(): Long =
+    RawSql.single(
+      connection,
+      "INSERT INTO llm_requests (provider, model_requested, content, max_tokens) VALUES ('anthropic', 'claude-opus-4-8', '[]'::jsonb, 1024) RETURNING id",
+    ) { it.getLong("id") }
 
   /** A default `Applied` outcome, for cases that don't assert on the counts. */
   private fun applied(

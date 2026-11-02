@@ -1,6 +1,7 @@
 package ed.unicoach.rest
 
 import ed.unicoach.db.dao.LlmCallRowFixture
+import ed.unicoach.db.dao.RawSql
 import ed.unicoach.rest.ParentCoachServer.ScriptedCoach
 import io.ktor.http.HttpStatusCode
 import kotlinx.coroutines.runBlocking
@@ -43,21 +44,16 @@ class SupporterCoachingCostTest {
   private val family get() = parentCoach.family
 
   private fun supporterIdOf(account: FamilyRoutes.Account): UUID =
-    parentCoach.db
-      .prepareStatement("SELECT sp.id FROM supporters sp JOIN users u ON u.id = sp.user_id WHERE u.email = ?")
-      .use { stmt ->
-        stmt.setString(1, account.email)
-        stmt.executeQuery().use { rs ->
-          rs.next()
-          rs.getObject(1, UUID::class.java)
-        }
-      }
+    RawSql.single(
+      parentCoach.db,
+      "SELECT sp.id FROM supporters sp JOIN users u ON u.id = sp.user_id WHERE u.email = ?",
+      account.email,
+    ) { it.getObject(1, UUID::class.java) }
 
   /** The parent's calls: the `llm_requests` behind their convo's request rows. */
   private fun parentCallIds(convoId: String): List<Long> =
-    parentCoach.db.prepareStatement("SELECT llm_request_id FROM convo_requests WHERE convo_id = ?::uuid ORDER BY id").use { stmt ->
-      stmt.setString(1, convoId)
-      stmt.executeQuery().use { rs -> buildList { while (rs.next()) add(rs.getLong(1)) } }
+    RawSql.list(parentCoach.db, "SELECT llm_request_id FROM convo_requests WHERE convo_id = ?::uuid ORDER BY id", convoId) {
+      it.getLong(1)
     }
 
   /** A parent turn with exactly one tool round: two provider calls. */
@@ -172,12 +168,5 @@ class SupporterCoachingCostTest {
   private fun summedNanodollars(
     sql: String,
     arg: Any,
-  ): Long =
-    parentCoach.db.prepareStatement(sql).use { stmt ->
-      stmt.setObject(1, arg)
-      stmt.executeQuery().use { rs ->
-        rs.next()
-        rs.getLong(1)
-      }
-    }
+  ): Long = RawSql.single(parentCoach.db, sql, arg) { it.getLong(1) }
 }

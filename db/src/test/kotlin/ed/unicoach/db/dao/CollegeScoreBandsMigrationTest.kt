@@ -116,23 +116,24 @@ class CollegeScoreBandsMigrationTest {
     act25: Int? = null,
     act75: Int? = null,
   ) {
-    connection
-      .prepareStatement(
-        """
-        INSERT INTO colleges (
-          ipeds_unit_id, name, city, state, control,
-          sat_reading_25th_percentile_score, sat_reading_75th_percentile_score,
-          sat_math_25th_percentile_score, sat_math_75th_percentile_score,
-          act_composite_25th_percentile_score, act_composite_75th_percentile_score
-        ) VALUES (?, 'Raw College', 'Townsville', 'CA', 1, ?, ?, ?, ?, ?, ?)
-        """.trimIndent(),
-      ).use { stmt ->
-        stmt.setInt(1, ipedsUnitId)
-        listOf(satReading25, satReading75, satMath25, satMath75, act25, act75).forEachIndexed { index, value ->
-          if (value == null) stmt.setNull(index + 2, java.sql.Types.INTEGER) else stmt.setInt(index + 2, value)
-        }
-        stmt.executeUpdate()
-      }
+    RawSql.execute(
+      connection,
+      """
+      INSERT INTO colleges (
+        ipeds_unit_id, name, city, state, control,
+        sat_reading_25th_percentile_score, sat_reading_75th_percentile_score,
+        sat_math_25th_percentile_score, sat_math_75th_percentile_score,
+        act_composite_25th_percentile_score, act_composite_75th_percentile_score
+      ) VALUES (?, 'Raw College', 'Townsville', 'CA', 1, ?, ?, ?, ?, ?, ?)
+      """.trimIndent(),
+      ipedsUnitId,
+      satReading25,
+      satReading75,
+      satMath25,
+      satMath75,
+      act25,
+      act75,
+    )
   }
 
   /** The SQLSTATE of a rejected write, so a test asserts the CHECK fired and not merely that something failed. */

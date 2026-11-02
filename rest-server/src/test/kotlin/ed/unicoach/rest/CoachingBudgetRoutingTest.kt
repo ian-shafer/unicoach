@@ -15,6 +15,7 @@ import ed.unicoach.coaching.budget.BudgetConfig
 import ed.unicoach.common.config.AppConfig
 import ed.unicoach.db.Database
 import ed.unicoach.db.DatabaseConfig
+import ed.unicoach.db.dao.RawSql
 import ed.unicoach.rest.auth.SessionConfig
 import ed.unicoach.rest.config.ClientKeyGateConfig
 import ed.unicoach.rest.config.RequestSizeConfig
@@ -188,12 +189,7 @@ class CoachingBudgetRoutingTest {
         .split(";")
         .first()
         .trim()
-    dbConnection
-      .prepareStatement("UPDATE users SET version = version + 1, email_verified_at = NOW() WHERE email = ?")
-      .use { stmt ->
-        stmt.setString(1, email)
-        stmt.executeUpdate()
-      }
+    markEmailVerified(dbConnection, email)
     return cookie to email
   }
 
@@ -214,15 +210,9 @@ class CoachingBudgetRoutingTest {
   )
 
   private fun studentIdOf(email: String): UUID =
-    dbConnection
-      .prepareStatement("SELECT s.id FROM students s JOIN users u ON u.id = s.user_id WHERE u.email = ?")
-      .use { stmt ->
-        stmt.setString(1, email)
-        stmt.executeQuery().use { rs ->
-          rs.next()
-          rs.getObject("id") as UUID
-        }
-      }
+    RawSql.single(dbConnection, "SELECT s.id FROM students s JOIN users u ON u.id = s.user_id WHERE u.email = ?", email) {
+      it.getObject("id") as UUID
+    }
 
   // ---------------------------------------------------------------------------
   // Spend seeding
@@ -238,48 +228,38 @@ class CoachingBudgetRoutingTest {
     costNanodollars: Long,
   ) {
     val llmRequestId =
-      dbConnection
-        .prepareStatement(
-          "INSERT INTO llm_requests (provider, model_requested, content, max_tokens) " +
-            "VALUES ('anthropic', 'claude-sonnet-4-6', '[]'::jsonb, 1024) RETURNING id",
-        ).use { stmt ->
-          stmt.executeQuery().use { rs ->
-            rs.next()
-            rs.getLong("id")
-          }
-        }
-    dbConnection
-      .prepareStatement(
-        """
-        INSERT INTO llm_responses
-          (request_id, outcome, content, model_resolved, stop_reason, cost_nanodollars, cost_is_estimated, input_tokens, output_tokens, latency_ms)
-        VALUES (?, 'completed', '[]'::jsonb, 'm', 'end_turn', ?, false, 1, 1, 1)
-        """.trimIndent(),
-      ).use { stmt ->
-        stmt.setLong(1, llmRequestId)
-        stmt.setLong(2, costNanodollars)
-        stmt.executeUpdate()
-      }
-    dbConnection
-      .prepareStatement(
-        "INSERT INTO synthesis_runs (student_id, outcome, system_prompt_id, llm_request_id) VALUES (?, 'applied', ?, ?)",
-      ).use { stmt ->
-        stmt.setObject(1, studentId)
-        stmt.setObject(2, seedSystemPrompt())
-        stmt.setLong(3, llmRequestId)
-        stmt.executeUpdate()
-      }
+      RawSql.single(
+        dbConnection,
+        "INSERT INTO llm_requests (provider, model_requested, content, max_tokens) " +
+          "VALUES ('anthropic', 'claude-sonnet-4-6', '[]'::jsonb, 1024) RETURNING id",
+      ) { it.getLong("id") }
+    RawSql.execute(
+      dbConnection,
+      """
+      INSERT INTO llm_responses
+        (request_id, outcome, content, model_resolved, stop_reason, cost_nanodollars, cost_is_estimated, input_tokens, output_tokens, latency_ms)
+      VALUES (?, 'completed', '[]'::jsonb, 'm', 'end_turn', ?, false, 1, 1, 1)
+      """.trimIndent(),
+      llmRequestId,
+      costNanodollars,
+    )
+    RawSql.execute(
+      dbConnection,
+      "INSERT INTO synthesis_runs (student_id, outcome, system_prompt_id, llm_request_id) VALUES (?, 'applied', ?, ?)",
+      studentId,
+      seedSystemPrompt(),
+      llmRequestId,
+    )
   }
 
   private fun seedSystemPrompt(): UUID {
     val id = UUID.randomUUID()
-    dbConnection
-      .prepareStatement("INSERT INTO system_prompts (id, name, version, body) VALUES (?, 'synthesis', ?, 'reflect')")
-      .use { stmt ->
-        stmt.setObject(1, id)
-        stmt.setString(2, "budget-${UUID.randomUUID()}")
-        stmt.executeUpdate()
-      }
+    RawSql.execute(
+      dbConnection,
+      "INSERT INTO system_prompts (id, name, version, body) VALUES (?, 'synthesis', ?, 'reflect')",
+      id,
+      "budget-${UUID.randomUUID()}",
+    )
     return id
   }
 

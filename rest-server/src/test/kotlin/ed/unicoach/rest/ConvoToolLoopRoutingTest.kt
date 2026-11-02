@@ -16,6 +16,7 @@ import ed.unicoach.coaching.family.InviteSupporterChatTool
 import ed.unicoach.common.config.AppConfig
 import ed.unicoach.db.Database
 import ed.unicoach.db.DatabaseConfig
+import ed.unicoach.db.dao.RawSql
 import ed.unicoach.rest.auth.SessionConfig
 import ed.unicoach.rest.config.ClientKeyGateConfig
 import ed.unicoach.rest.config.RequestSizeConfig
@@ -318,16 +319,6 @@ class ConvoToolLoopRoutingTest {
       .parseToJsonElement(block["content"]!!.jsonPrimitive.content)
       .jsonObject
 
-  private fun markEmailVerified(email: String) {
-    connection
-      .prepareStatement(
-        "UPDATE users SET version = version + 1, email_verified_at = NOW() WHERE email = ? AND email_verified_at IS NULL",
-      ).use { stmt ->
-        stmt.setString(1, email)
-        stmt.executeUpdate()
-      }
-  }
-
   private suspend fun registerWithStudent(): String {
     val email = "tool${java.util.UUID.randomUUID()}@company.com"
     val reg =
@@ -336,7 +327,7 @@ class ConvoToolLoopRoutingTest {
         setBody(mapper.writeValueAsString(RegisterRequest(email, "Password123!", "Tool User")))
       }
     assertEquals(HttpStatusCode.Created, reg.status)
-    markEmailVerified(email)
+    markEmailVerified(connection, email)
     val cookie =
       reg.headers[HttpHeaders.SetCookie]!!
         .split(";")
@@ -352,18 +343,12 @@ class ConvoToolLoopRoutingTest {
     return cookie
   }
 
-  private fun extractionThroughIds(convoId: String): List<Long> {
-    val out = mutableListOf<Long>()
-    connection
-      .prepareStatement("SELECT payload FROM jobs WHERE job_type = 'EXTRACT_CONVERSATION' AND payload->>'convoId' = ?")
-      .use { stmt ->
-        stmt.setString(1, convoId)
-        stmt.executeQuery().use { rs ->
-          while (rs.next()) out.add(mapper.readTree(rs.getString("payload"))["throughRequestId"].asLong())
-        }
-      }
-    return out
-  }
+  private fun extractionThroughIds(convoId: String): List<Long> =
+    RawSql.list(
+      connection,
+      "SELECT payload FROM jobs WHERE job_type = 'EXTRACT_CONVERSATION' AND payload->>'convoId' = ?",
+      convoId,
+    ) { rs -> mapper.readTree(rs.getString("payload"))["throughRequestId"].asLong() }
 
   @Test
   fun `a tool-round turn enqueues extraction with the continuation request id and collapses the transcript`() =

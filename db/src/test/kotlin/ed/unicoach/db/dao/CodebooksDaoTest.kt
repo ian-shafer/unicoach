@@ -312,17 +312,11 @@ class CodebooksDaoTest {
   // Helpers
   // ---------------------------------------------------------------------------
 
-  private fun scalar(sql: String): String? =
-    connection.prepareStatement(sql).use { stmt ->
-      stmt.executeQuery().use { rs ->
-        rs.next()
-        rs.getString(1)
-      }
-    }
+  private fun scalar(sql: String): String? = RawSql.single(connection, sql) { it.getString(1) }
 
   private fun updatedAt(
     table: String,
     keyColumn: String,
     key: String,
-  ): String = scalar("SELECT updated_at::text FROM $table WHERE $keyColumn = '$key'")!!
+  ): String = RawSql.single(connection, "SELECT updated_at::text FROM $table WHERE $keyColumn = ?", key) { it.getString(1) }
 }

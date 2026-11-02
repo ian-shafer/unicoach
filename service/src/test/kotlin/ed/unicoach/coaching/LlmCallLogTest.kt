@@ -11,6 +11,7 @@ import ed.unicoach.chat.TokenUsage
 import ed.unicoach.db.Database
 import ed.unicoach.db.DatabaseConfig
 import ed.unicoach.db.dao.LlmCallsDao
+import ed.unicoach.db.dao.RawSql
 import ed.unicoach.db.dao.SqlSession
 import ed.unicoach.db.dao.captureWarns
 import ed.unicoach.db.models.LlmCallOutcome
@@ -147,22 +148,10 @@ class LlmCallLogTest {
     nanoTime: () -> Long = System::nanoTime,
   ): LlmCallLog = LlmCallLog(provider, database, priceBook, nanoTime = nanoTime)
 
-  private fun responseRowCount(): Int =
-    connection.createStatement().use { st ->
-      st.executeQuery("SELECT count(*) FROM llm_responses").use { rs ->
-        rs.next()
-        rs.getInt(1)
-      }
-    }
+  private fun responseRowCount(): Int = RawSql.count(connection, "SELECT count(*) FROM llm_responses")
 
   private fun responseRowCountFor(requestId: ed.unicoach.db.models.LlmRequestId): Int =
-    connection.prepareStatement("SELECT count(*) FROM llm_responses WHERE request_id = ?").use { st ->
-      st.setLong(1, requestId.value)
-      st.executeQuery().use { rs ->
-        rs.next()
-        rs.getInt(1)
-      }
-    }
+    RawSql.count(connection, "SELECT count(*) FROM llm_responses WHERE request_id = ?", requestId.value)
 
   /** A minimal `NewLlmRequest` for seeding a bare `llm_requests` row directly. */
   private fun newRequestOf(provider: String): ed.unicoach.db.models.NewLlmRequest =

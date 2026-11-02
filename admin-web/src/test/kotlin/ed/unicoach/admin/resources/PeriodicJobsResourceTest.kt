@@ -4,6 +4,7 @@ import ed.unicoach.admin.AdminTestSupport
 import ed.unicoach.cron.PeriodicJobName
 import ed.unicoach.cron.dao.PeriodicFindResult
 import ed.unicoach.cron.dao.PeriodicJobsDao
+import ed.unicoach.db.dao.RawSql
 import io.ktor.client.request.forms.submitForm
 import io.ktor.client.request.get
 import io.ktor.client.request.header
@@ -43,18 +44,16 @@ class PeriodicJobsResourceTest {
   ): PeriodicJobName {
     runBlocking {
       AdminTestSupport.database.withConnection { session ->
-        session
-          .prepareStatement(
-            """
-            INSERT INTO periodic_jobs (name, job_type, payload, schedule, timezone, next_run_at, enabled)
-            VALUES (?, 'SYNTHESIS_SWEEP', '{}'::jsonb, '0 3 * * *', 'UTC', ?, ?)
-            """.trimIndent(),
-          ).use { stmt ->
-            stmt.setString(1, name)
-            stmt.setTimestamp(2, java.sql.Timestamp.from(Instant.parse("2030-01-01T03:00:00Z")))
-            stmt.setBoolean(3, enabled)
-            stmt.executeUpdate()
-          }
+        RawSql.execute(
+          session,
+          """
+          INSERT INTO periodic_jobs (name, job_type, payload, schedule, timezone, next_run_at, enabled)
+          VALUES (?, 'SYNTHESIS_SWEEP', '{}'::jsonb, '0 3 * * *', 'UTC', ?, ?)
+          """.trimIndent(),
+          name,
+          java.sql.Timestamp.from(Instant.parse("2030-01-01T03:00:00Z")),
+          enabled,
+        )
       }
     }
     return PeriodicJobName(name)
@@ -67,18 +66,16 @@ class PeriodicJobsResourceTest {
   ): PeriodicJobName {
     runBlocking {
       AdminTestSupport.database.withConnection { session ->
-        session
-          .prepareStatement(
-            """
-            INSERT INTO periodic_jobs (name, job_type, payload, schedule, timezone, next_run_at, enabled)
-            VALUES (?, 'NO_SUCH_JOB_TYPE', '{}'::jsonb, '0 3 * * *', 'UTC', ?, ?)
-            """.trimIndent(),
-          ).use { stmt ->
-            stmt.setString(1, name)
-            stmt.setTimestamp(2, java.sql.Timestamp.from(Instant.parse("2030-01-01T03:00:00Z")))
-            stmt.setBoolean(3, enabled)
-            stmt.executeUpdate()
-          }
+        RawSql.execute(
+          session,
+          """
+          INSERT INTO periodic_jobs (name, job_type, payload, schedule, timezone, next_run_at, enabled)
+          VALUES (?, 'NO_SUCH_JOB_TYPE', '{}'::jsonb, '0 3 * * *', 'UTC', ?, ?)
+          """.trimIndent(),
+          name,
+          java.sql.Timestamp.from(Instant.parse("2030-01-01T03:00:00Z")),
+          enabled,
+        )
       }
     }
     return PeriodicJobName(name)
@@ -95,12 +92,8 @@ class PeriodicJobsResourceTest {
   private fun rawEnabledOf(name: PeriodicJobName): Boolean =
     runBlocking {
       AdminTestSupport.database.withConnection { session ->
-        session.prepareStatement("SELECT enabled FROM periodic_jobs WHERE name = ?").use { stmt ->
-          stmt.setString(1, name.value)
-          stmt.executeQuery().use { rs ->
-            rs.next()
-            rs.getBoolean("enabled")
-          }
+        RawSql.single(session, "SELECT enabled FROM periodic_jobs WHERE name = ?", name.value) { rs ->
+          rs.getBoolean("enabled")
         }
       }
     }

@@ -134,24 +134,22 @@ class ProgramMoneyDaoTest {
     status: String = "reported",
     sourceVariable: String = "EARN_MDN_4YR",
   ) {
-    connection
-      .prepareStatement(
-        "INSERT INTO program_money_stats (college_program_id, measure, cohort_first_year, " +
-          "cohort_last_year, amount_usd, status, source, source_variable) " +
-          "VALUES (?, '$measure', $first, $last, $amount, '$status', 'scorecard', '$sourceVariable')",
-      ).use { stmt ->
-        stmt.setObject(1, programId)
-        stmt.executeUpdate()
-      }
+    // `amount` stays spliced: it is a SQL literal, and `NULL` is one of the values a case passes.
+    RawSql.execute(
+      connection,
+      "INSERT INTO program_money_stats (college_program_id, measure, cohort_first_year, " +
+        "cohort_last_year, amount_usd, status, source, source_variable) " +
+        "VALUES (?, ?, ?, ?, $amount, ?, 'scorecard', ?)",
+      programId,
+      measure,
+      first,
+      last,
+      status,
+      sourceVariable,
+    )
   }
 
-  private fun rowCount(): Int =
-    connection.createStatement().use { stmt ->
-      stmt.executeQuery("SELECT count(*) FROM program_money_stats").use { rs ->
-        rs.next()
-        rs.getInt(1)
-      }
-    }
+  private fun rowCount(): Int = RawSql.count(connection, "SELECT count(*) FROM program_money_stats")
 
   @Test
   fun `one row inserts and reads back under its status`() {

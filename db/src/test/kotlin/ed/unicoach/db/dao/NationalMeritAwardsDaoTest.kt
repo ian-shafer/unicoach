@@ -656,19 +656,9 @@ class NationalMeritAwardsDaoTest {
     )
 
   private fun updatedAtOf(id: NationalMeritAwardId): OffsetDateTime =
-    connection.prepareStatement("SELECT updated_at FROM college_national_merit_awards WHERE id = ?").use { stmt ->
-      stmt.setObject(1, id.value)
-      stmt.executeQuery().use { rs ->
-        rs.next()
-        rs.getObject("updated_at", OffsetDateTime::class.java)
-      }
+    RawSql.single(connection, "SELECT updated_at FROM college_national_merit_awards WHERE id = ?", id.value) {
+      it.getObject("updated_at", OffsetDateTime::class.java)
     }
 
-  private fun countAwards(): Int =
-    connection.createStatement().use { stmt ->
-      stmt.executeQuery("SELECT COUNT(*) FROM college_national_merit_awards").use { rs ->
-        rs.next()
-        rs.getInt(1)
-      }
-    }
+  private fun countAwards(): Int = RawSql.count(connection, "SELECT COUNT(*) FROM college_national_merit_awards")
 }

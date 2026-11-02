@@ -2,6 +2,7 @@ package ed.unicoach.coaching.synthesis
 
 import ed.unicoach.db.Database
 import ed.unicoach.db.DatabaseConfig
+import ed.unicoach.db.dao.RawSql
 import ed.unicoach.db.dao.SqlSession
 import ed.unicoach.db.dao.StudentRowFixture
 import ed.unicoach.queue.JobResult
@@ -63,25 +64,18 @@ class SynthesisSweepHandlerTest {
   private fun seedStudent(): String {
     val userId = UUID.randomUUID()
     val studentId = UUID.randomUUID()
-    connection.createStatement().use { stmt ->
-      stmt.execute(
-        "INSERT INTO users (id, email, name, password_hash) VALUES ('$userId', 'sweep-$userId@test.com', 'Sweep User', 'ahash')",
-      )
-      StudentRowFixture.insert(connection, studentId, userId)
-    }
+    RawSql.execute(
+      connection,
+      "INSERT INTO users (id, email, name, password_hash) VALUES (?, ?, 'Sweep User', 'ahash')",
+      userId,
+      "sweep-$userId@test.com",
+    )
+    StudentRowFixture.insert(connection, studentId, userId)
     return studentId.toString()
   }
 
   private fun countSynthesizeJobs(): Int =
-    connection
-      .prepareStatement("SELECT COUNT(*) FROM jobs WHERE job_type = ?")
-      .use { stmt ->
-        stmt.setString(1, JobType.SYNTHESIZE_STUDENT.value)
-        stmt.executeQuery().use { rs ->
-          rs.next()
-          rs.getInt(1)
-        }
-      }
+    RawSql.count(connection, "SELECT COUNT(*) FROM jobs WHERE job_type = ?", JobType.SYNTHESIZE_STUDENT.value)
 
   @Test
   fun `config advertises SYNTHESIS_SWEEP and executionTimeout under lockDuration`() {

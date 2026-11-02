@@ -67,13 +67,12 @@ class SupportersDaoTest {
 
   private fun createUser(): UserId {
     val userId = UUID.randomUUID()
-    connection
-      .prepareStatement("INSERT INTO users (id, email, name, password_hash) VALUES (?, ?, 'Supporter User', 'ahash')")
-      .use { stmt ->
-        stmt.setObject(1, userId)
-        stmt.setString(2, "sup-$userId@test.com")
-        stmt.executeUpdate()
-      }
+    RawSql.execute(
+      connection,
+      "INSERT INTO users (id, email, name, password_hash) VALUES (?, ?, 'Supporter User', 'ahash')",
+      userId,
+      "sup-$userId@test.com",
+    )
     return UserId(userId)
   }
 

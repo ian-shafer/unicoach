@@ -5,6 +5,7 @@ import ed.unicoach.coaching.moneyprofile.MoneyProfileService
 import ed.unicoach.db.Database
 import ed.unicoach.db.DatabaseConfig
 import ed.unicoach.db.dao.MoneyProfilesDao
+import ed.unicoach.db.dao.RawSql
 import ed.unicoach.db.dao.SqlSession
 import ed.unicoach.db.dao.StudentRowFixture
 import ed.unicoach.db.models.AnswerStatus
@@ -73,12 +74,13 @@ class MoneyProfileChatToolTest {
   private fun createStudent(): StudentId {
     val userId = UUID.randomUUID()
     val studentId = UUID.randomUUID()
-    connection.createStatement().use { stmt ->
-      stmt.execute(
-        "INSERT INTO users (id, email, name, password_hash) VALUES ('$userId', 'mpt-$userId@test.com', 'MPT User', 'ahash')",
-      )
-      StudentRowFixture.insert(connection, studentId, userId)
-    }
+    RawSql.execute(
+      connection,
+      "INSERT INTO users (id, email, name, password_hash) VALUES (?, ?, 'MPT User', 'ahash')",
+      userId,
+      "mpt-$userId@test.com",
+    )
+    StudentRowFixture.insert(connection, studentId, userId)
     return StudentId(studentId)
   }
 

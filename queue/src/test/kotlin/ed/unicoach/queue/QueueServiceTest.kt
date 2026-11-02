@@ -2,6 +2,7 @@ package ed.unicoach.queue
 
 import ed.unicoach.db.Database
 import ed.unicoach.db.DatabaseConfig
+import ed.unicoach.db.dao.RawSql
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.json.JsonObject
@@ -136,14 +137,6 @@ class QueueServiceTest {
 
   private fun jobCount(jobType: JobType): Int {
     val conn = DriverManager.getConnection(jdbcUrl, dbUser, dbPassword ?: "")
-    conn.use { c ->
-      c.prepareStatement("SELECT COUNT(*) FROM jobs WHERE job_type = ?").use { stmt ->
-        stmt.setString(1, jobType.value)
-        stmt.executeQuery().use { rs ->
-          rs.next()
-          return rs.getInt(1)
-        }
-      }
-    }
+    return conn.use { c -> RawSql.count(c, "SELECT COUNT(*) FROM jobs WHERE job_type = ?", jobType.value) }
   }
 }

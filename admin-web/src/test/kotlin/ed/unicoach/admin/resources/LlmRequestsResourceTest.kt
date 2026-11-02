@@ -3,6 +3,7 @@ package ed.unicoach.admin.resources
 import ed.unicoach.admin.AdminTestSupport
 import ed.unicoach.common.money.Nanodollars
 import ed.unicoach.db.dao.LlmCallsDao
+import ed.unicoach.db.dao.RawSql
 import ed.unicoach.db.models.FrozenCost
 import ed.unicoach.db.models.LlmCallOutcome
 import ed.unicoach.db.models.LlmRequestId
@@ -189,19 +190,15 @@ class LlmRequestsResourceTest {
     runBlocking {
       AdminTestSupport.database
         .withConnection { session ->
-          session
-            .prepareStatement(
-              """
-              INSERT INTO llm_requests (created_at, provider, model_requested, system, content, max_tokens)
-              VALUES (NOW() - ($ageHours || ' hours')::interval, 'anthropic', 'claude-opus-4-8', NULL, '[]'::jsonb, 1024)
-              RETURNING id
-              """.trimIndent(),
-            ).use { stmt ->
-              stmt.executeQuery().use { rs ->
-                rs.next()
-                Result.success(LlmRequestId(rs.getLong("id")))
-              }
-            }
+          RawSql.single(
+            session,
+            """
+            INSERT INTO llm_requests (created_at, provider, model_requested, system, content, max_tokens)
+            VALUES (NOW() - (? * INTERVAL '1 hour'), 'anthropic', 'claude-opus-4-8', NULL, '[]'::jsonb, 1024)
+            RETURNING id
+            """.trimIndent(),
+            ageHours,
+          ) { rs -> Result.success(LlmRequestId(rs.getLong("id"))) }
         }.getOrThrow()
     }
 

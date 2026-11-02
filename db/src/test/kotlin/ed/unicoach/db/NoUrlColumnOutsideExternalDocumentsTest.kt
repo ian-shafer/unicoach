@@ -1,5 +1,6 @@
 package ed.unicoach.db
 
+import ed.unicoach.db.dao.RawSql
 import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.Test
@@ -66,10 +67,10 @@ class NoUrlColumnOutsideExternalDocumentsTest {
     )
 
   /** Every public column whose name says url or link. */
-  private fun urlColumns(): Map<String, String> {
-    val found = mutableMapOf<String, String>()
-    connection
-      .prepareStatement(
+  private fun urlColumns(): Map<String, String> =
+    RawSql
+      .list(
+        connection,
         """
         SELECT table_name, column_name
         FROM information_schema.columns
@@ -77,15 +78,8 @@ class NoUrlColumnOutsideExternalDocumentsTest {
           AND (column_name ILIKE '%url%' OR column_name ILIKE '%link%')
         ORDER BY table_name, column_name
         """.trimIndent(),
-      ).use { stmt ->
-        stmt.executeQuery().use { rs ->
-          while (rs.next()) {
-            found["${rs.getString("table_name")}.${rs.getString("column_name")}"] = ""
-          }
-        }
-      }
-    return found
-  }
+      ) { rs -> "${rs.getString("table_name")}.${rs.getString("column_name")}" }
+      .associateWith { "" }
 
   @Test
   fun `only external_documents declares a url column`() {

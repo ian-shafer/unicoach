@@ -2,6 +2,7 @@ package ed.unicoach.admin.resources
 
 import ed.unicoach.admin.AdminTestSupport
 import ed.unicoach.db.dao.ConvosDao
+import ed.unicoach.db.dao.RawSql
 import ed.unicoach.db.dao.SqlSession
 import ed.unicoach.queue.NewJob
 import ed.unicoach.queue.QueueService
@@ -68,15 +69,8 @@ class ConvosResourceTest {
   private fun findSoleJob(): EnqueuedJob? =
     runBlocking {
       AdminTestSupport.database.withConnection { session ->
-        session.prepareStatement("SELECT job_type, payload FROM jobs").use { stmt ->
-          stmt.executeQuery().use { rs ->
-            if (!rs.next()) {
-              return@withConnection null
-            }
-            val job = EnqueuedJob(rs.getString("job_type"), rs.getString("payload"))
-            assertTrue(!rs.next(), "Expected exactly one enqueued job")
-            job
-          }
+        RawSql.singleOrNull(session, "SELECT job_type, payload FROM jobs") { rs ->
+          EnqueuedJob(rs.getString("job_type"), rs.getString("payload"))
         }
       }
     }

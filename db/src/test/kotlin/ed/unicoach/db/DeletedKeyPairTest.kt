@@ -246,35 +246,33 @@ class DeletedKeyPairTest {
     insertStudent(null, deletedUserId)
     assertEquals(
       1,
-      RawSql.single(
+      RawSql.count(
         connection,
         "SELECT COUNT(*) FROM students WHERE user_id IS NULL AND deleted_user_id = ?",
         deletedUserId,
-      ) { it.getInt(1) },
+      ),
     )
 
     val deletedStudentId = erasedStudent()
     insertMoneyProfile(null, deletedStudentId)
     assertEquals(
       1,
-      RawSql.single(
+      RawSql.count(
         connection,
         "SELECT COUNT(*) FROM money_profiles WHERE student_id IS NULL AND deleted_student_id = ?",
         deletedStudentId,
-      ) {
-        it.getInt(1)
-      },
+      ),
     )
 
     val deletedSupporterId = erasedSupporter()
     insertSupporterLlmCost(null, deletedSupporterId)
     assertEquals(
       1,
-      RawSql.single(
+      RawSql.count(
         connection,
         "SELECT COUNT(*) FROM supporter_llm_costs WHERE supporter_id IS NULL AND deleted_supporter_id = ?",
         deletedSupporterId,
-      ) { it.getInt(1) },
+      ),
     )
   }
 
@@ -356,7 +354,7 @@ class DeletedKeyPairTest {
 
       assertEquals(
         1,
-        RawSql.single(connection, "SELECT COUNT(*) FROM $table WHERE id = ?", id) { it.getInt(1) },
+        RawSql.count(connection, "SELECT COUNT(*) FROM $table WHERE id = ?", id),
         "the $table row is still there",
       )
     }

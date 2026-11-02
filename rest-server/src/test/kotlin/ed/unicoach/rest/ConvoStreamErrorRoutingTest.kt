@@ -160,13 +160,7 @@ class ConvoStreamErrorRoutingTest {
         .first()
         .trim()
     // Mark verified so the gate allows the gated student + conversation routes below.
-    dbConnection
-      .prepareStatement(
-        "UPDATE users SET version = version + 1, email_verified_at = NOW() WHERE email = ? AND email_verified_at IS NULL",
-      ).use { stmt ->
-        stmt.setString(1, email)
-        stmt.executeUpdate()
-      }
+    markEmailVerified(dbConnection, email)
     client.post(buildUrl("/api/v1/students")) {
       header(HttpHeaders.ContentType, ContentType.Application.Json.toString())
       header(HttpHeaders.Cookie, cookie)

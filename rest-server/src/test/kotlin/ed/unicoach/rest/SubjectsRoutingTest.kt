@@ -4,6 +4,7 @@ import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
 import ed.unicoach.coaching.SubjectVocabularyService
 import ed.unicoach.common.config.AppConfig
 import ed.unicoach.db.DatabaseConfig
+import ed.unicoach.db.dao.RawSql
 import ed.unicoach.rest.models.RegisterRequest
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.cio.CIO
@@ -78,16 +79,6 @@ class SubjectsRoutingTest {
 
   private fun uniqueEmail(): String = "sub${UUID.randomUUID()}@company.com"
 
-  private fun markEmailVerified(email: String) {
-    dbConnection
-      .prepareStatement(
-        "UPDATE users SET version = version + 1, email_verified_at = NOW() WHERE email = ? AND email_verified_at IS NULL",
-      ).use { stmt ->
-        stmt.setString(1, email)
-        stmt.executeUpdate()
-      }
-  }
-
   private suspend fun registerAndGetCookie(): String {
     val email = uniqueEmail()
     val req = RegisterRequest(email, "Password123!", "Subjects User")
@@ -97,7 +88,7 @@ class SubjectsRoutingTest {
         setBody(mapper.writeValueAsString(req))
       }
     assertEquals(HttpStatusCode.Created, response.status)
-    markEmailVerified(email)
+    markEmailVerified(dbConnection, email)
     return response.headers[HttpHeaders.SetCookie]!!
       .split(";")
       .first()
@@ -121,15 +112,13 @@ class SubjectsRoutingTest {
     name: String,
     status: String = "active",
   ) {
-    dbConnection
-      .prepareStatement(
-        "INSERT INTO subjects (slug, name, cip_prefixes, status) VALUES (?, ?, '{51}'::TEXT[], ?)",
-      ).use { stmt ->
-        stmt.setString(1, slug)
-        stmt.setString(2, name)
-        stmt.setString(3, status)
-        stmt.executeUpdate()
-      }
+    RawSql.execute(
+      dbConnection,
+      "INSERT INTO subjects (slug, name, cip_prefixes, status) VALUES (?, ?, '{51}'::TEXT[], ?)",
+      slug,
+      name,
+      status,
+    )
   }
 
   /** Three ACTIVE subjects whose names sort A, B, C, so name order is observable without a count. */

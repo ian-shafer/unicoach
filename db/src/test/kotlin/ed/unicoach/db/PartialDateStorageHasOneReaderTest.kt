@@ -1,6 +1,7 @@
 package ed.unicoach.db
 
 import ed.unicoach.common.models.ValidationResult
+import ed.unicoach.db.dao.RawSql
 import ed.unicoach.db.models.PartialDate
 import ed.unicoach.db.models.PartialDateColumns
 import org.junit.jupiter.api.AfterAll
@@ -76,17 +77,13 @@ class PartialDateStorageHasOneReaderTest {
   }
 
   private fun columnsOf(table: String): Set<String> =
-    connection
-      .prepareStatement(
+    RawSql
+      .list(
+        connection,
         "SELECT column_name FROM information_schema.columns WHERE table_schema = 'public' AND table_name = ?",
-      ).use { stmt ->
-        stmt.setString(1, table)
-        stmt.executeQuery().use { rs ->
-          val names = mutableSetOf<String>()
-          while (rs.next()) names += rs.getString("column_name")
-          names
-        }
-      }
+        table,
+      ) { rs -> rs.getString("column_name") }
+      .toSet()
 
   @Test
   fun `students and students_versions store a period start and a precision and nothing decomposed`() {

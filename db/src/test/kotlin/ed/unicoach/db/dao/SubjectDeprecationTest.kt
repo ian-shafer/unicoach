@@ -104,16 +104,13 @@ class SubjectDeprecationTest {
   private fun createStudent(): UUID {
     val userId = UUID.randomUUID()
     val studentId = UUID.randomUUID()
-    connection.createStatement().use { stmt ->
-      stmt.execute(
-        "INSERT INTO users (id, email, name, password_hash) VALUES ('$userId', 'sd-$userId@test.com', 'SD User', 'ahash')",
-      )
-      stmt.execute(
-        "INSERT INTO students (id, user_id, expected_high_school_graduation_on, " +
-          "expected_high_school_graduation_precision, date_of_birth) " +
-          "VALUES ('$studentId', '$userId', DATE '2028-01-01', 'year', DATE '${StudentRowFixture.DEFAULT_DATE_OF_BIRTH}')",
-      )
-    }
+    RawSql.execute(
+      connection,
+      "INSERT INTO users (id, email, name, password_hash) VALUES (?, ?, 'SD User', 'ahash')",
+      userId,
+      "sd-$userId@test.com",
+    )
+    StudentRowFixture.insert(connection, studentId, userId)
     return studentId
   }
 
@@ -393,23 +390,13 @@ class SubjectDeprecationTest {
   ) {
     otherConnection.autoCommit = false
     try {
-      otherConnection.createStatement().use { stmt ->
-        stmt.execute("INSERT INTO intended_subject_status (student_id, status) VALUES ('$studentId', 'answered')")
-        stmt.execute("INSERT INTO intended_subjects (student_id, subject_slug) VALUES ('$studentId', '$slug')")
-      }
+      RawSql.execute(otherConnection, "INSERT INTO intended_subject_status (student_id, status) VALUES (?, 'answered')", studentId)
+      RawSql.execute(otherConnection, "INSERT INTO intended_subjects (student_id, subject_slug) VALUES (?, ?)", studentId, slug)
       otherConnection.commit()
     } finally {
       otherConnection.autoCommit = true
     }
   }
 
-  private fun storedSlugs(): List<String> {
-    val slugs = mutableListOf<String>()
-    connection.createStatement().use { stmt ->
-      stmt.executeQuery("SELECT slug FROM subjects ORDER BY slug").use { rs ->
-        while (rs.next()) slugs += rs.getString("slug")
-      }
-    }
-    return slugs
-  }
+  private fun storedSlugs(): List<String> = RawSql.list(connection, "SELECT slug FROM subjects ORDER BY slug") { it.getString("slug") }
 }

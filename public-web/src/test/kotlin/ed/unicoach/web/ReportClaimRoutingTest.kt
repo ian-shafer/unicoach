@@ -10,6 +10,7 @@ import ed.unicoach.coaching.report.ShareToken
 import ed.unicoach.common.models.EmailAddress
 import ed.unicoach.common.models.ValidationResult
 import ed.unicoach.db.dao.CostReportSharesDao
+import ed.unicoach.db.dao.RawSql
 import ed.unicoach.db.dao.ShareEventsDao
 import ed.unicoach.db.dao.SupportersDao
 import ed.unicoach.db.dao.UsersDao
@@ -141,14 +142,7 @@ class ReportClaimRoutingTest {
 
   private fun count(sql: String): Int =
     runBlocking {
-      database.withConnection { session ->
-        session.prepareStatement(sql).use { stmt ->
-          stmt.executeQuery().use { rs ->
-            rs.next()
-            rs.getInt(1)
-          }
-        }
-      }
+      database.withConnection { session -> RawSql.count(session, sql) }
     }
 
   private fun requestCount() = count("SELECT count(*) FROM supporter_link_requests")
@@ -156,14 +150,12 @@ class ReportClaimRoutingTest {
   private fun linkRequestedEmailCount(): Int =
     runBlocking {
       database.withConnection { session ->
-        session.prepareStatement("SELECT count(*) FROM jobs WHERE job_type = ? AND payload->>'template' = ?").use { stmt ->
-          stmt.setString(1, JobType.SEND_EMAIL.value)
-          stmt.setString(2, EmailTemplate.LINK_REQUESTED.name)
-          stmt.executeQuery().use { rs ->
-            rs.next()
-            rs.getInt(1)
-          }
-        }
+        RawSql.count(
+          session,
+          "SELECT count(*) FROM jobs WHERE job_type = ? AND payload->>'template' = ?",
+          JobType.SEND_EMAIL.value,
+          EmailTemplate.LINK_REQUESTED.name,
+        )
       }
     }
 

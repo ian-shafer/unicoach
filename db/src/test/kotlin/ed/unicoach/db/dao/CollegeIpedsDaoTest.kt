@@ -160,13 +160,7 @@ class CollegeIpedsDaoTest {
   private fun <T> scalar(
     sql: String,
     read: (java.sql.ResultSet) -> T,
-  ): T =
-    connection.prepareStatement(sql).use { stmt ->
-      stmt.executeQuery().use { rs ->
-        rs.next()
-        read(rs)
-      }
-    }
+  ): T = RawSql.single(connection, sql, read = read)
 
   // ---------------------------------------------------------------------------
   // college_ipeds upsert

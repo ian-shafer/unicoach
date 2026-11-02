@@ -1,5 +1,6 @@
 package ed.unicoach.db
 
+import ed.unicoach.db.dao.RawSql
 import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.Test
@@ -124,17 +125,13 @@ class PublisherMoneyColumnsAreGoneTest {
   }
 
   private fun columnsOf(table: String): Set<String> =
-    connection
-      .prepareStatement(
+    RawSql
+      .list(
+        connection,
         "SELECT column_name FROM information_schema.columns WHERE table_schema = 'public' AND table_name = ?",
-      ).use { stmt ->
-        stmt.setString(1, table)
-        stmt.executeQuery().use { rs ->
-          val names = mutableSetOf<String>()
-          while (rs.next()) names += rs.getString("column_name")
-          names
-        }
-      }
+        table,
+      ) { rs -> rs.getString("column_name") }
+      .toSet()
 
   @Test
   fun `colleges and colleges_versions carry none of the eighteen money columns`() {

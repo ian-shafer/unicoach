@@ -4,6 +4,7 @@ import ed.unicoach.common.models.EmailAddress
 import ed.unicoach.common.models.ValidationResult
 import ed.unicoach.db.Database
 import ed.unicoach.db.DatabaseConfig
+import ed.unicoach.db.dao.RawSql
 import ed.unicoach.db.dao.SqlSession
 import ed.unicoach.db.dao.UsersDao
 import ed.unicoach.db.models.NewUser
@@ -139,14 +140,7 @@ class StudentServiceTest {
 
   // --- createStudent: the 13+ age floor (RFC 222) ---
 
-  private fun studentRowCount(): Int {
-    connection.prepareStatement("SELECT COUNT(*) FROM students").use { stmt ->
-      stmt.executeQuery().use { rs ->
-        rs.next()
-        return rs.getInt(1)
-      }
-    }
-  }
+  private fun studentRowCount(): Int = RawSql.count(connection, "SELECT COUNT(*) FROM students")
 
   @Test
   fun `createStudent accepts a student whose thirteenth birthday is today`() =

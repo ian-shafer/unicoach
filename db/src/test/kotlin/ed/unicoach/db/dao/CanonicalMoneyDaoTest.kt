@@ -721,16 +721,19 @@ class CanonicalMoneyDaoTest {
     status: String = "reported",
     source: String = "common_data_set",
   ) {
-    connection
-      .prepareStatement(
-        "INSERT INTO aid_form_requirements (college_id, aid_form, applicant_group, academic_year, " +
-          "is_required, status, source, source_variable, source_document_id) " +
-          "VALUES (?, '$form', '$applicantGroup', 2024, $isRequired, '$status', '$source', 'H.801', ?)",
-      ).use { stmt ->
-        stmt.setObject(1, collegeId)
-        stmt.setObject(2, sourceDocumentId.value)
-        stmt.executeUpdate()
-      }
+    RawSql.execute(
+      connection,
+      "INSERT INTO aid_form_requirements (college_id, aid_form, applicant_group, academic_year, " +
+        "is_required, status, source, source_variable, source_document_id) " +
+        "VALUES (?, ?, ?, 2024, ?::boolean, ?, ?, 'H.801', ?)",
+      collegeId,
+      form,
+      applicantGroup,
+      isRequired,
+      status,
+      source,
+      sourceDocumentId.value,
+    )
   }
 
   /**
@@ -742,25 +745,12 @@ class CanonicalMoneyDaoTest {
   private fun causeChain(error: Throwable): String =
     generateSequence<Throwable>(error) { it.cause }.mapNotNull { it.message }.joinToString(" | ")
 
-  private fun scalarString(sql: String): String =
-    connection.createStatement().use { stmt ->
-      stmt.executeQuery(sql).use { rs ->
-        rs.next()
-        rs.getString(1)
-      }
-    }
+  private fun scalarString(sql: String): String = RawSql.single(connection, sql) { it.getString(1) }
 
   private fun updatedAt(
     table: String,
     slug: String,
-  ): String =
-    connection.prepareStatement("SELECT updated_at::text FROM $table WHERE slug = ?").use { stmt ->
-      stmt.setString(1, slug)
-      stmt.executeQuery().use { rs ->
-        rs.next()
-        rs.getString(1)
-      }
-    }
+  ): String = RawSql.single(connection, "SELECT updated_at::text FROM $table WHERE slug = ?", slug) { it.getString(1) }
 }
 
 /**

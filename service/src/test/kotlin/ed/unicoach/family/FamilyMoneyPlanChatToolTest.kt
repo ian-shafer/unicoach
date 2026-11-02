@@ -11,6 +11,7 @@ import ed.unicoach.coaching.costs.LivingPlanPricing
 import ed.unicoach.coaching.costs.SpokenAssurance
 import ed.unicoach.coaching.costs.WithheldReason
 import ed.unicoach.coaching.costs.canonical.FigureStatusCopy
+import ed.unicoach.db.dao.RawSql
 import ed.unicoach.db.models.AbsenceStatus
 import ed.unicoach.db.models.CollegeId
 import ed.unicoach.db.models.CollegeLevel
@@ -325,14 +326,7 @@ class FamilyMoneyPlanChatToolTest {
     instLevel: Int,
     offersHousing: Boolean? = null,
   ) {
-    val ipedsUnitId =
-      sqlSession.prepareStatement("SELECT ipeds_unit_id FROM colleges WHERE id = ?").use { stmt ->
-        stmt.setObject(1, collegeId.value)
-        stmt.executeQuery().use { rs ->
-          rs.next()
-          rs.getInt(1)
-        }
-      }
+    val ipedsUnitId = RawSql.single(sqlSession, "SELECT ipeds_unit_id FROM colleges WHERE id = ?", collegeId.value) { it.getInt(1) }
     CoachingTestDb.seedIpeds(ipedsUnitId, offersHousing = offersHousing, instLevel = instLevel)
   }
 

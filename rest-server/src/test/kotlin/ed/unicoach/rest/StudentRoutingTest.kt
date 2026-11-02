@@ -3,6 +3,7 @@ package ed.unicoach.rest
 import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
 import ed.unicoach.common.config.AppConfig
 import ed.unicoach.db.DatabaseConfig
+import ed.unicoach.db.dao.RawSql
 import ed.unicoach.rest.models.CreateStudentRequest
 import ed.unicoach.rest.models.RegisterRequest
 import ed.unicoach.rest.models.UpdateStudentRequest
@@ -69,21 +70,6 @@ class StudentRoutingTest {
   private fun uniqueEmail(): String = "student${java.util.UUID.randomUUID()}@company.com"
 
   /**
-   * Marks a registered user verified by direct SQL on the test DB (mirrors the
-   * fuzz harness). Registration leaves the user unverified, so the email-
-   * verification gate would 403 every gated student route until this runs.
-   */
-  private fun markEmailVerified(email: String) {
-    dbConnection
-      .prepareStatement(
-        "UPDATE users SET version = version + 1, email_verified_at = NOW() WHERE email = ? AND email_verified_at IS NULL",
-      ).use { stmt ->
-        stmt.setString(1, email)
-        stmt.executeUpdate()
-      }
-  }
-
-  /**
    * Registers a fresh user, marks its email verified (so it passes the
    * verification gate), and returns the `name=value` session cookie pair.
    */
@@ -96,7 +82,7 @@ class StudentRoutingTest {
         setBody(mapper.writeValueAsString(req))
       }
     assertEquals(HttpStatusCode.Created, response.status)
-    markEmailVerified(email)
+    markEmailVerified(dbConnection, email)
     return response.headers[HttpHeaders.SetCookie]!!
       .split(";")
       .first()
@@ -104,15 +90,12 @@ class StudentRoutingTest {
   }
 
   /** Counts `students` rows carrying a given date of birth. Zero is the assertion a refusal earns. */
-  private fun studentRowCount(dateOfBirthIso: String): Int {
-    dbConnection.prepareStatement("SELECT COUNT(*) FROM students WHERE date_of_birth = ?").use { stmt ->
-      stmt.setObject(1, java.time.LocalDate.parse(dateOfBirthIso))
-      stmt.executeQuery().use { rs ->
-        rs.next()
-        return rs.getInt(1)
-      }
-    }
-  }
+  private fun studentRowCount(dateOfBirthIso: String): Int =
+    RawSql.count(
+      dbConnection,
+      "SELECT COUNT(*) FROM students WHERE date_of_birth = ?",
+      java.time.LocalDate.parse(dateOfBirthIso),
+    )
 
   // --- POST /students ---
 

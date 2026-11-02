@@ -5,6 +5,7 @@ import ed.unicoach.coaching.SharingPermissionService
 import ed.unicoach.coaching.StudentScopedChatTool
 import ed.unicoach.coaching.report.ReportTestDb.SHARE_URL_BASE
 import ed.unicoach.coaching.report.ReportTestDb.serviceWith
+import ed.unicoach.db.dao.RawSql
 import ed.unicoach.db.models.AnswerStatus
 import ed.unicoach.db.models.IntendedSubjectAnswer
 import ed.unicoach.db.models.IntendedSubjectName
@@ -262,15 +263,11 @@ class CostReportChatToolsTest {
   private fun offersOf(result: JsonObject): JsonObject = result.getValue(StopCostReportOffersChatTool.RESULT_KEY).jsonObject
 
   private fun optOutRows(studentId: StudentId): Int =
-    ed.unicoach.coaching.CoachingTestDb.connection
-      .prepareStatement("SELECT COUNT(*) FROM share_events WHERE student_id = ? AND kind = 'opted_out'")
-      .use { stmt ->
-        stmt.setObject(1, studentId.value)
-        stmt.executeQuery().use { rs ->
-          rs.next()
-          rs.getInt(1)
-        }
-      }
+    RawSql.count(
+      ed.unicoach.coaching.CoachingTestDb.connection,
+      "SELECT COUNT(*) FROM share_events WHERE student_id = ? AND kind = 'opted_out'",
+      studentId.value,
+    )
 
   @Test
   fun `the stop definition reserves the tool for a hard never, not an ordinary no`() {

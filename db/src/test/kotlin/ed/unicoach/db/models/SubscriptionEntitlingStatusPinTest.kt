@@ -1,6 +1,7 @@
 package ed.unicoach.db.models
 
 import ed.unicoach.db.DatabaseConfig
+import ed.unicoach.db.dao.RawSql
 import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.Test
@@ -54,17 +55,19 @@ class SubscriptionEntitlingStatusPinTest {
 
   /** The predicate of the gate's partial index, as the database reports it; null when no such index is live. */
   private fun livePredicate(): String? =
-    connection
-      .prepareStatement(
-        """
-        SELECT pg_get_expr(i.indpred, i.indrelid) AS predicate
+    // A scalar subquery always answers one row: NULL for no such index (or a
+    // non-partial one), and Postgres itself refuses more than one match.
+    RawSql.single(
+      connection,
+      """
+      SELECT (
+        SELECT pg_get_expr(i.indpred, i.indrelid)
         FROM pg_index i
         JOIN pg_class c ON c.oid = i.indexrelid
         WHERE c.relname = 'subscriptions_user_current_idx'
-        """.trimIndent(),
-      ).use { stmt ->
-        stmt.executeQuery().use { rs -> if (rs.next()) rs.getString("predicate") else null }
-      }
+      ) AS predicate
+      """.trimIndent(),
+    ) { it.getString("predicate") }
 
   @Test
   fun `the index this test pins is live, and is partial`() {

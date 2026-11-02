@@ -19,6 +19,7 @@ import ed.unicoach.db.dao.CodebookReferenceFixture
 import ed.unicoach.db.dao.CommitmentsDao
 import ed.unicoach.db.dao.ConvosDao
 import ed.unicoach.db.dao.FitSuggestionsDao
+import ed.unicoach.db.dao.RawSql
 import ed.unicoach.db.dao.SqlSession
 import ed.unicoach.db.dao.StudentRowFixture
 import ed.unicoach.db.models.ArchiveScope
@@ -342,11 +343,12 @@ class CoachingServiceTest {
   ): StudentId {
     val userId = UUID.randomUUID()
     val studentId = UUID.randomUUID()
-    connection.createStatement().use { stmt ->
-      stmt.execute(
-        "INSERT INTO users (id, email, name, password_hash) VALUES ('$userId', 'svc-$userId@test.com', 'Svc User', 'ahash')",
-      )
-    }
+    RawSql.execute(
+      connection,
+      "INSERT INTO users (id, email, name, password_hash) VALUES (?, ?, 'Svc User', 'ahash')",
+      userId,
+      "svc-$userId@test.com",
+    )
     // The graduation date is parameterised (RFC 186) so a test can place the
     // student in a grade; the default is the year-only 2028 every existing case
     // was written against, which is also the shape signup records most often.
@@ -590,15 +592,7 @@ class CoachingServiceTest {
   private fun countRows(
     table: String,
     convoId: ConvoId,
-  ): Int {
-    connection.prepareStatement("SELECT COUNT(*) FROM $table WHERE convo_id = ?").use { stmt ->
-      stmt.setObject(1, convoId.value)
-      stmt.executeQuery().use { rs ->
-        rs.next()
-        return rs.getInt(1)
-      }
-    }
-  }
+  ): Int = RawSql.count(connection, "SELECT COUNT(*) FROM $table WHERE convo_id = ?", convoId.value)
 
   /**
    * Count of `llm_responses` rows for a convo's requests. Since RFC 106 the
@@ -606,49 +600,23 @@ class CoachingServiceTest {
    * `convo_requests.llm_request_id`, so a per-convo response count is this join,
    * not a `convo_responses.convo_id` filter.
    */
-  private fun countResponses(convoId: ConvoId): Int {
-    connection
-      .prepareStatement(
-        "SELECT COUNT(*) FROM llm_responses resp " +
-          "JOIN convo_requests r ON r.llm_request_id = resp.request_id WHERE r.convo_id = ?",
-      ).use { stmt ->
-        stmt.setObject(1, convoId.value)
-        stmt.executeQuery().use { rs ->
-          rs.next()
-          return rs.getInt(1)
-        }
-      }
-  }
+  private fun countResponses(convoId: ConvoId): Int =
+    RawSql.count(
+      connection,
+      "SELECT COUNT(*) FROM llm_responses resp " +
+        "JOIN convo_requests r ON r.llm_request_id = resp.request_id WHERE r.convo_id = ?",
+      convoId.value,
+    )
 
-  private fun countConvos(convoId: ConvoId): Int {
-    connection.prepareStatement("SELECT COUNT(*) FROM convos WHERE id = ?").use { stmt ->
-      stmt.setObject(1, convoId.value)
-      stmt.executeQuery().use { rs ->
-        rs.next()
-        return rs.getInt(1)
-      }
-    }
-  }
+  private fun countConvos(convoId: ConvoId): Int = RawSql.count(connection, "SELECT COUNT(*) FROM convos WHERE id = ?", convoId.value)
 
   /** Request `kind` strings for a convo, in id order. */
-  private fun requestKinds(convoId: ConvoId): List<String> {
-    val out = mutableListOf<String>()
-    connection.prepareStatement("SELECT kind FROM convo_requests WHERE convo_id = ? ORDER BY id").use { stmt ->
-      stmt.setObject(1, convoId.value)
-      stmt.executeQuery().use { rs -> while (rs.next()) out.add(rs.getString("kind")) }
-    }
-    return out
-  }
+  private fun requestKinds(convoId: ConvoId): List<String> =
+    RawSql.list(connection, "SELECT kind FROM convo_requests WHERE convo_id = ? ORDER BY id", convoId.value) { it.getString("kind") }
 
   /** Request `turn_id` values for a convo, in id order. */
-  private fun turnIds(convoId: ConvoId): List<Long> {
-    val out = mutableListOf<Long>()
-    connection.prepareStatement("SELECT turn_id FROM convo_requests WHERE convo_id = ? ORDER BY id").use { stmt ->
-      stmt.setObject(1, convoId.value)
-      stmt.executeQuery().use { rs -> while (rs.next()) out.add(rs.getLong("turn_id")) }
-    }
-    return out
-  }
+  private fun turnIds(convoId: ConvoId): List<Long> =
+    RawSql.list(connection, "SELECT turn_id FROM convo_requests WHERE convo_id = ? ORDER BY id", convoId.value) { it.getLong("turn_id") }
 
   /**
    * Response (stop_reason, output_tokens) pairs for a convo, in id order. Since
@@ -658,23 +626,16 @@ class CoachingServiceTest {
    * `outcome` (e.g. `transient_failure`) — the failing-turn rows the callers here
    * only ever assert on completed shapes.
    */
-  private fun responseRows(convoId: ConvoId): List<Pair<String, Int?>> {
-    val out = mutableListOf<Pair<String, Int?>>()
-    connection
-      .prepareStatement(
-        "SELECT COALESCE(resp.stop_reason, resp.outcome) AS sr, resp.output_tokens AS ot FROM llm_responses resp " +
-          "JOIN convo_requests r ON r.llm_request_id = resp.request_id WHERE r.convo_id = ? ORDER BY resp.id",
-      ).use { stmt ->
-        stmt.setObject(1, convoId.value)
-        stmt.executeQuery().use { rs ->
-          while (rs.next()) {
-            val ot = rs.getInt("ot").takeUnless { rs.wasNull() }
-            out.add(rs.getString("sr") to ot)
-          }
-        }
-      }
-    return out
-  }
+  private fun responseRows(convoId: ConvoId): List<Pair<String, Int?>> =
+    RawSql.list(
+      connection,
+      "SELECT COALESCE(resp.stop_reason, resp.outcome) AS sr, resp.output_tokens AS ot FROM llm_responses resp " +
+        "JOIN convo_requests r ON r.llm_request_id = resp.request_id WHERE r.convo_id = ? ORDER BY resp.id",
+      convoId.value,
+    ) { rs ->
+      val ot = rs.getInt("ot").takeUnless { rs.wasNull() }
+      rs.getString("sr") to ot
+    }
 
   /** Total `llm_requests` rows in the DB (single-convo Case B tests truncate between runs). */
   private fun countAllLlmRequests(): Int = countAll("llm_requests")
@@ -682,46 +643,21 @@ class CoachingServiceTest {
   /** Total `llm_responses` rows in the DB. */
   private fun countAllLlmResponses(): Int = countAll("llm_responses")
 
-  private fun countAll(table: String): Int {
-    connection.prepareStatement("SELECT COUNT(*) FROM $table").use { stmt ->
-      stmt.executeQuery().use { rs ->
-        rs.next()
-        return rs.getInt(1)
-      }
-    }
-  }
+  private fun countAll(table: String): Int = RawSql.count(connection, "SELECT COUNT(*) FROM $table")
 
   /** Every `llm_responses.outcome` in id order. */
-  private fun allResponseOutcomes(): List<String> {
-    val out = mutableListOf<String>()
-    connection.prepareStatement("SELECT outcome FROM llm_responses ORDER BY id").use { stmt ->
-      stmt.executeQuery().use { rs -> while (rs.next()) out.add(rs.getString("outcome")) }
-    }
-    return out
-  }
+  private fun allResponseOutcomes(): List<String> =
+    RawSql.list(connection, "SELECT outcome FROM llm_responses ORDER BY id") { it.getString("outcome") }
 
-  private fun countRaw(): Int {
-    connection.prepareStatement("SELECT COUNT(*) FROM llm_responses_raw").use { stmt ->
-      stmt.executeQuery().use { rs ->
-        rs.next()
-        return rs.getInt(1)
-      }
-    }
-  }
+  private fun countRaw(): Int = RawSql.count(connection, "SELECT COUNT(*) FROM llm_responses_raw")
 
   /** Raw rows attached to failed responses; isolates failing-turn raws from the seed's completed raw. */
-  private fun countErrorRaw(): Int {
-    connection
-      .prepareStatement(
-        "SELECT COUNT(*) FROM llm_responses_raw raw " +
-          "JOIN llm_responses r ON r.id = raw.response_id WHERE r.outcome <> 'completed'",
-      ).use { stmt ->
-        stmt.executeQuery().use { rs ->
-          rs.next()
-          return rs.getInt(1)
-        }
-      }
-  }
+  private fun countErrorRaw(): Int =
+    RawSql.count(
+      connection,
+      "SELECT COUNT(*) FROM llm_responses_raw raw " +
+        "JOIN llm_responses r ON r.id = raw.response_id WHERE r.outcome <> 'completed'",
+    )
 
   // ===========================================================================
   // Turn happy path
@@ -760,16 +696,13 @@ class CoachingServiceTest {
    * The id of the coach prompt row the runtime will actually resolve — the
    * version service.conf pins (RFC 124 moved it to v2), not a hard-coded one.
    */
-  private fun coachPromptId(): UUID {
-    connection
-      .prepareStatement("SELECT id FROM system_prompts WHERE name='${config.systemPromptName}' AND version='${config.systemPromptVersion}'")
-      .use { stmt ->
-        stmt.executeQuery().use { rs ->
-          rs.next()
-          return UUID.fromString(rs.getString("id"))
-        }
-      }
-  }
+  private fun coachPromptId(): UUID =
+    RawSql.single(
+      connection,
+      "SELECT id FROM system_prompts WHERE name = ? AND version = ?",
+      config.systemPromptName,
+      config.systemPromptVersion,
+    ) { UUID.fromString(it.getString("id")) }
 
   @Test
   fun `startConvo derives the name and uses explicit name verbatim`() {

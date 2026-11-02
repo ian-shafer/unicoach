@@ -1,5 +1,6 @@
 package ed.unicoach.rest
 
+import ed.unicoach.db.dao.RawSql
 import java.sql.Connection
 
 /**
@@ -23,16 +24,11 @@ object EnqueuedVerificationEmail {
     connection: Connection,
     recipient: String,
   ): Int =
-    connection
-      .prepareStatement(
-        "SELECT COUNT(*) FROM jobs WHERE job_type = 'SEND_EMAIL' AND payload->>'to' = ?",
-      ).use { stmt ->
-        stmt.setString(1, recipient)
-        stmt.executeQuery().use { rs ->
-          rs.next()
-          rs.getInt(1)
-        }
-      }
+    RawSql.count(
+      connection,
+      "SELECT COUNT(*) FROM jobs WHERE job_type = 'SEND_EMAIL' AND payload->>'to' = ?",
+      recipient,
+    )
 
   /**
    * The raw verification token carried by the most-recent `SEND_EMAIL` job
@@ -43,9 +39,12 @@ object EnqueuedVerificationEmail {
   fun verifyTokenFor(
     connection: Connection,
     recipient: String,
-  ): String =
-    connection
-      .prepareStatement(
+  ): String {
+    // "No job" and "a job without a token" fail with different messages: the
+    // read refuses a NULL token, so a null from singleOrNull can only mean no job.
+    val token =
+      RawSql.singleOrNull(
+        connection,
         """
         SELECT payload->'context'->>'verifyToken' AS verify_token
         FROM jobs
@@ -53,12 +52,8 @@ object EnqueuedVerificationEmail {
         ORDER BY created_at DESC
         LIMIT 1
         """.trimIndent(),
-      ).use { stmt ->
-        stmt.setString(1, recipient)
-        stmt.executeQuery().use { rs ->
-          require(rs.next()) { "No SEND_EMAIL job was enqueued to [$recipient]" }
-          rs.getString("verify_token")
-            ?: error("SEND_EMAIL job to [$recipient] carries no context.verifyToken")
-        }
-      }
+        recipient,
+      ) { it.getString("verify_token") ?: error("SEND_EMAIL job to [$recipient] carries no context.verifyToken") }
+    return requireNotNull(token) { "No SEND_EMAIL job was enqueued to [$recipient]" }
+  }
 }

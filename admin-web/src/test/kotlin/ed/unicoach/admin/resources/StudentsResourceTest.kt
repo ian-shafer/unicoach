@@ -1,6 +1,7 @@
 package ed.unicoach.admin.resources
 
 import ed.unicoach.admin.AdminTestSupport
+import ed.unicoach.db.dao.RawSql
 import io.ktor.client.request.forms.submitForm
 import io.ktor.client.request.get
 import io.ktor.client.request.header
@@ -38,15 +39,8 @@ class StudentsResourceTest {
   private fun findSoleJob(): EnqueuedJob? =
     runBlocking {
       AdminTestSupport.database.withConnection { session ->
-        session.prepareStatement("SELECT job_type, payload FROM jobs").use { stmt ->
-          stmt.executeQuery().use { rs ->
-            if (!rs.next()) {
-              return@withConnection null
-            }
-            val job = EnqueuedJob(rs.getString("job_type"), rs.getString("payload"))
-            assertTrue(!rs.next(), "Expected exactly one enqueued job")
-            job
-          }
+        RawSql.singleOrNull(session, "SELECT job_type, payload FROM jobs") { rs ->
+          EnqueuedJob(rs.getString("job_type"), rs.getString("payload"))
         }
       }
     }

@@ -4,6 +4,7 @@ import ed.unicoach.cron.dao.PeriodicFindResult
 import ed.unicoach.cron.dao.PeriodicJobsDao
 import ed.unicoach.db.Database
 import ed.unicoach.db.DatabaseConfig
+import ed.unicoach.db.dao.RawSql
 import ed.unicoach.db.dao.SqlSession
 import ed.unicoach.queue.NewJob
 import ed.unicoach.queue.dao.JobInsertResult
@@ -69,37 +70,26 @@ class PeriodicSchedulerTest {
     nextRunAt: Instant,
     enabled: Boolean = true,
   ) {
-    connection
-      .prepareStatement(
-        """
-        INSERT INTO periodic_jobs (name, job_type, payload, schedule, timezone, next_run_at, enabled)
-        VALUES (?, ?, '{}'::jsonb, ?, 'UTC', ?, ?)
-        """.trimIndent(),
-      ).use { stmt ->
-        stmt.setString(1, name)
-        stmt.setString(2, jobType)
-        stmt.setString(3, schedule)
-        stmt.setTimestamp(4, Timestamp.from(nextRunAt))
-        stmt.setBoolean(5, enabled)
-        stmt.executeUpdate()
-      }
+    RawSql.execute(
+      connection,
+      """
+      INSERT INTO periodic_jobs (name, job_type, payload, schedule, timezone, next_run_at, enabled)
+      VALUES (?, ?, '{}'::jsonb, ?, 'UTC', ?, ?)
+      """.trimIndent(),
+      name,
+      jobType,
+      schedule,
+      Timestamp.from(nextRunAt),
+      enabled,
+    )
   }
 
   private fun jobsCount(jobType: String? = null): Int =
-    connection
-      .prepareStatement(
-        if (jobType == null) {
-          "SELECT COUNT(*) FROM jobs"
-        } else {
-          "SELECT COUNT(*) FROM jobs WHERE job_type = ?"
-        },
-      ).use { stmt ->
-        if (jobType != null) stmt.setString(1, jobType)
-        stmt.executeQuery().use { rs ->
-          rs.next()
-          rs.getInt(1)
-        }
-      }
+    if (jobType == null) {
+      RawSql.count(connection, "SELECT COUNT(*) FROM jobs")
+    } else {
+      RawSql.count(connection, "SELECT COUNT(*) FROM jobs WHERE job_type = ?", jobType)
+    }
 
   private fun nextRunAtOf(name: String): Instant =
     (periodicJobsDao.findByName(session, PeriodicJobName(name)) as PeriodicFindResult.Success).job.nextRunAt
@@ -113,15 +103,9 @@ class PeriodicSchedulerTest {
    * fail to reconstruct. `null` when the row is absent.
    */
   private fun rawTimestamps(name: String): Pair<Instant, Instant?>? =
-    connection
-      .prepareStatement("SELECT next_run_at, last_run_at FROM periodic_jobs WHERE name = ?")
-      .use { stmt ->
-        stmt.setString(1, name)
-        stmt.executeQuery().use { rs ->
-          if (!rs.next()) return null
-          rs.getTimestamp("next_run_at").toInstant() to rs.getTimestamp("last_run_at")?.toInstant()
-        }
-      }
+    RawSql.singleOrNull(connection, "SELECT next_run_at, last_run_at FROM periodic_jobs WHERE name = ?", name) { rs ->
+      rs.getTimestamp("next_run_at").toInstant() to rs.getTimestamp("last_run_at")?.toInstant()
+    }
 
   private fun scheduler(dao: JobsDao = jobsDao) = PeriodicScheduler(database, dao, periodicJobsDao)
 

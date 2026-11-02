@@ -63,9 +63,7 @@ internal object SearchIndexFixture {
    * (correctly) refuses.
    */
   fun truncate(connection: Connection) {
-    connection.createStatement().use { stmt ->
-      stmt.execute("TRUNCATE TABLE ${TABLES.joinToString(", ")} CASCADE")
-    }
+    RawSql.execute(connection, "TRUNCATE TABLE ${TABLES.joinToString(", ")} CASCADE")
   }
 
   /**

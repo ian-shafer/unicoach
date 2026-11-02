@@ -7,6 +7,7 @@ import ed.unicoach.coaching.report.ReportTestDb.serviceWith
 import ed.unicoach.coaching.report.ReportTestDb.tokenOf
 import ed.unicoach.db.dao.CommitmentsDao
 import ed.unicoach.db.dao.CostReportSharesDao
+import ed.unicoach.db.dao.RawSql
 import ed.unicoach.db.dao.ShareEventsDao
 import ed.unicoach.db.models.Commitment
 import ed.unicoach.db.models.CommitmentDisclosure
@@ -67,14 +68,7 @@ class CostReportShareServiceTest {
   private fun countWhere(
     sql: String,
     studentId: StudentId,
-  ): Int =
-    CoachingTestDb.connection.prepareStatement(sql).use { stmt ->
-      stmt.setObject(1, studentId.value)
-      stmt.executeQuery().use { rs ->
-        rs.next()
-        rs.getInt(1)
-      }
-    }
+  ): Int = RawSql.count(CoachingTestDb.connection, sql, studentId.value)
 
   @Test
   fun `minting returns a link whose raw token is nowhere in the row it created`() =

@@ -3,6 +3,7 @@ package ed.unicoach.coaching
 import ed.unicoach.db.Database
 import ed.unicoach.db.DatabaseConfig
 import ed.unicoach.db.dao.IntendedSubjectsDao
+import ed.unicoach.db.dao.RawSql
 import ed.unicoach.db.dao.SqlSession
 import ed.unicoach.db.dao.StudentRowFixture
 import ed.unicoach.db.models.AnswerStatus
@@ -128,16 +129,13 @@ class IntendedSubjectsChatToolTest {
   private fun createStudent(): StudentId {
     val userId = UUID.randomUUID()
     val studentId = UUID.randomUUID()
-    connection.createStatement().use { stmt ->
-      stmt.execute(
-        "INSERT INTO users (id, email, name, password_hash) VALUES ('$userId', 'ist-$userId@test.com', 'IST User', 'ahash')",
-      )
-      stmt.execute(
-        "INSERT INTO students (id, user_id, expected_high_school_graduation_on, " +
-          "expected_high_school_graduation_precision, date_of_birth) " +
-          "VALUES ('$studentId', '$userId', DATE '2028-01-01', 'year', DATE '${StudentRowFixture.DEFAULT_DATE_OF_BIRTH}')",
-      )
-    }
+    RawSql.execute(
+      connection,
+      "INSERT INTO users (id, email, name, password_hash) VALUES (?, ?, 'IST User', 'ahash')",
+      userId,
+      "ist-$userId@test.com",
+    )
+    StudentRowFixture.insert(connection, studentId, userId)
     return StudentId(studentId)
   }
 

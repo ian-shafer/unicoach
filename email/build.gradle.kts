@@ -21,6 +21,7 @@ dependencies {
   testFixturesImplementation(libs.kotlinx.coroutines.core)
 
   testImplementation(libs.kotlin.test.junit5)
+  testImplementation(testFixtures(project(":db")))
   testImplementation(libs.kotlinx.coroutines.test)
   testImplementation(libs.postgresql)
   testImplementation(libs.hikaricp)

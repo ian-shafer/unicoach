@@ -6,6 +6,7 @@ import ed.unicoach.common.config.AppConfig
 import ed.unicoach.db.DatabaseConfig
 import ed.unicoach.db.dao.CodebookReferenceFixture
 import ed.unicoach.db.dao.CollegesDao
+import ed.unicoach.db.dao.RawSql
 import ed.unicoach.db.dao.SqlSession
 import ed.unicoach.rest.models.RegisterRequest
 import io.ktor.client.HttpClient
@@ -74,16 +75,6 @@ class CollegeSearchRoutingTest {
 
   private fun uniqueEmail(): String = "csr${UUID.randomUUID()}@company.com"
 
-  private fun markEmailVerified(email: String) {
-    dbConnection
-      .prepareStatement(
-        "UPDATE users SET version = version + 1, email_verified_at = NOW() WHERE email = ? AND email_verified_at IS NULL",
-      ).use { stmt ->
-        stmt.setString(1, email)
-        stmt.executeUpdate()
-      }
-  }
-
   private suspend fun registerAndGetCookie(): String {
     val email = uniqueEmail()
     val req = RegisterRequest(email, "Password123!", "College Search User")
@@ -93,7 +84,7 @@ class CollegeSearchRoutingTest {
         setBody(mapper.writeValueAsString(req))
       }
     assertEquals(HttpStatusCode.Created, response.status)
-    markEmailVerified(email)
+    markEmailVerified(dbConnection, email)
     return response.headers[HttpHeaders.SetCookie]!!
       .split(";")
       .first()
@@ -115,18 +106,16 @@ class CollegeSearchRoutingTest {
     val uniqueIpedsUnitId = (id.leastSignificantBits and 0x3FFFFFFF).toInt()
     seedCodebookReference()
     withTransaction {
-      dbConnection
-        .prepareStatement(
-          """
-          INSERT INTO colleges (id, ipeds_unit_id, name, city, state, control, undergrad_enrollment_headcount)
-          VALUES (?, ?, ?, 'Townsville', 'CA', 1, 5000)
-          """.trimIndent(),
-        ).use { stmt ->
-          stmt.setObject(1, id)
-          stmt.setInt(2, uniqueIpedsUnitId)
-          stmt.setString(3, name)
-          stmt.executeUpdate()
-        }
+      RawSql.execute(
+        dbConnection,
+        """
+        INSERT INTO colleges (id, ipeds_unit_id, name, city, state, control, undergrad_enrollment_headcount)
+        VALUES (?, ?, ?, 'Townsville', 'CA', 1, 5000)
+        """.trimIndent(),
+        id,
+        uniqueIpedsUnitId,
+        name,
+      )
       rebuildNameWords()
       rebuildSearchIndex()
     }

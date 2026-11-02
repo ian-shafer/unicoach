@@ -1,6 +1,7 @@
 package ed.unicoach.rest
 
 import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
+import ed.unicoach.db.dao.RawSql
 import ed.unicoach.rest.models.RegisterRequest
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.cio.CIO
@@ -535,24 +536,19 @@ class AuthRoutingTest {
       ed.unicoach.db.DatabaseConfig
         .from(config)
         .getOrThrow()
-    DriverManager.getConnection(dbConfig.jdbcUrl, dbConfig.user, dbConfig.password ?: "").use { connection ->
-      connection
-        .prepareStatement(
-          """
-          SELECT extract(epoch FROM (s.expires_at - NOW()))::bigint
-          FROM sessions s
-          JOIN users u ON u.id = s.user_id
-          WHERE u.email = ? AND s.is_revoked = false
-          ORDER BY s.created_at DESC
-          LIMIT 1
-          """.trimIndent(),
-        ).use { statement ->
-          statement.setString(1, email)
-          statement.executeQuery().use { rows ->
-            check(rows.next()) { "the login left no live session row for [$email]" }
-            return rows.getLong(1)
-          }
-        }
+    return DriverManager.getConnection(dbConfig.jdbcUrl, dbConfig.user, dbConfig.password ?: "").use { connection ->
+      RawSql.single(
+        connection,
+        """
+        SELECT extract(epoch FROM (s.expires_at - NOW()))::bigint
+        FROM sessions s
+        JOIN users u ON u.id = s.user_id
+        WHERE u.email = ? AND s.is_revoked = false
+        ORDER BY s.created_at DESC
+        LIMIT 1
+        """.trimIndent(),
+        email,
+      ) { it.getLong(1) }
     }
   }
 

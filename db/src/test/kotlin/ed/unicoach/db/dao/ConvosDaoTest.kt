@@ -93,12 +93,13 @@ class ConvosDaoTest {
   private fun createStudent(): StudentId {
     val userId = UUID.randomUUID()
     val studentId = UUID.randomUUID()
-    connection.createStatement().use { stmt ->
-      stmt.execute(
-        "INSERT INTO users (id, email, name, password_hash) VALUES ('$userId', 'conv-$userId@test.com', 'Conv User', 'ahash')",
-      )
-      StudentRowFixture.insert(connection, studentId, userId)
-    }
+    RawSql.execute(
+      connection,
+      "INSERT INTO users (id, email, name, password_hash) VALUES (?, ?, 'Conv User', 'ahash')",
+      userId,
+      "conv-$userId@test.com",
+    )
+    StudentRowFixture.insert(connection, studentId, userId)
     return StudentId(studentId)
   }
 
@@ -111,14 +112,12 @@ class ConvosDaoTest {
   private fun createSystemPrompt(): SystemPromptId {
     val id = UUID.randomUUID()
     val version = "v-$id"
-    connection
-      .prepareStatement(
-        "INSERT INTO system_prompts (id, name, version, body) VALUES (?, 'coach', ?, 'be a good coach')",
-      ).use { stmt ->
-        stmt.setObject(1, id)
-        stmt.setString(2, version)
-        stmt.executeUpdate()
-      }
+    RawSql.execute(
+      connection,
+      "INSERT INTO system_prompts (id, name, version, body) VALUES (?, 'coach', ?, 'be a good coach')",
+      id,
+      version,
+    )
     return SystemPromptId(id)
   }
 
@@ -710,19 +709,17 @@ class ConvosDaoTest {
   ) {
     val promptId = createSystemPrompt()
     val llmRequestId = appendLlmRequest()
-    connection
-      .prepareStatement(
-        """
-        INSERT INTO convo_requests (convo_id, system_prompt_id, llm_request_id, turn_id, created_at)
-        VALUES (?, ?, ?, nextval('convo_turn_id_seq'), ?::timestamptz)
-        """.trimIndent(),
-      ).use { stmt ->
-        stmt.setObject(1, convoId.value)
-        stmt.setObject(2, promptId.value)
-        stmt.setLong(3, llmRequestId.value)
-        stmt.setString(4, createdAtIso)
-        stmt.executeUpdate()
-      }
+    RawSql.execute(
+      connection,
+      """
+      INSERT INTO convo_requests (convo_id, system_prompt_id, llm_request_id, turn_id, created_at)
+      VALUES (?, ?, ?, nextval('convo_turn_id_seq'), ?::timestamptz)
+      """.trimIndent(),
+      convoId.value,
+      promptId.value,
+      llmRequestId.value,
+      createdAtIso,
+    )
   }
 
   @Test
@@ -1084,11 +1081,12 @@ class ConvosDaoTest {
   /** A live supporters row on a fresh user, the author a supporter convo names. */
   private fun createSupporter(): SupporterId {
     val userId = UUID.randomUUID()
-    connection.createStatement().use { stmt ->
-      stmt.execute(
-        "INSERT INTO users (id, email, name, password_hash) VALUES ('$userId', 'sup-$userId@test.com', 'Sup User', 'ahash')",
-      )
-    }
+    RawSql.execute(
+      connection,
+      "INSERT INTO users (id, email, name, password_hash) VALUES (?, ?, 'Sup User', 'ahash')",
+      userId,
+      "sup-$userId@test.com",
+    )
     return SupportersDao.create(session, NewSupporter(UserId(userId))).getOrThrow().id
   }
 

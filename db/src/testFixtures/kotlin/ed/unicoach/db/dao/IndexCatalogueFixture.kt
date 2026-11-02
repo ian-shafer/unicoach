@@ -27,15 +27,10 @@ object IndexCatalogueFixture {
   fun isPartial(
     connection: Connection,
     indexName: String,
-  ): Boolean {
-    connection
-      .prepareStatement("SELECT indpred IS NOT NULL AS partial FROM pg_index WHERE indexrelid = ?::regclass")
-      .use { stmt ->
-        stmt.setString(1, indexName)
-        stmt.executeQuery().use { rs ->
-          check(rs.next()) { "index [$indexName] must exist" }
-          return rs.getBoolean("partial")
-        }
-      }
-  }
+  ): Boolean =
+    RawSql.single(
+      connection,
+      "SELECT indpred IS NOT NULL AS partial FROM pg_index WHERE indexrelid = ?::regclass",
+      indexName,
+    ) { it.getBoolean("partial") }
 }

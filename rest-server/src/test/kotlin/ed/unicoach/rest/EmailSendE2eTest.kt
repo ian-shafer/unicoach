@@ -11,6 +11,7 @@ import ed.unicoach.coaching.extraction.ExtractionConfig
 import ed.unicoach.common.config.AppConfig
 import ed.unicoach.db.Database
 import ed.unicoach.db.DatabaseConfig
+import ed.unicoach.db.dao.RawSql
 import ed.unicoach.email.EmailConfig
 import ed.unicoach.email.EmailSendHandler
 import ed.unicoach.email.EmailService
@@ -190,12 +191,9 @@ class EmailSendE2eTest {
   }
 
   private fun sendEmailJobId(to: String): String? =
-    connection
-      .prepareStatement("SELECT id::text FROM jobs WHERE job_type = 'SEND_EMAIL' AND payload->>'to' = ?")
-      .use { stmt ->
-        stmt.setString(1, to)
-        stmt.executeQuery().use { rs -> if (rs.next()) rs.getString(1) else null }
-      }
+    RawSql.singleOrNull(connection, "SELECT id::text FROM jobs WHERE job_type = 'SEND_EMAIL' AND payload->>'to' = ?", to) { rs ->
+      rs.getString(1)!!
+    }
 
   private data class SendRow(
     val status: String,
@@ -206,24 +204,13 @@ class EmailSendE2eTest {
   )
 
   private fun emailSendRow(to: String): SendRow? =
-    connection
-      .prepareStatement(
-        "SELECT status, provider, provider_message_id, error_message, body FROM email_sends WHERE recipient_email = ?",
-      ).use { stmt ->
-        stmt.setString(1, to)
-        stmt.executeQuery().use { rs ->
-          if (rs.next()) SendRow(rs.getString(1), rs.getString(2), rs.getString(3), rs.getString(4), rs.getString(5)) else null
-        }
-      }
+    RawSql.singleOrNull(
+      connection,
+      "SELECT status, provider, provider_message_id, error_message, body FROM email_sends WHERE recipient_email = ?",
+      to,
+    ) { rs -> SendRow(rs.getString(1), rs.getString(2), rs.getString(3), rs.getString(4), rs.getString(5)) }
 
-  private fun countUsers(email: String): Int =
-    connection.prepareStatement("SELECT COUNT(*) FROM users WHERE email = ?").use { stmt ->
-      stmt.setString(1, email)
-      stmt.executeQuery().use { rs ->
-        rs.next()
-        rs.getInt(1)
-      }
-    }
+  private fun countUsers(email: String): Int = RawSql.count(connection, "SELECT COUNT(*) FROM users WHERE email = ?", email)
 
   private fun emailHandler(ses: ScriptedSesSendOperation): EmailSendHandler =
     EmailSendHandler(

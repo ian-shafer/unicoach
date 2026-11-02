@@ -3,6 +3,7 @@ package ed.unicoach.coaching.family
 import ed.unicoach.coaching.CoachingTestDb
 import ed.unicoach.coaching.StudentScopedChatTool
 import ed.unicoach.common.config.TOKEN_QUERY_PARAM
+import ed.unicoach.db.dao.RawSql
 import ed.unicoach.db.dao.ShareEventsDao
 import ed.unicoach.db.dao.StudentsDao
 import ed.unicoach.db.dao.SupporterInvitesDao
@@ -102,14 +103,7 @@ class InviteSupporterChatToolTest {
     StudentsDao.delete(CoachingTestDb.sqlSession, studentId, currentVersion = 1).getOrThrow()
   }
 
-  private fun inviteCount(): Int {
-    CoachingTestDb.connection.createStatement().use { stmt ->
-      stmt.executeQuery("SELECT COUNT(*) FROM supporter_invites").use { rs ->
-        rs.next()
-        return rs.getInt(1)
-      }
-    }
-  }
+  private fun inviteCount(): Int = RawSql.count(CoachingTestDb.connection, "SELECT COUNT(*) FROM supporter_invites")
 
   @Test
   fun `the definition carries the name and the ethos contract`() {

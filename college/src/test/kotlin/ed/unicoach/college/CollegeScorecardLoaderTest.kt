@@ -5,6 +5,7 @@ import ed.unicoach.db.dao.ConstraintViolationException
 import ed.unicoach.db.dao.DatabaseException
 import ed.unicoach.db.dao.LockAcquisitionFailureException
 import ed.unicoach.db.dao.NotFoundException
+import ed.unicoach.db.dao.RawSql
 import ed.unicoach.db.dao.SqlSession
 import ed.unicoach.db.models.CollegeId
 import kotlinx.coroutines.runBlocking
@@ -148,27 +149,13 @@ class CollegeScorecardLoaderTest : CollegeScorecardTestBase() {
     }
 
   /** Every college's current `version`, for the all-version-1 idempotency assertion. */
-  private fun listVersions(session: SqlSession): List<Int> =
-    session.prepareStatement("SELECT version FROM colleges").use { stmt ->
-      stmt.executeQuery().use { rs ->
-        val out = mutableListOf<Int>()
-        while (rs.next()) out.add(rs.getInt(1))
-        out
-      }
-    }
+  private fun listVersions(session: SqlSession): List<Int> = RawSql.list(session, "SELECT version FROM colleges") { rs -> rs.getInt(1) }
 
   /** Count of `colleges_versions` rows for one college id. */
   private fun countHistory(
     session: SqlSession,
     id: CollegeId,
-  ): Int =
-    session.prepareStatement("SELECT count(*) FROM colleges_versions WHERE id = ?").use { stmt ->
-      stmt.setObject(1, id.value)
-      stmt.executeQuery().use { rs ->
-        rs.next()
-        rs.getInt(1)
-      }
-    }
+  ): Int = RawSql.count(session, "SELECT count(*) FROM colleges_versions WHERE id = ?", id.value)
 
   @Test
   fun `a row missing required fields is skipped, others load`() =

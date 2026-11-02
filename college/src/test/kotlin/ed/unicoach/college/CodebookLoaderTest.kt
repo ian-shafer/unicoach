@@ -5,6 +5,7 @@ import ed.unicoach.db.dao.CodebookTable
 import ed.unicoach.db.dao.CodebooksDao
 import ed.unicoach.db.dao.CollegeIpedsDao
 import ed.unicoach.db.dao.CollegesDao
+import ed.unicoach.db.dao.RawSql
 import ed.unicoach.db.models.NewCollege
 import ed.unicoach.db.models.NewCollegeIpeds
 import kotlinx.coroutines.runBlocking
@@ -677,6 +678,6 @@ class CodebookLoaderTest : CollegeScorecardTestBase() {
     from: String,
     to: String,
   ) = withSession { session ->
-    session.prepareStatement("ALTER TABLE $from RENAME TO $to").use { it.execute() }
+    RawSql.execute(session, "ALTER TABLE $from RENAME TO $to")
   }
 }

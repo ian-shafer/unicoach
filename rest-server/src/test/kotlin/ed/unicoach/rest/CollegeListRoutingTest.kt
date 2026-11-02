@@ -5,6 +5,7 @@ import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
 import ed.unicoach.common.config.AppConfig
 import ed.unicoach.db.DatabaseConfig
 import ed.unicoach.db.dao.CodebookReferenceFixture
+import ed.unicoach.db.dao.RawSql
 import ed.unicoach.rest.models.CreateCollegeListEntryRequest
 import ed.unicoach.rest.models.RegisterRequest
 import ed.unicoach.rest.models.UpdateCollegeListEntryRequest
@@ -73,16 +74,6 @@ class CollegeListRoutingTest {
 
   private fun uniqueEmail(): String = "cle${UUID.randomUUID()}@company.com"
 
-  private fun markEmailVerified(email: String) {
-    dbConnection
-      .prepareStatement(
-        "UPDATE users SET version = version + 1, email_verified_at = NOW() WHERE email = ? AND email_verified_at IS NULL",
-      ).use { stmt ->
-        stmt.setString(1, email)
-        stmt.executeUpdate()
-      }
-  }
-
   private suspend fun registerAndGetCookie(): String {
     val email = uniqueEmail()
     val req = RegisterRequest(email, "Password123!", "College List User")
@@ -92,7 +83,7 @@ class CollegeListRoutingTest {
         setBody(mapper.writeValueAsString(req))
       }
     assertEquals(HttpStatusCode.Created, response.status)
-    markEmailVerified(email)
+    markEmailVerified(dbConnection, email)
     return response.headers[HttpHeaders.SetCookie]!!
       .split(";")
       .first()
@@ -124,17 +115,15 @@ class CollegeListRoutingTest {
     // across the whole suite without a shared counter.
     val uniqueIpedsUnitId = (id.leastSignificantBits and 0x3FFFFFFF).toInt()
     seedCodebookReference()
-    dbConnection
-      .prepareStatement(
-        """
-        INSERT INTO colleges (id, ipeds_unit_id, name, city, state, control)
-        VALUES (?, ?, 'Test College', 'Townsville', 'CA', 1)
-        """.trimIndent(),
-      ).use { stmt ->
-        stmt.setObject(1, id)
-        stmt.setInt(2, uniqueIpedsUnitId)
-        stmt.executeUpdate()
-      }
+    RawSql.execute(
+      dbConnection,
+      """
+      INSERT INTO colleges (id, ipeds_unit_id, name, city, state, control)
+      VALUES (?, ?, 'Test College', 'Townsville', 'CA', 1)
+      """.trimIndent(),
+      id,
+      uniqueIpedsUnitId,
+    )
     return id
   }
 

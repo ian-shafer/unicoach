@@ -5,6 +5,7 @@ import ed.unicoach.common.models.EmailAddress
 import ed.unicoach.common.models.ValidationResult
 import ed.unicoach.db.Database
 import ed.unicoach.db.DatabaseConfig
+import ed.unicoach.db.dao.RawSql
 import ed.unicoach.error.PermanentError
 import ed.unicoach.error.TransientError
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -74,32 +75,22 @@ class EmailServiceTest {
           ),
       ).getOrThrow()
 
-  private fun countRows(): Int {
+  private fun countRows(): Int =
     DriverManager.getConnection(jdbcUrl, dbUser, dbPassword ?: "").use { c ->
-      c.prepareStatement("SELECT COUNT(*) FROM email_sends").use { stmt ->
-        stmt.executeQuery().use { rs ->
-          rs.next()
-          return rs.getInt(1)
-        }
-      }
+      RawSql.count(c, "SELECT COUNT(*) FROM email_sends")
     }
-  }
 
-  private fun firstRow(): Map<String, String?> {
+  private fun firstRow(): Map<String, String?> =
     DriverManager.getConnection(jdbcUrl, dbUser, dbPassword ?: "").use { c ->
-      c.prepareStatement("SELECT * FROM email_sends").use { stmt ->
-        stmt.executeQuery().use { rs ->
-          assertTrue(rs.next())
-          return mapOf(
-            "status" to rs.getString("status"),
-            "error_message" to rs.getString("error_message"),
-            "provider_message_id" to rs.getString("provider_message_id"),
-            "provider" to rs.getString("provider"),
-          )
-        }
+      RawSql.single(c, "SELECT * FROM email_sends") { rs ->
+        mapOf(
+          "status" to rs.getString("status"),
+          "error_message" to rs.getString("error_message"),
+          "provider_message_id" to rs.getString("provider_message_id"),
+          "provider" to rs.getString("provider"),
+        )
       }
     }
-  }
 
   @Test
   fun `provider Sent writes exactly one SENT row and returns success`() =

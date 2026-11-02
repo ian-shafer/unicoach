@@ -321,7 +321,7 @@ object ErasureFixture {
         Instant.now().minus(Duration.ofDays(1)),
         Instant.now().plus(Duration.ofDays(29)),
       ).getOrThrow()
-    execute(
+    RawSql.execute(
       session,
       "INSERT INTO email_sends (recipient_email, sender_email, subject, body, status, provider, user_id) " +
         "VALUES (?, 'coach@unicoach.test', 'Welcome', 'Hello there', 'SENT', 'ses', ?)",
@@ -480,10 +480,10 @@ object ErasureFixture {
     status: String,
   ) {
     val jobId =
-      single(session, "INSERT INTO jobs (job_type, payload, status) VALUES (?, ?::jsonb, ?) RETURNING id", type, payload, status) {
+      RawSql.single(session, "INSERT INTO jobs (job_type, payload, status) VALUES (?, ?::jsonb, ?) RETURNING id", type, payload, status) {
         it.getObject(1, UUID::class.java)
       }
-    execute(
+    RawSql.execute(
       session,
       "INSERT INTO job_attempts (job_id, attempt_number, started_at, status) VALUES (?, 1, NOW(), 'RETRIABLE_FAILURE')",
       jobId,
@@ -632,30 +632,5 @@ object ErasureFixture {
     when (result) {
       is ValidationResult.Valid -> result.value
       is ValidationResult.Invalid -> error("fixture value is invalid: ${result.error}")
-    }
-
-  private fun execute(
-    session: SqlSession,
-    sql: String,
-    vararg args: Any?,
-  ) {
-    session.prepareStatement(sql).use { stmt ->
-      args.forEachIndexed { i, arg -> stmt.setObject(i + 1, arg) }
-      stmt.executeUpdate()
-    }
-  }
-
-  private fun <T> single(
-    session: SqlSession,
-    sql: String,
-    vararg args: Any?,
-    read: (java.sql.ResultSet) -> T,
-  ): T =
-    session.prepareStatement(sql).use { stmt ->
-      args.forEachIndexed { i, arg -> stmt.setObject(i + 1, arg) }
-      stmt.executeQuery().use { rs ->
-        check(rs.next()) { "expected one row from [$sql]" }
-        read(rs)
-      }
     }
 }

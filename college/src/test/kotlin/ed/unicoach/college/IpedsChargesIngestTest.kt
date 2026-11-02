@@ -1,5 +1,6 @@
 package ed.unicoach.college
 
+import ed.unicoach.db.dao.RawSql
 import ed.unicoach.db.dao.SqlSession
 import ed.unicoach.db.models.IpedsImputationFlag
 import ed.unicoach.db.models.MoneySource
@@ -164,24 +165,17 @@ class IpedsChargesIngestTest : CollegeScorecardTestBase() {
     session: SqlSession,
     id: UUID,
   ): String? =
-    session
-      .prepareStatement("SELECT canonical_money_summary::text FROM college_index_build WHERE id = ?")
-      .use { stmt ->
-        stmt.setObject(1, id)
-        stmt.executeQuery().use { rs -> if (rs.next()) rs.getString(1) else null }
-      }
+    RawSql.single(session, "SELECT canonical_money_summary::text FROM college_index_build WHERE id = ?", id) { rs ->
+      rs.getString(1)
+    }
 
   private fun buildRow(
     session: SqlSession,
     id: UUID,
   ): BuildRow? =
-    session
-      .prepareStatement("SELECT sources::text, rows_ingested::text FROM college_index_build WHERE id = ?")
-      .use { stmt ->
-        stmt.setObject(1, id)
-        stmt.executeQuery().use { rs ->
-          if (!rs.next()) return null
-          BuildRow(sources = rs.getString(1), rowsIngested = rs.getString(2))
-        }
-      }
+    RawSql.singleOrNull(
+      session,
+      "SELECT sources::text, rows_ingested::text FROM college_index_build WHERE id = ?",
+      id,
+    ) { rs -> BuildRow(sources = rs.getString(1), rowsIngested = rs.getString(2)) }
 }

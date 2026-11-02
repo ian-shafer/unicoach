@@ -31,11 +31,10 @@ internal fun violatedConstraintOf(
   columns: Map<String, String>,
 ): String? =
   try {
-    connection.createStatement().use { stmt ->
-      stmt.execute(
-        "INSERT INTO $table (${columns.keys.joinToString(", ")}) VALUES (${columns.values.joinToString(", ")})",
-      )
-    }
+    RawSql.execute(
+      connection,
+      "INSERT INTO $table (${columns.keys.joinToString(", ")}) VALUES (${columns.values.joinToString(", ")})",
+    )
     null
   } catch (e: SQLException) {
     // A NON-CONSTRAINT FAILURE IS NOT AN ANSWER to "which constraint refused

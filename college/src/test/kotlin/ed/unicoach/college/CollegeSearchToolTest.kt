@@ -13,6 +13,7 @@ import ed.unicoach.db.dao.FIXTURE_COMPLETION_8YR_NON_PELL_SHARE
 import ed.unicoach.db.dao.FIXTURE_COMPLETION_8YR_PELL_SHARE
 import ed.unicoach.db.dao.FIXTURE_COMPLETION_8YR_SHARE
 import ed.unicoach.db.dao.FIXTURE_TRANSFER_OUT_RATE_4YR_SHARE
+import ed.unicoach.db.dao.RawSql
 import ed.unicoach.db.models.IncomeBand
 import ed.unicoach.db.models.NewCollege
 import ed.unicoach.db.models.NewCollegeIndexBuild
@@ -204,22 +205,16 @@ class CollegeSearchToolTest {
       ed.unicoach.db.dao.MoneyVocabularyFixture
         .seed(session)
       if (inDistrictTuition != null || inDistrictStatus != null) {
-        session
-          .prepareStatement(
-            "INSERT INTO price_figures (college_id, price_concept, residency_basis, arrangement, " +
-              "academic_year, amount_usd, status, source, source_variable) " +
-              "VALUES (?, 'tuition_and_fees', 'in_district', 'not_applicable', 2023, ?, ?, " +
-              "'ipeds_ic_ay', 'FIXTURE')",
-          ).use { stmt ->
-            stmt.setObject(1, college.id.value)
-            if (inDistrictTuition == null) {
-              stmt.setNull(2, java.sql.Types.INTEGER)
-            } else {
-              stmt.setInt(2, inDistrictTuition)
-            }
-            stmt.setString(3, inDistrictStatus ?: "reported")
-            stmt.executeUpdate()
-          }
+        RawSql.execute(
+          session,
+          "INSERT INTO price_figures (college_id, price_concept, residency_basis, arrangement, " +
+            "academic_year, amount_usd, status, source, source_variable) " +
+            "VALUES (?, 'tuition_and_fees', 'in_district', 'not_applicable', 2023, ?, ?, " +
+            "'ipeds_ic_ay', 'FIXTURE')",
+          college.id.value,
+          inDistrictTuition,
+          inDistrictStatus ?: "reported",
+        )
       }
       val cells =
         listOf(
@@ -230,19 +225,17 @@ class CollegeSearchToolTest {
           Triple("other_expenses", "not_applicable" to "on_campus", 2800),
         )
       for ((concept, axes, amount) in cells) {
-        session
-          .prepareStatement(
-            "INSERT INTO price_figures (college_id, price_concept, residency_basis, arrangement, " +
-              "academic_year, amount_usd, status, source, source_variable) " +
-              "VALUES (?, ?, ?, ?, 2023, ?, 'reported', 'ipeds_ic_ay', 'FIXTURE')",
-          ).use { stmt ->
-            stmt.setObject(1, college.id.value)
-            stmt.setString(2, concept)
-            stmt.setString(3, axes.first)
-            stmt.setString(4, axes.second)
-            stmt.setInt(5, amount)
-            stmt.executeUpdate()
-          }
+        RawSql.execute(
+          session,
+          "INSERT INTO price_figures (college_id, price_concept, residency_basis, arrangement, " +
+            "academic_year, amount_usd, status, source, source_variable) " +
+            "VALUES (?, ?, ?, ?, 2023, ?, 'reported', 'ipeds_ic_ay', 'FIXTURE')",
+          college.id.value,
+          concept,
+          axes.first,
+          axes.second,
+          amount,
+        )
       }
       CollegesDao.rebuildSearchIndex(session).getOrThrow()
       Unit

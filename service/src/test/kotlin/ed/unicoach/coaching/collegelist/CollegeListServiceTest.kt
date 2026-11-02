@@ -7,6 +7,7 @@ import ed.unicoach.db.DatabaseConfig
 import ed.unicoach.db.dao.CodebookReferenceFixture
 import ed.unicoach.db.dao.CollegesDao
 import ed.unicoach.db.dao.ObservationsDao
+import ed.unicoach.db.dao.RawSql
 import ed.unicoach.db.dao.SqlSession
 import ed.unicoach.db.dao.StudentRowFixture
 import ed.unicoach.db.dao.StudentsDao
@@ -147,11 +148,12 @@ class CollegeListServiceTest {
 
   private fun createConvo(studentId: StudentId): ConvoId {
     val convoId = UUID.randomUUID()
-    connection.prepareStatement("INSERT INTO convos (id, student_id, name, party) VALUES (?, ?, 'Convo', 'student')").use { stmt ->
-      stmt.setObject(1, convoId)
-      stmt.setObject(2, studentId.value)
-      stmt.executeUpdate()
-    }
+    RawSql.execute(
+      connection,
+      "INSERT INTO convos (id, student_id, name, party) VALUES (?, ?, 'Convo', 'student')",
+      convoId,
+      studentId.value,
+    )
     return ConvoId(convoId)
   }
 
@@ -160,42 +162,33 @@ class CollegeListServiceTest {
     // Unique per row rather than a per-instance counter: system_prompts is no
     // longer truncated between tests (see resetDatabase), and JUnit builds a fresh
     // instance per test, so a counter would collide on (name, version).
-    connection.prepareStatement("INSERT INTO system_prompts (id, name, version, body) VALUES (?, 'coach', ?, 'be a coach')").use { stmt ->
-      stmt.setObject(1, promptId)
-      stmt.setString(2, "v-$promptId")
-      stmt.executeUpdate()
-    }
+    RawSql.execute(
+      connection,
+      "INSERT INTO system_prompts (id, name, version, body) VALUES (?, 'coach', ?, 'be a coach')",
+      promptId,
+      "v-$promptId",
+    )
     // Since RFC 106 convo_requests carries only a FK into the generic llm_requests
     // call log; seed one llm_requests row for this to reference (the content is
     // irrelevant here — the row exists only to anchor an observation).
     val llmRequestId =
-      connection
-        .prepareStatement(
-          """
-          INSERT INTO llm_requests (provider, model_requested, system, content, max_tokens)
-          VALUES ('anthropic', 'claude-opus-4-8', 'be a coach', '[]'::jsonb, 1024) RETURNING id
-          """.trimIndent(),
-        ).use { stmt ->
-          stmt.executeQuery().use { rs ->
-            rs.next()
-            rs.getLong("id")
-          }
-        }
-    connection
-      .prepareStatement(
+      RawSql.single(
+        connection,
         """
-        INSERT INTO convo_requests (convo_id, system_prompt_id, llm_request_id, turn_id)
-        VALUES (?, ?, ?, nextval('convo_turn_id_seq')) RETURNING id
+        INSERT INTO llm_requests (provider, model_requested, system, content, max_tokens)
+        VALUES ('anthropic', 'claude-opus-4-8', 'be a coach', '[]'::jsonb, 1024) RETURNING id
         """.trimIndent(),
-      ).use { stmt ->
-        stmt.setObject(1, convoId.value)
-        stmt.setObject(2, promptId)
-        stmt.setLong(3, llmRequestId)
-        stmt.executeQuery().use { rs ->
-          rs.next()
-          return ConvoRequestId(rs.getLong("id"))
-        }
-      }
+      ) { it.getLong("id") }
+    return RawSql.single(
+      connection,
+      """
+      INSERT INTO convo_requests (convo_id, system_prompt_id, llm_request_id, turn_id)
+      VALUES (?, ?, ?, nextval('convo_turn_id_seq')) RETURNING id
+      """.trimIndent(),
+      convoId.value,
+      promptId,
+      llmRequestId,
+    ) { ConvoRequestId(it.getLong("id")) }
   }
 
   /** Adds [college] to [student]'s list with no citations and returns the created entry. */

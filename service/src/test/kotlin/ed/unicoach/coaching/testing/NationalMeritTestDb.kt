@@ -4,6 +4,7 @@ import ed.unicoach.coaching.CoachingTestDb
 import ed.unicoach.coaching.admissions.AdmissionsTestDb
 import ed.unicoach.common.util.AcademicYear
 import ed.unicoach.db.dao.NationalMeritFixture
+import ed.unicoach.db.dao.RawSql
 import ed.unicoach.db.dao.StudentRowFixture
 import ed.unicoach.db.models.AlternateEntry
 import ed.unicoach.db.models.CollegeId
@@ -96,12 +97,11 @@ internal object NationalMeritTestDb {
    * corpora apart.
    */
   fun deleteFixtureCycles() {
-    CoachingTestDb.connection
-      .prepareStatement("DELETE FROM national_merit_cycles WHERE competition_year = ANY (?)")
-      .use { stmt ->
-        stmt.setArray(1, CoachingTestDb.connection.createArrayOf("integer", FIXTURE_CYCLE_YEARS.toTypedArray()))
-        stmt.executeUpdate()
-      }
+    RawSql.execute(
+      CoachingTestDb.connection,
+      "DELETE FROM national_merit_cycles WHERE competition_year = ANY (?)",
+      CoachingTestDb.connection.createArrayOf("integer", FIXTURE_CYCLE_YEARS.toTypedArray()),
+    )
   }
 
   /** A student whose stored class year is [graduationYear] -- the year of school IS the subject of these suites. */

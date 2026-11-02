@@ -32,6 +32,7 @@ import ed.unicoach.db.dao.FIXTURE_TRANSFER_OUT_RATE_4YR_SHARE
 import ed.unicoach.db.dao.FitLensRunsDao
 import ed.unicoach.db.dao.FitSuggestionsDao
 import ed.unicoach.db.dao.MoneyVocabularyFixture
+import ed.unicoach.db.dao.RawSql
 import ed.unicoach.db.dao.SqlSession
 import ed.unicoach.db.dao.StudentRowFixture
 import ed.unicoach.db.models.AbsenceStatus
@@ -294,26 +295,22 @@ class FitLensServiceTest {
    */
   private fun eraseAccountOf(studentId: UUID) {
     val userId =
-      connection.prepareStatement("SELECT user_id FROM students WHERE id = ?").use { stmt ->
-        stmt.setObject(1, studentId)
-        stmt.executeQuery().use { rs ->
-          rs.next()
-          rs.getObject(1, UUID::class.java)
-        }
-      }
-    connection.createStatement().use { stmt ->
-      stmt.execute("UPDATE users SET deleted_at = NOW(), version = version + 1 WHERE id = '$userId'")
-      stmt.execute("SELECT * FROM erase_account('$userId')")
-    }
+      RawSql.single(connection, "SELECT user_id FROM students WHERE id = ?", studentId) { it.getObject(1, UUID::class.java) }
+    RawSql.execute(connection, "UPDATE users SET deleted_at = NOW(), version = version + 1 WHERE id = ?", userId)
+    // erase_account answers one row per table it touched; only the walk matters here.
+    RawSql.list(connection, "SELECT * FROM erase_account(?)", userId) { }
   }
 
   private fun createStudent(): StudentId {
     val userId = UUID.randomUUID()
     val studentId = UUID.randomUUID()
-    connection.createStatement().use { stmt ->
-      stmt.execute("INSERT INTO users (id, email, name, password_hash) VALUES ('$userId', 'fl-$userId@test.com', 'FL User', 'ahash')")
-      StudentRowFixture.insert(connection, studentId, userId)
-    }
+    RawSql.execute(
+      connection,
+      "INSERT INTO users (id, email, name, password_hash) VALUES (?, ?, 'FL User', 'ahash')",
+      userId,
+      "fl-$userId@test.com",
+    )
+    StudentRowFixture.insert(connection, studentId, userId)
     return StudentId(studentId)
   }
 
@@ -465,15 +462,13 @@ class FitLensServiceTest {
     collegeId: CollegeId,
     value: Double,
   ) {
-    connection
-      .prepareStatement(
-        "UPDATE cohort_money_stats SET value = ? WHERE college_id = ? AND measure = ? AND income_band IS NULL",
-      ).use { stmt ->
-        stmt.setDouble(1, value)
-        stmt.setObject(2, collegeId.value)
-        stmt.setString(3, MoneyMeasure.AVG_NET_PRICE.value)
-        stmt.executeUpdate()
-      }
+    RawSql.execute(
+      connection,
+      "UPDATE cohort_money_stats SET value = ? WHERE college_id = ? AND measure = ? AND income_band IS NULL",
+      value,
+      collegeId.value,
+      MoneyMeasure.AVG_NET_PRICE.value,
+    )
   }
 
   /**
@@ -522,34 +517,17 @@ class FitLensServiceTest {
    * test seeds a prior run row directly rather than driving a full pass.
    */
   private fun seedLlmRequestId(): LlmRequestId =
-    connection
-      .prepareStatement(
-        "INSERT INTO llm_requests (provider, model_requested, content, max_tokens) " +
-          "VALUES ('log', 'claude-opus-4-8', '[]'::jsonb, 1024) RETURNING id",
-      ).use { stmt ->
-        stmt.executeQuery().use { rs ->
-          rs.next()
-          LlmRequestId(rs.getLong("id"))
-        }
-      }
+    RawSql.single(
+      connection,
+      "INSERT INTO llm_requests (provider, model_requested, content, max_tokens) " +
+        "VALUES ('log', 'claude-opus-4-8', '[]'::jsonb, 1024) RETURNING id",
+    ) { LlmRequestId(it.getLong("id")) }
 
   private fun suggestionRows(studentId: StudentId): Int =
-    connection.prepareStatement("SELECT COUNT(*) FROM fit_suggestions WHERE student_id = ?").use { stmt ->
-      stmt.setObject(1, studentId.value)
-      stmt.executeQuery().use { rs ->
-        rs.next()
-        rs.getInt(1)
-      }
-    }
+    RawSql.count(connection, "SELECT COUNT(*) FROM fit_suggestions WHERE student_id = ?", studentId.value)
 
   private fun runRows(studentId: StudentId): Int =
-    connection.prepareStatement("SELECT COUNT(*) FROM fit_lens_runs WHERE student_id = ?").use { stmt ->
-      stmt.setObject(1, studentId.value)
-      stmt.executeQuery().use { rs ->
-        rs.next()
-        rs.getInt(1)
-      }
-    }
+    RawSql.count(connection, "SELECT COUNT(*) FROM fit_lens_runs WHERE student_id = ?", studentId.value)
 
   private fun latestRun(studentId: StudentId) = FitLensRunsDao.listByStudent(session, studentId, limit = 10, offset = 0).getOrThrow().last()
 
@@ -563,18 +541,11 @@ class FitLensServiceTest {
     val ids = listOfNotNull(run.queryLlmRequestId, run.reasonLlmRequestId).map { it.value }
     if (ids.isEmpty()) return 0 to 0
     val inList = ids.joinToString(",")
-    connection
-      .createStatement()
-      .use { stmt ->
-        stmt
-          .executeQuery(
-            "SELECT COALESCE(SUM(input_tokens),0) AS i, COALESCE(SUM(output_tokens),0) AS o " +
-              "FROM llm_responses WHERE request_id IN ($inList)",
-          ).use { rs ->
-            rs.next()
-            return rs.getInt("i") to rs.getInt("o")
-          }
-      }
+    return RawSql.single(
+      connection,
+      "SELECT COALESCE(SUM(input_tokens),0) AS i, COALESCE(SUM(output_tokens),0) AS o " +
+        "FROM llm_responses WHERE request_id IN ($inList)",
+    ) { it.getInt("i") to it.getInt("o") }
   }
 
   private fun reasonDoc(collegeId: CollegeId): String = """{"collegeId":"${collegeId.asString}","rationale":"you would love it here"}"""

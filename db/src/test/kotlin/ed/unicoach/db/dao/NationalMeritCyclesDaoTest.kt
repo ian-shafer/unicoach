@@ -637,11 +637,5 @@ class NationalMeritCyclesDaoTest {
       expiresOn = expiresOn,
     )
 
-  private fun countCycles(): Int =
-    connection.createStatement().use { stmt ->
-      stmt.executeQuery("SELECT COUNT(*) FROM national_merit_cycles").use { rs ->
-        rs.next()
-        rs.getInt(1)
-      }
-    }
+  private fun countCycles(): Int = RawSql.count(connection, "SELECT COUNT(*) FROM national_merit_cycles")
 }

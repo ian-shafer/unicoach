@@ -19,6 +19,7 @@ import ed.unicoach.db.dao.CommitmentsDao
 import ed.unicoach.db.dao.CostReportSharesDao
 import ed.unicoach.db.dao.NationalMeritCyclesDao
 import ed.unicoach.db.dao.NationalMeritFixture
+import ed.unicoach.db.dao.RawSql
 import ed.unicoach.db.dao.ShareEventsDao
 import ed.unicoach.db.dao.SqlSession
 import ed.unicoach.db.dao.StudentRowFixture
@@ -262,10 +263,13 @@ class SynthesisServiceTest {
   private fun createStudent(): StudentId {
     val userId = UUID.randomUUID()
     val studentId = UUID.randomUUID()
-    connection.createStatement().use { stmt ->
-      stmt.execute("INSERT INTO users (id, email, name, password_hash) VALUES ('$userId', 'sy-$userId@test.com', 'Sy User', 'ahash')")
-      StudentRowFixture.insert(connection, studentId, userId)
-    }
+    RawSql.execute(
+      connection,
+      "INSERT INTO users (id, email, name, password_hash) VALUES (?, ?, 'Sy User', 'ahash')",
+      userId,
+      "sy-$userId@test.com",
+    )
+    StudentRowFixture.insert(connection, studentId, userId)
     return StudentId(studentId)
   }
 
@@ -275,17 +279,10 @@ class SynthesisServiceTest {
    */
   private fun eraseAccountOf(studentId: UUID) {
     val userId =
-      connection.prepareStatement("SELECT user_id FROM students WHERE id = ?").use { stmt ->
-        stmt.setObject(1, studentId)
-        stmt.executeQuery().use { rs ->
-          rs.next()
-          rs.getObject(1, UUID::class.java)
-        }
-      }
-    connection.createStatement().use { stmt ->
-      stmt.execute("UPDATE users SET deleted_at = NOW(), version = version + 1 WHERE id = '$userId'")
-      stmt.execute("SELECT * FROM erase_account('$userId')")
-    }
+      RawSql.single(connection, "SELECT user_id FROM students WHERE id = ?", studentId) { it.getObject(1, UUID::class.java) }
+    RawSql.execute(connection, "UPDATE users SET deleted_at = NOW(), version = version + 1 WHERE id = ?", userId)
+    // erase_account answers one row per table it touched; only the walk matters here.
+    RawSql.list(connection, "SELECT * FROM erase_account(?)", userId) { }
   }
 
   private fun softDeleteStudent(studentId: StudentId) {
@@ -326,22 +323,10 @@ class SynthesisServiceTest {
   ) = CommitmentsDao.create(sqlSession, NewCommitment(studentId, lens, disclosure, statement)).getOrThrow()
 
   private fun commitmentRows(studentId: StudentId): Int =
-    connection.prepareStatement("SELECT COUNT(*) FROM commitments WHERE student_id = ?").use { stmt ->
-      stmt.setObject(1, studentId.value)
-      stmt.executeQuery().use { rs ->
-        rs.next()
-        rs.getInt(1)
-      }
-    }
+    RawSql.count(connection, "SELECT COUNT(*) FROM commitments WHERE student_id = ?", studentId.value)
 
   private fun runRows(studentId: StudentId): Int =
-    connection.prepareStatement("SELECT COUNT(*) FROM synthesis_runs WHERE student_id = ?").use { stmt ->
-      stmt.setObject(1, studentId.value)
-      stmt.executeQuery().use { rs ->
-        rs.next()
-        rs.getInt(1)
-      }
-    }
+    RawSql.count(connection, "SELECT COUNT(*) FROM synthesis_runs WHERE student_id = ?", studentId.value)
 
   private fun gapDoc(supports: List<ClaimId> = emptyList()): String {
     val supportsJson = supports.joinToString(",") { "\"${it.asString}\"" }
@@ -972,24 +957,21 @@ class SynthesisServiceTest {
   ) {
     val collegeId = createCollege()
     if (touchedAt == null) {
-      connection
-        .prepareStatement("INSERT INTO college_list_entries (student_id, college_id) VALUES (?, ?)")
-        .use { stmt ->
-          stmt.setObject(1, studentId.value)
-          stmt.setObject(2, collegeId.value)
-          stmt.executeUpdate()
-        }
+      RawSql.execute(
+        connection,
+        "INSERT INTO college_list_entries (student_id, college_id) VALUES (?, ?)",
+        studentId.value,
+        collegeId.value,
+      )
     } else {
-      connection
-        .prepareStatement(
-          "INSERT INTO college_list_entries (student_id, college_id, created_at, updated_at) VALUES (?, ?, ?, ?)",
-        ).use { stmt ->
-          stmt.setObject(1, studentId.value)
-          stmt.setObject(2, collegeId.value)
-          stmt.setTimestamp(3, java.sql.Timestamp.from(touchedAt))
-          stmt.setTimestamp(4, java.sql.Timestamp.from(touchedAt))
-          stmt.executeUpdate()
-        }
+      RawSql.execute(
+        connection,
+        "INSERT INTO college_list_entries (student_id, college_id, created_at, updated_at) VALUES (?, ?, ?, ?)",
+        studentId.value,
+        collegeId.value,
+        java.sql.Timestamp.from(touchedAt),
+        java.sql.Timestamp.from(touchedAt),
+      )
     }
   }
 
@@ -998,15 +980,13 @@ class SynthesisServiceTest {
     studentId: StudentId,
     createdAt: Instant,
   ) {
-    connection
-      .prepareStatement(
-        "INSERT INTO commitments (student_id, lens, disclosure, statement, status, dropped_at, drop_reason, created_at) " +
-          "VALUES (?, 'share_report', 'explicit', 'earlier nudge', 'dropped', NOW(), 'test', ?)",
-      ).use { stmt ->
-        stmt.setObject(1, studentId.value)
-        stmt.setTimestamp(2, java.sql.Timestamp.from(createdAt))
-        stmt.executeUpdate()
-      }
+    RawSql.execute(
+      connection,
+      "INSERT INTO commitments (student_id, lens, disclosure, statement, status, dropped_at, drop_reason, created_at) " +
+        "VALUES (?, 'share_report', 'explicit', 'earlier nudge', 'dropped', NOW(), 'test', ?)",
+      studentId.value,
+      java.sql.Timestamp.from(createdAt),
+    )
   }
 
   private fun insertLiveShare(studentId: StudentId) {
@@ -1261,12 +1241,12 @@ class SynthesisServiceTest {
   /** A user with no student profile — the person a supporter link or an invite is for. */
   private fun createSupporterUser(): ed.unicoach.db.models.UserId {
     val userId = UUID.randomUUID()
-    connection.createStatement().use { stmt ->
-      stmt.execute(
-        "INSERT INTO users (id, email, name, password_hash) VALUES " +
-          "('$userId', 'sup-$userId@test.com', 'Sup User', 'ahash')",
-      )
-    }
+    RawSql.execute(
+      connection,
+      "INSERT INTO users (id, email, name, password_hash) VALUES (?, ?, 'Sup User', 'ahash')",
+      userId,
+      "sup-$userId@test.com",
+    )
     return ed.unicoach.db.models
       .UserId(userId)
   }
@@ -1317,15 +1297,13 @@ class SynthesisServiceTest {
     studentId: StudentId,
     createdAt: Instant,
   ) {
-    connection
-      .prepareStatement(
-        "INSERT INTO commitments (student_id, lens, disclosure, statement, status, dropped_at, drop_reason, created_at) " +
-          "VALUES (?, 'invite_supporter', 'explicit', 'earlier invite nudge', 'dropped', NOW(), 'test', ?)",
-      ).use { stmt ->
-        stmt.setObject(1, studentId.value)
-        stmt.setTimestamp(2, java.sql.Timestamp.from(createdAt))
-        stmt.executeUpdate()
-      }
+    RawSql.execute(
+      connection,
+      "INSERT INTO commitments (student_id, lens, disclosure, statement, status, dropped_at, drop_reason, created_at) " +
+        "VALUES (?, 'invite_supporter', 'explicit', 'earlier invite nudge', 'dropped', NOW(), 'test', ?)",
+      studentId.value,
+      java.sql.Timestamp.from(createdAt),
+    )
   }
 
   /**
@@ -1566,10 +1544,7 @@ class SynthesisServiceTest {
       NationalMeritFixture.seedCycle(sqlSession, row)
       body()
     } finally {
-      connection.prepareStatement("DELETE FROM national_merit_cycles WHERE competition_year = ?").use { stmt ->
-        stmt.setInt(1, row.competitionYear)
-        stmt.executeUpdate()
-      }
+      RawSql.execute(connection, "DELETE FROM national_merit_cycles WHERE competition_year = ?", row.competitionYear)
     }
   }
 
@@ -1593,14 +1568,12 @@ class SynthesisServiceTest {
 
   /** A dropped `psat_window` commitment -- the ALREADY_RAISED predicate's own input, in a status that is not open. */
   private fun insertDroppedPsatNudge(studentId: StudentId) {
-    connection
-      .prepareStatement(
-        "INSERT INTO commitments (student_id, lens, disclosure, statement, status, dropped_at, drop_reason) " +
-          "VALUES (?, 'psat_window', 'explicit', 'raised once already', 'dropped', NOW(), 'test')",
-      ).use { stmt ->
-        stmt.setObject(1, studentId.value)
-        stmt.executeUpdate()
-      }
+    RawSql.execute(
+      connection,
+      "INSERT INTO commitments (student_id, lens, disclosure, statement, status, dropped_at, drop_reason) " +
+        "VALUES (?, 'psat_window', 'explicit', 'raised once already', 'dropped', NOW(), 'test')",
+      studentId.value,
+    )
   }
 
   /**
@@ -1996,11 +1969,5 @@ class SynthesisServiceTest {
       assertEquals(0, psatNudges(student).size, "the invented lens must never become a commitment")
     }
 
-  private fun countAllLlmRequests(): Int =
-    connection.prepareStatement("SELECT COUNT(*) FROM llm_requests").use { stmt ->
-      stmt.executeQuery().use { rs ->
-        rs.next()
-        rs.getInt(1)
-      }
-    }
+  private fun countAllLlmRequests(): Int = RawSql.count(connection, "SELECT COUNT(*) FROM llm_requests")
 }

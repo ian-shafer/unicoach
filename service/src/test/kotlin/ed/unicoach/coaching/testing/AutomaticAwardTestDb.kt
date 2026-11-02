@@ -8,6 +8,7 @@ import ed.unicoach.db.dao.AdmissionTestScoresDao
 import ed.unicoach.db.dao.AutomaticAwardFixture
 import ed.unicoach.db.dao.ExternalDocumentsDao
 import ed.unicoach.db.dao.MoneyVocabularyFixture
+import ed.unicoach.db.dao.RawSql
 import ed.unicoach.db.models.AdmissionTest
 import ed.unicoach.db.models.AdmissionTestScoreComponent
 import ed.unicoach.db.models.AutomaticAwardKind
@@ -104,12 +105,7 @@ internal object AutomaticAwardTestDb {
    * ONE row of it.
    */
   fun forgetActCompositeRule() {
-    CoachingTestDb.connection
-      .prepareStatement("DELETE FROM external_documents WHERE url = ?")
-      .use { stmt ->
-        stmt.setString(1, AutomaticAwardService.ACT_COMPOSITE_RULE_URL)
-        stmt.executeUpdate()
-      }
+    RawSql.execute(CoachingTestDb.connection, "DELETE FROM external_documents WHERE url = ?", AutomaticAwardService.ACT_COMPOSITE_RULE_URL)
   }
 
   /**

@@ -84,14 +84,13 @@ class SupporterStudentLinksDaoTest {
    */
   private fun createUser(name: String = "Link User"): UserId {
     val userId = UUID.randomUUID()
-    connection
-      .prepareStatement("INSERT INTO users (id, email, name, password_hash) VALUES (?, ?, ?, 'ahash')")
-      .use { stmt ->
-        stmt.setObject(1, userId)
-        stmt.setString(2, "link-$userId@test.com")
-        stmt.setString(3, name)
-        stmt.executeUpdate()
-      }
+    RawSql.execute(
+      connection,
+      "INSERT INTO users (id, email, name, password_hash) VALUES (?, ?, ?, 'ahash')",
+      userId,
+      "link-$userId@test.com",
+      name,
+    )
     return UserId(userId)
   }
 
@@ -143,26 +142,16 @@ class SupporterStudentLinksDaoTest {
     UsersDao.delete(session, userId, current.version).getOrThrow()
   }
 
-  private fun deletedAtOf(id: UUID): Instant? {
-    connection.prepareStatement("SELECT deleted_at FROM supporter_student_links WHERE id = ?").use { stmt ->
-      stmt.setObject(1, id)
-      stmt.executeQuery().use { rs ->
-        assertTrue(rs.next(), "the row must be there")
-        return rs.getTimestamp("deleted_at")?.toInstant()
-      }
+  private fun deletedAtOf(id: UUID): Instant? =
+    RawSql.single(connection, "SELECT deleted_at FROM supporter_student_links WHERE id = ?", id) {
+      it.getTimestamp("deleted_at")?.toInstant()
     }
-  }
 
   /** The stored word and version, read straight from the table — severed rows included. */
-  private fun relationshipAndVersionOf(id: UUID): Pair<String, Int> {
-    connection.prepareStatement("SELECT relationship, version FROM supporter_student_links WHERE id = ?").use { stmt ->
-      stmt.setObject(1, id)
-      stmt.executeQuery().use { rs ->
-        assertTrue(rs.next(), "the row must be there")
-        return rs.getString("relationship") to rs.getInt("version")
-      }
+  private fun relationshipAndVersionOf(id: UUID): Pair<String, Int> =
+    RawSql.single(connection, "SELECT relationship, version FROM supporter_student_links WHERE id = ?", id) {
+      it.getString("relationship") to it.getInt("version")
     }
-  }
 
   /** Advances the row one version, so the caller's original version is stale. */
   private fun updateRelationship(

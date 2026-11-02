@@ -9,6 +9,7 @@ import ed.unicoach.coaching.budget.exhaustedBudgetService
 import ed.unicoach.coaching.budget.generousBudgetService
 import ed.unicoach.db.Database
 import ed.unicoach.db.DatabaseConfig
+import ed.unicoach.db.dao.RawSql
 import ed.unicoach.db.dao.SqlSession
 import ed.unicoach.db.dao.StudentRowFixture
 import ed.unicoach.db.models.ConvoId
@@ -256,20 +257,19 @@ class ExtractionServiceTest {
   private fun createStudent(): UUID {
     val userId = UUID.randomUUID()
     val studentId = UUID.randomUUID()
-    connection.createStatement().use { stmt ->
-      stmt.execute("INSERT INTO users (id, email, name, password_hash) VALUES ('$userId', 'ex-$userId@test.com', 'Ex User', 'ahash')")
-      StudentRowFixture.insert(connection, studentId, userId)
-    }
+    RawSql.execute(
+      connection,
+      "INSERT INTO users (id, email, name, password_hash) VALUES (?, ?, 'Ex User', 'ahash')",
+      userId,
+      "ex-$userId@test.com",
+    )
+    StudentRowFixture.insert(connection, studentId, userId)
     return studentId
   }
 
   private fun createConvo(studentId: UUID): UUID {
     val convoId = UUID.randomUUID()
-    connection.prepareStatement("INSERT INTO convos (id, student_id, name, party) VALUES (?, ?, 'Convo', 'student')").use { stmt ->
-      stmt.setObject(1, convoId)
-      stmt.setObject(2, studentId)
-      stmt.executeUpdate()
-    }
+    RawSql.execute(connection, "INSERT INTO convos (id, student_id, name, party) VALUES (?, ?, 'Convo', 'student')", convoId, studentId)
     return convoId
   }
 
@@ -279,43 +279,23 @@ class ExtractionServiceTest {
    */
   private fun eraseAccountOf(studentId: UUID) {
     val userId =
-      connection.prepareStatement("SELECT user_id FROM students WHERE id = ?").use { stmt ->
-        stmt.setObject(1, studentId)
-        stmt.executeQuery().use { rs ->
-          rs.next()
-          rs.getObject(1, UUID::class.java)
-        }
-      }
-    connection.createStatement().use { stmt ->
-      stmt.execute("UPDATE users SET deleted_at = NOW(), version = version + 1 WHERE id = '$userId'")
-      stmt.execute("SELECT * FROM erase_account('$userId')")
-    }
+      RawSql.single(connection, "SELECT user_id FROM students WHERE id = ?", studentId) { it.getObject(1, UUID::class.java) }
+    RawSql.execute(connection, "UPDATE users SET deleted_at = NOW(), version = version + 1 WHERE id = ?", userId)
+    // erase_account answers one row per table it touched; only the walk matters here.
+    RawSql.list(connection, "SELECT * FROM erase_account(?)", userId) { }
   }
 
   private fun softDeleteConvo(convoId: UUID) {
-    connection.prepareStatement("UPDATE convos SET deleted_at = NOW() WHERE id = ?").use { stmt ->
-      stmt.setObject(1, convoId)
-      stmt.executeUpdate()
-    }
+    RawSql.execute(connection, "UPDATE convos SET deleted_at = NOW() WHERE id = ?", convoId)
   }
 
-  private fun promptId(): UUID {
-    connection.createStatement().use { stmt ->
-      stmt.executeQuery("SELECT id FROM system_prompts WHERE name = 'extraction' AND version = 'v1'").use { rs ->
-        rs.next()
-        return UUID.fromString(rs.getString("id"))
-      }
+  private fun promptId(): UUID =
+    RawSql.single(connection, "SELECT id FROM system_prompts WHERE name = 'extraction' AND version = 'v1'") {
+      UUID.fromString(it.getString("id"))
     }
-  }
 
   /** Mints one turn_id from convo_turn_id_seq — the opener of a fresh logical turn. */
-  private fun nextTurnId(): Long =
-    connection.createStatement().use { stmt ->
-      stmt.executeQuery("SELECT nextval('convo_turn_id_seq')").use { rs ->
-        rs.next()
-        rs.getLong(1)
-      }
-    }
+  private fun nextTurnId(): Long = RawSql.single(connection, "SELECT nextval('convo_turn_id_seq')") { it.getLong(1) }
 
   /**
    * Appends a user turn, returns its convo_requests.id. [utteredDaysAgo]
@@ -343,24 +323,19 @@ class ExtractionServiceTest {
     // so seed content as a single-user-message messages array.
     val llmRequestId = appendLlmRequest("""[{"role":"user","content":[{"type":"text","text":${quote(text)}}]}]""")
     val requestId =
-      connection
-        .prepareStatement(
-          """
-          INSERT INTO convo_requests (convo_id, system_prompt_id, llm_request_id, turn_id, created_at)
-          VALUES (?, ?, ?, ?, NOW() - (? || ' days')::interval)
-          RETURNING id
-          """.trimIndent(),
-        ).use { stmt ->
-          stmt.setObject(1, convoId)
-          stmt.setObject(2, pid)
-          stmt.setLong(3, llmRequestId)
-          stmt.setLong(4, turnId)
-          stmt.setString(5, utteredDaysAgo.toString())
-          stmt.executeQuery().use { rs ->
-            rs.next()
-            rs.getLong("id")
-          }
-        }
+      RawSql.single(
+        connection,
+        """
+        INSERT INTO convo_requests (convo_id, system_prompt_id, llm_request_id, turn_id, created_at)
+        VALUES (?, ?, ?, ?, NOW() - (? || ' days')::interval)
+        RETURNING id
+        """.trimIndent(),
+        convoId,
+        pid,
+        llmRequestId,
+        turnId,
+        utteredDaysAgo.toString(),
+      ) { it.getLong("id") }
     if (close) appendResponseForLlmRequest(llmRequestId, "end_turn", "(coach answer)")
     return requestId
   }
@@ -377,51 +352,35 @@ class ExtractionServiceTest {
     val pid = promptId()
     val llmRequestId =
       appendLlmRequest("""[{"role":"user","content":[{"type":"tool_result","tool_use_id":"t","content":${quote(text)}}]}]""")
-    connection
-      .prepareStatement(
-        """
-        INSERT INTO convo_requests (convo_id, system_prompt_id, llm_request_id, turn_id, kind)
-        VALUES (?, ?, ?, ?, 'tool_result')
-        RETURNING id
-        """.trimIndent(),
-      ).use { stmt ->
-        stmt.setObject(1, convoId)
-        stmt.setObject(2, pid)
-        stmt.setLong(3, llmRequestId)
-        stmt.setLong(4, turnId)
-        stmt.executeQuery().use { rs ->
-          rs.next()
-          return rs.getLong("id")
-        }
-      }
+    return RawSql.single(
+      connection,
+      """
+      INSERT INTO convo_requests (convo_id, system_prompt_id, llm_request_id, turn_id, kind)
+      VALUES (?, ?, ?, ?, 'tool_result')
+      RETURNING id
+      """.trimIndent(),
+      convoId,
+      pid,
+      llmRequestId,
+      turnId,
+    ) { it.getLong("id") }
   }
 
   /** Appends a generic llm_requests row with [contentJson] as its messages array, returns its id. */
   private fun appendLlmRequest(contentJson: String): Long =
-    connection
-      .prepareStatement(
-        """
-        INSERT INTO llm_requests (provider, model_requested, system, content, max_tokens)
-        VALUES ('anthropic', 'claude-opus-4-8', 'be a good coach', ?::jsonb, 1024)
-        RETURNING id
-        """.trimIndent(),
-      ).use { stmt ->
-        stmt.setString(1, contentJson)
-        stmt.executeQuery().use { rs ->
-          rs.next()
-          return rs.getLong("id")
-        }
-      }
+    RawSql.single(
+      connection,
+      """
+      INSERT INTO llm_requests (provider, model_requested, system, content, max_tokens)
+      VALUES ('anthropic', 'claude-opus-4-8', 'be a good coach', ?::jsonb, 1024)
+      RETURNING id
+      """.trimIndent(),
+      contentJson,
+    ) { it.getLong("id") }
 
   /** Reads back the turn_id of a persisted convo_requests row (for threading an excursion). */
   private fun turnIdOf(requestId: Long): Long =
-    connection.prepareStatement("SELECT turn_id FROM convo_requests WHERE id = ?").use { stmt ->
-      stmt.setLong(1, requestId)
-      stmt.executeQuery().use { rs ->
-        rs.next()
-        rs.getLong("turn_id")
-      }
-    }
+    RawSql.single(connection, "SELECT turn_id FROM convo_requests WHERE id = ?", requestId) { it.getLong("turn_id") }
 
   /**
    * Appends a completed `llm_responses` row for the convo_requests row [requestId],
@@ -443,55 +402,34 @@ class ExtractionServiceTest {
     stopReason: String,
     text: String,
   ) {
-    connection
-      .prepareStatement(
-        """
-        INSERT INTO llm_responses (request_id, outcome, content, model_resolved, stop_reason, latency_ms)
-        VALUES (?, 'completed', ?::jsonb, 'm', ?, 0)
-        """.trimIndent(),
-      ).use { stmt ->
-        stmt.setLong(1, llmRequestId)
-        stmt.setString(2, """[{"type":"text","text":${quote(text)}}]""")
-        stmt.setString(3, stopReason)
-        stmt.executeUpdate()
-      }
+    RawSql.execute(
+      connection,
+      """
+      INSERT INTO llm_responses (request_id, outcome, content, model_resolved, stop_reason, latency_ms)
+      VALUES (?, 'completed', ?::jsonb, 'm', ?, 0)
+      """.trimIndent(),
+      llmRequestId,
+      """[{"type":"text","text":${quote(text)}}]""",
+      stopReason,
+    )
   }
 
   /** Reads back the llm_request_id a convo_requests row references. */
   private fun llmRequestIdOf(requestId: Long): Long =
-    connection.prepareStatement("SELECT llm_request_id FROM convo_requests WHERE id = ?").use { stmt ->
-      stmt.setLong(1, requestId)
-      stmt.executeQuery().use { rs ->
-        rs.next()
-        rs.getLong("llm_request_id")
-      }
-    }
+    RawSql.single(connection, "SELECT llm_request_id FROM convo_requests WHERE id = ?", requestId) { it.getLong("llm_request_id") }
 
   private fun quote(s: String): String = "\"" + s.replace("\\", "\\\\").replace("\"", "\\\"") + "\""
 
   private fun countObservations(studentId: UUID): Int = countWhere("observations", "student_id", studentId)
 
   private fun activeClaimCount(studentId: UUID): Int =
-    connection.prepareStatement("SELECT COUNT(*) FROM claims WHERE student_id = ? AND status = 'active'").use { stmt ->
-      stmt.setObject(1, studentId)
-      stmt.executeQuery().use { rs ->
-        rs.next()
-        rs.getInt(1)
-      }
-    }
+    RawSql.count(connection, "SELECT COUNT(*) FROM claims WHERE student_id = ? AND status = 'active'", studentId)
 
   private fun countWhere(
     table: String,
     column: String,
     value: UUID,
-  ): Int =
-    connection.prepareStatement("SELECT COUNT(*) FROM $table WHERE $column = ?").use { stmt ->
-      stmt.setObject(1, value)
-      stmt.executeQuery().use { rs ->
-        rs.next()
-        rs.getInt(1)
-      }
-    }
+  ): Int = RawSql.count(connection, "SELECT COUNT(*) FROM $table WHERE $column = ?", value)
 
   private fun watermark(convoId: UUID): Long =
     ed.unicoach.db.dao.ExtractionRunsDao
@@ -654,13 +592,7 @@ class ExtractionServiceTest {
     }
 
   private fun singleConfidence(studentId: UUID): Int =
-    connection.prepareStatement("SELECT confidence FROM claims WHERE student_id = ?").use { stmt ->
-      stmt.setObject(1, studentId)
-      stmt.executeQuery().use { rs ->
-        rs.next()
-        rs.getInt("confidence")
-      }
-    }
+    RawSql.single(connection, "SELECT confidence FROM claims WHERE student_id = ?", studentId) { it.getInt("confidence") }
 
   @Test
   fun `idempotent re-run with throughRequestId at or below the watermark writes nothing`() =
@@ -1300,18 +1232,20 @@ class ExtractionServiceTest {
     val userId = UUID.randomUUID()
     val supporterId = UUID.randomUUID()
     val convoId = UUID.randomUUID()
-    connection.createStatement().use { stmt ->
-      stmt.execute("INSERT INTO users (id, email, name, password_hash) VALUES ('$userId', 'sup-$userId@test.com', 'Sup', 'ahash')")
-      stmt.execute("INSERT INTO supporters (id, user_id) VALUES ('$supporterId', '$userId')")
-    }
-    connection
-      .prepareStatement("INSERT INTO convos (id, student_id, name, party, supporter_id) VALUES (?, ?, 'Parent', 'supporter', ?)")
-      .use { stmt ->
-        stmt.setObject(1, convoId)
-        stmt.setObject(2, studentId)
-        stmt.setObject(3, supporterId)
-        stmt.executeUpdate()
-      }
+    RawSql.execute(
+      connection,
+      "INSERT INTO users (id, email, name, password_hash) VALUES (?, ?, 'Sup', 'ahash')",
+      userId,
+      "sup-$userId@test.com",
+    )
+    RawSql.execute(connection, "INSERT INTO supporters (id, user_id) VALUES (?, ?)", supporterId, userId)
+    RawSql.execute(
+      connection,
+      "INSERT INTO convos (id, student_id, name, party, supporter_id) VALUES (?, ?, 'Parent', 'supporter', ?)",
+      convoId,
+      studentId,
+      supporterId,
+    )
     return convoId
   }
 
@@ -1336,13 +1270,7 @@ class ExtractionServiceTest {
     }
   }
 
-  private fun countAllLlmRequests(): Int =
-    connection.prepareStatement("SELECT COUNT(*) FROM llm_requests").use { stmt ->
-      stmt.executeQuery().use { rs ->
-        rs.next()
-        rs.getInt(1)
-      }
-    }
+  private fun countAllLlmRequests(): Int = RawSql.count(connection, "SELECT COUNT(*) FROM llm_requests")
 
   private fun renderTranscript(message: ed.unicoach.chat.ChatMessage): String =
     ed.unicoach.coaching.ConvoContent

@@ -1,5 +1,6 @@
 package ed.unicoach.web
 
+import ed.unicoach.db.dao.RawSql
 import ed.unicoach.db.dao.captureWarns
 import ed.unicoach.util.TokenGenerator
 import ed.unicoach.web.ChatTestSupport.coach
@@ -303,16 +304,13 @@ class CsrfRoutingTest {
   /** Overwrites every session's metadata with [json], as a row no codec wrote. */
   private fun storeSessionMetadata(json: String) {
     WebAuthTestSupport.database.createRawConnection().use { connection ->
-      connection.prepareStatement("UPDATE sessions SET metadata = ?::jsonb, version = version + 1").use {
-        it.setString(1, json)
-        it.executeUpdate()
-      }
+      RawSql.execute(connection, "UPDATE sessions SET metadata = ?::jsonb, version = version + 1", json)
     }
   }
 
   private fun clearSessionMetadata() {
     WebAuthTestSupport.database.createRawConnection().use { connection ->
-      connection.createStatement().use { it.executeUpdate("UPDATE sessions SET metadata = NULL, version = version + 1") }
+      RawSql.execute(connection, "UPDATE sessions SET metadata = NULL, version = version + 1")
     }
   }
 }

@@ -1,9 +1,8 @@
 package ed.unicoach.db.dao
 
 import java.sql.Connection
-import java.sql.Timestamp
-import java.sql.Types
 import java.time.Instant
+import java.time.ZoneOffset
 import java.util.UUID
 
 /**
@@ -33,35 +32,24 @@ object LlmCallRowFixture {
     createdAt: Instant? = null,
   ): Long {
     val requestId =
-      connection
-        .prepareStatement(
-          "INSERT INTO llm_requests (provider, model_requested, content, max_tokens) " +
-            "VALUES ('anthropic', 'claude-opus-4-8', '[]'::jsonb, 1024) RETURNING id",
-        ).use { stmt ->
-          stmt.executeQuery().use { rs ->
-            rs.next()
-            rs.getLong("id")
-          }
-        }
-    connection
-      .prepareStatement(
-        """
-        INSERT INTO llm_responses
-          (request_id, created_at, outcome, content, model_resolved, stop_reason,
-           cost_nanodollars, cost_is_estimated, input_tokens, output_tokens, latency_ms)
-        VALUES (?, COALESCE(?, NOW()), 'completed', '[]'::jsonb, 'm', 'end_turn', ?, ?, 3, 5, 1)
-        """.trimIndent(),
-      ).use { stmt ->
-        stmt.setLong(1, requestId)
-        if (createdAt != null) {
-          stmt.setTimestamp(2, Timestamp.from(createdAt))
-        } else {
-          stmt.setNull(2, Types.TIMESTAMP_WITH_TIMEZONE)
-        }
-        if (costNanodollars != null) stmt.setLong(3, costNanodollars) else stmt.setNull(3, Types.BIGINT)
-        if (costIsEstimated != null) stmt.setBoolean(4, costIsEstimated) else stmt.setNull(4, Types.BOOLEAN)
-        stmt.executeUpdate()
-      }
+      RawSql.single(
+        connection,
+        "INSERT INTO llm_requests (provider, model_requested, content, max_tokens) " +
+          "VALUES ('anthropic', 'claude-opus-4-8', '[]'::jsonb, 1024) RETURNING id",
+      ) { it.getLong("id") }
+    RawSql.execute(
+      connection,
+      """
+      INSERT INTO llm_responses
+        (request_id, created_at, outcome, content, model_resolved, stop_reason,
+         cost_nanodollars, cost_is_estimated, input_tokens, output_tokens, latency_ms)
+      VALUES (?, COALESCE(?, NOW()), 'completed', '[]'::jsonb, 'm', 'end_turn', ?, ?, 3, 5, 1)
+      """.trimIndent(),
+      requestId,
+      createdAt?.atOffset(ZoneOffset.UTC),
+      costNanodollars,
+      costIsEstimated,
+    )
     return requestId
   }
 
@@ -71,12 +59,6 @@ object LlmCallRowFixture {
     supporterId: UUID,
     llmRequestId: Long,
   ) {
-    connection
-      .prepareStatement("INSERT INTO supporter_llm_costs (llm_request_id, supporter_id) VALUES (?, ?)")
-      .use { stmt ->
-        stmt.setLong(1, llmRequestId)
-        stmt.setObject(2, supporterId)
-        stmt.executeUpdate()
-      }
+    RawSql.execute(connection, "INSERT INTO supporter_llm_costs (llm_request_id, supporter_id) VALUES (?, ?)", llmRequestId, supporterId)
   }
 }

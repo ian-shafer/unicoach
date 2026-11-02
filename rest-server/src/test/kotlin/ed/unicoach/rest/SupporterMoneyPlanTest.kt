@@ -7,6 +7,7 @@ import ed.unicoach.coaching.costs.canonical.figureAddress
 import ed.unicoach.common.util.AcademicYear
 import ed.unicoach.db.dao.CanonicalMoneyDao
 import ed.unicoach.db.dao.MoneyVocabularyFixture
+import ed.unicoach.db.dao.RawSql
 import ed.unicoach.db.dao.SqlSession
 import ed.unicoach.db.models.CollegeLevel
 import ed.unicoach.db.models.FigureReading
@@ -102,12 +103,10 @@ class SupporterMoneyPlanTest {
 
   /** Every tool result logged in `llm_requests` above [watermark], parsed from the string the model reads. */
   private fun toolResultsAbove(watermark: Long): List<JsonNode> =
-    parentCoach.db.prepareStatement("SELECT content::text FROM llm_requests WHERE id > ? ORDER BY id").use { stmt ->
-      stmt.setLong(1, watermark)
-      stmt.executeQuery().use { rs ->
-        buildList { while (rs.next()) addAll(toolResultsIn(parentCoach.json(rs.getString(1)))) }
-      }
-    }
+    RawSql
+      .list(parentCoach.db, "SELECT content::text FROM llm_requests WHERE id > ? ORDER BY id", watermark) {
+        toolResultsIn(parentCoach.json(it.getString(1)))
+      }.flatten()
 
   private fun toolResultsIn(node: JsonNode): List<JsonNode> =
     when {
@@ -145,16 +144,14 @@ class SupporterMoneyPlanTest {
 
   /** A `college_ipeds` row saying the school is four-year, joined on the college's own unit id. */
   private fun seedFourYearLevel(college: UUID) {
-    parentCoach.db
-      .prepareStatement(
-        """
-        INSERT INTO college_ipeds (ipeds_unit_id, survey_year, cy_active, inst_level)
-        SELECT ipeds_unit_id, 2023, TRUE, ? FROM colleges WHERE id = ?
-        """.trimIndent(),
-      ).use { stmt ->
-        stmt.setInt(1, CollegeLevel.FOUR_OR_MORE_YEARS_CODE)
-        stmt.setObject(2, college)
-        stmt.executeUpdate()
-      }
+    RawSql.execute(
+      parentCoach.db,
+      """
+      INSERT INTO college_ipeds (ipeds_unit_id, survey_year, cy_active, inst_level)
+      SELECT ipeds_unit_id, 2023, TRUE, ? FROM colleges WHERE id = ?
+      """.trimIndent(),
+      CollegeLevel.FOUR_OR_MORE_YEARS_CODE,
+      college,
+    )
   }
 }

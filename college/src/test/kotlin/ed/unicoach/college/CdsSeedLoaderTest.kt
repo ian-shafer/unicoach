@@ -3,6 +3,7 @@ package ed.unicoach.college
 import ed.unicoach.common.util.isWebUrl
 import ed.unicoach.db.dao.CdsAdmissionsDao
 import ed.unicoach.db.dao.CollegesDao
+import ed.unicoach.db.dao.RawSql
 import ed.unicoach.db.models.ApplicationRound
 import ed.unicoach.db.models.CdsMonthDay
 import ed.unicoach.db.models.CohortPopulation
@@ -824,7 +825,7 @@ class CdsSeedLoaderTest : CollegeScorecardTestBase() {
     from: String,
     to: String,
   ) = withSession { session ->
-    session.prepareStatement("ALTER TABLE $from RENAME TO $to").use { it.execute() }
+    RawSql.execute(session, "ALTER TABLE $from RENAME TO $to")
   }
 
   @Test
@@ -888,15 +889,11 @@ class CdsSeedLoaderTest : CollegeScorecardTestBase() {
     session: ed.unicoach.db.dao.SqlSession,
     id: java.util.UUID,
   ): BuildRow? =
-    session
-      .prepareStatement("SELECT method_version, sources::text, rows_ingested::text FROM college_index_build WHERE id = ?")
-      .use { stmt ->
-        stmt.setObject(1, id)
-        stmt.executeQuery().use { rs ->
-          if (!rs.next()) return null
-          BuildRow(rs.getInt(1), rs.getString(2), rs.getString(3))
-        }
-      }
+    RawSql.singleOrNull(
+      session,
+      "SELECT method_version, sources::text, rows_ingested::text FROM college_index_build WHERE id = ?",
+      id,
+    ) { rs -> BuildRow(rs.getInt(1), rs.getString(2), rs.getString(3)) }
 
   @Test
   fun `the committed seed's headers are the headers this loader expects`() {

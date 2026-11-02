@@ -2,6 +2,7 @@ package ed.unicoach.college
 
 import ed.unicoach.db.dao.CodebookTable
 import ed.unicoach.db.dao.CollegesDao
+import ed.unicoach.db.dao.RawSql
 import ed.unicoach.db.dao.SqlSession
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json
@@ -889,31 +890,19 @@ class CollegeScorecardIngestTest : CollegeScorecardTestBase() {
   /** Every column of every index row, as text, in a stable order. */
   private fun indexSnapshot(): List<String> =
     withSession { session ->
-      session
-        .prepareStatement("SELECT i::text AS whole_row FROM college_search_index i ORDER BY i.college_id")
-        .use { stmt ->
-          stmt.executeQuery().use { rs ->
-            val rows = mutableListOf<String>()
-            while (rs.next()) rows += rs.getString("whole_row")
-            rows
-          }
-        }
+      RawSql.list(session, "SELECT i::text AS whole_row FROM college_search_index i ORDER BY i.college_id") { rs ->
+        rs.getString("whole_row")
+      }
     }
 
   /** The (ipeds_unit_id, word) pairs actually stored, alphabetical. */
   private fun storedNameWords(): List<Pair<Int, String>> =
     withSession { session ->
-      session
-        .prepareStatement(
-          "SELECT c.ipeds_unit_id, nw.word FROM college_name_words nw JOIN colleges c ON c.id = nw.college_id " +
-            "ORDER BY c.ipeds_unit_id, nw.word",
-        ).use { stmt ->
-          stmt.executeQuery().use { rs ->
-            val rows = mutableListOf<Pair<Int, String>>()
-            while (rs.next()) rows += rs.getInt(1) to rs.getString(2)
-            rows
-          }
-        }
+      RawSql.list(
+        session,
+        "SELECT c.ipeds_unit_id, nw.word FROM college_name_words nw JOIN colleges c ON c.id = nw.college_id " +
+          "ORDER BY c.ipeds_unit_id, nw.word",
+      ) { rs -> rs.getInt(1) to rs.getString(2) }
     }
 
   /**
@@ -923,31 +912,27 @@ class CollegeScorecardIngestTest : CollegeScorecardTestBase() {
    */
   private fun expectedNameWords(): List<Pair<Int, String>> =
     withSession { session ->
-      session.prepareStatement("SELECT ipeds_unit_id, name, aliases FROM colleges").use { stmt ->
-        stmt.executeQuery().use { rs ->
-          val rows = mutableListOf<Pair<Int, String>>()
-          while (rs.next()) {
-            val ipedsUnitId = rs.getInt("ipeds_unit_id")
-            val aliases =
-              rs.getArray("aliases").let { arr ->
-                try {
-                  @Suppress("UNCHECKED_CAST")
-                  (arr.array as Array<String?>).filterNotNull()
-                } finally {
-                  arr.free()
-                }
+      RawSql
+        .list(session, "SELECT ipeds_unit_id, name, aliases FROM colleges") { rs ->
+          val ipedsUnitId = rs.getInt("ipeds_unit_id")
+          val aliases =
+            rs.getArray("aliases").let { arr ->
+              try {
+                @Suppress("UNCHECKED_CAST")
+                (arr.array as Array<String?>).filterNotNull()
+              } finally {
+                arr.free()
               }
-            val text = (listOf(rs.getString("name")) + aliases).joinToString(" ")
-            text
-              .lowercase()
-              .split(Regex("[^a-z0-9]+"))
-              .filter { it.isNotEmpty() }
-              .distinct()
-              .forEach { rows += ipedsUnitId to it }
-          }
-          rows.sortedWith(compareBy({ it.first }, { it.second }))
-        }
-      }
+            }
+          val text = (listOf(rs.getString("name")) + aliases).joinToString(" ")
+          text
+            .lowercase()
+            .split(Regex("[^a-z0-9]+"))
+            .filter { it.isNotEmpty() }
+            .distinct()
+            .map { ipedsUnitId to it }
+        }.flatten()
+        .sortedWith(compareBy({ it.first }, { it.second }))
     }
 
   // ---------------------------------------------------------------------------
@@ -1047,12 +1032,7 @@ class CollegeScorecardIngestTest : CollegeScorecardTestBase() {
   /** `cohort_money_stats` rows the fill attributed to the SFA source. */
   private fun sfaSourcedStatRows(): Int =
     withSession { session ->
-      session.prepareStatement("SELECT count(*) FROM cohort_money_stats WHERE source = 'ipeds_sfa'").use { stmt ->
-        stmt.executeQuery().use { rs ->
-          assertTrue(rs.next())
-          rs.getInt(1)
-        }
-      }
+      RawSql.count(session, "SELECT count(*) FROM cohort_money_stats WHERE source = 'ipeds_sfa'")
     }
 
   @Test
@@ -1101,12 +1081,8 @@ class CollegeScorecardIngestTest : CollegeScorecardTestBase() {
     session: SqlSession,
     id: UUID,
   ): String? =
-    session.prepareStatement("SELECT canonical_money_summary::text FROM college_index_build WHERE id = ?").use { stmt ->
-      stmt.setObject(1, id)
-      stmt.executeQuery().use { rs ->
-        assertTrue(rs.next(), "no college_index_build row for build [$id]")
-        rs.getString(1)
-      }
+    RawSql.single(session, "SELECT canonical_money_summary::text FROM college_index_build WHERE id = ?", id) { rs ->
+      rs.getString(1)
     }
 
   /**
@@ -1134,14 +1110,8 @@ class CollegeScorecardIngestTest : CollegeScorecardTestBase() {
     column: String,
     id: UUID,
   ): Int? =
-    session.prepareStatement("SELECT $column FROM college_index_build WHERE id = ?").use { stmt ->
-      stmt.setObject(1, id)
-      stmt.executeQuery().use { rs ->
-        assertTrue(rs.next(), "no college_index_build row for build [$id]")
-        val rows = rs.getInt(1).takeUnless { rs.wasNull() }
-        assertFalse(rs.next(), "more than one college_index_build row for build [$id]")
-        rows
-      }
+    RawSql.single(session, "SELECT $column FROM college_index_build WHERE id = ?", id) { rs ->
+      rs.getInt(1).takeUnless { rs.wasNull() }
     }
 
   // ---------------------------------------------------------------------------
@@ -1159,20 +1129,17 @@ class CollegeScorecardIngestTest : CollegeScorecardTestBase() {
     session: SqlSession,
     id: UUID,
   ): BuildRow? =
-    session
-      .prepareStatement(
-        "SELECT method_version, sources::text, rows_ingested::text, change_summary::text " +
-          "FROM college_index_build WHERE id = ?",
-      ).use { stmt ->
-        stmt.setObject(1, id)
-        stmt.executeQuery().use { rs ->
-          if (!rs.next()) return null
-          BuildRow(
-            methodVersion = rs.getInt(1),
-            sources = rs.getString(2),
-            rowsIngested = rs.getString(3),
-            changeSummary = rs.getString(4),
-          )
-        }
-      }
+    RawSql.singleOrNull(
+      session,
+      "SELECT method_version, sources::text, rows_ingested::text, change_summary::text " +
+        "FROM college_index_build WHERE id = ?",
+      id,
+    ) { rs ->
+      BuildRow(
+        methodVersion = rs.getInt(1),
+        sources = rs.getString(2),
+        rowsIngested = rs.getString(3),
+        changeSummary = rs.getString(4),
+      )
+    }
 }

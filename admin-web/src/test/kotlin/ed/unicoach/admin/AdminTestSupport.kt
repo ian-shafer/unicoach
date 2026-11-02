@@ -21,6 +21,7 @@ import ed.unicoach.db.dao.FitLensRunsDao
 import ed.unicoach.db.dao.FitSuggestionsDao
 import ed.unicoach.db.dao.LlmCallsDao
 import ed.unicoach.db.dao.ObservationsDao
+import ed.unicoach.db.dao.RawSql
 import ed.unicoach.db.dao.SqlSession
 import ed.unicoach.db.dao.StudentRowFixture
 import ed.unicoach.db.dao.StudentsDao
@@ -168,7 +169,7 @@ object AdminTestSupport {
       // `llm_requests` (and its `llm_responses` / `llm_responses_raw` cascade, RFC 106)
       // is truncated explicitly: an orphan/unlinked call has no FK back to `users`, so
       // the user cascade alone would leave stale calls to pollute the unlinked-call test.
-      conn.createStatement().use { it.execute("TRUNCATE TABLE users, colleges, jobs, llm_requests CASCADE") }
+      RawSql.execute(conn, "TRUNCATE TABLE users, colleges, jobs, llm_requests CASCADE")
       // The published state/locale rows `colleges` foreign-keys into (0067).
       // Truncating `colleges` does not empty them, but another suite on this
       // shared database does, so each suite puts them back.

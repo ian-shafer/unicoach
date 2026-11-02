@@ -1149,9 +1149,7 @@ class AutomaticAwardsDaoTest {
     columns: Map<String, String>,
   ): String? =
     try {
-      connection.createStatement().use { stmt ->
-        stmt.execute("INSERT INTO $table (${columns.keys.joinToString(", ")}) VALUES (${columns.values.joinToString(", ")})")
-      }
+      RawSql.execute(connection, "INSERT INTO $table (${columns.keys.joinToString(", ")}) VALUES (${columns.values.joinToString(", ")})")
       null
     } catch (e: SQLException) {
       (e as? PSQLException)?.serverErrorMessage?.constraint
@@ -1210,21 +1208,13 @@ class AutomaticAwardsDaoTest {
     )
 
   private fun updatedAtOf(id: AutomaticAwardId): OffsetDateTime =
-    connection.prepareStatement("SELECT updated_at FROM college_automatic_awards WHERE id = ?").use { stmt ->
-      stmt.setObject(1, id.value)
-      stmt.executeQuery().use { rs ->
-        rs.next()
-        rs.getObject("updated_at", OffsetDateTime::class.java)
-      }
+    RawSql.single(connection, "SELECT updated_at FROM college_automatic_awards WHERE id = ?", id.value) {
+      it.getObject("updated_at", OffsetDateTime::class.java)
     }
 
   private fun linkStatusOf(url: String): Pair<String, LocalDate?> =
-    connection.prepareStatement("SELECT url_status, url_checked_on FROM external_documents WHERE url = ?").use { stmt ->
-      stmt.setString(1, url)
-      stmt.executeQuery().use { rs ->
-        rs.next()
-        rs.getString("url_status") to rs.getDate("url_checked_on")?.toLocalDate()
-      }
+    RawSql.single(connection, "SELECT url_status, url_checked_on FROM external_documents WHERE url = ?", url) { rs ->
+      rs.getString("url_status") to rs.getDate("url_checked_on")?.toLocalDate()
     }
 
   /**
@@ -1243,19 +1233,7 @@ class AutomaticAwardsDaoTest {
 
   /** How many cells hang off [award], read past the DAO so a cascade can be observed without a read model. */
   private fun bandsUnder(award: AutomaticAwardId): Int =
-    connection.prepareStatement("SELECT COUNT(*) FROM college_automatic_award_bands WHERE award_id = ?").use { stmt ->
-      stmt.setObject(1, award.value)
-      stmt.executeQuery().use { rs ->
-        rs.next()
-        rs.getInt(1)
-      }
-    }
+    RawSql.count(connection, "SELECT COUNT(*) FROM college_automatic_award_bands WHERE award_id = ?", award.value)
 
-  private fun countRows(table: String): Int =
-    connection.createStatement().use { stmt ->
-      stmt.executeQuery("SELECT COUNT(*) FROM $table").use { rs ->
-        rs.next()
-        rs.getInt(1)
-      }
-    }
+  private fun countRows(table: String): Int = RawSql.count(connection, "SELECT COUNT(*) FROM $table")
 }

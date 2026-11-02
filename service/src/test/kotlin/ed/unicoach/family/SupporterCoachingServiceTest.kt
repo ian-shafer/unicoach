@@ -18,6 +18,7 @@ import ed.unicoach.coaching.testing.TestScoreService
 import ed.unicoach.coaching.testing.TestScoreWrite
 import ed.unicoach.db.dao.ClaimsDao
 import ed.unicoach.db.dao.CommitmentsDao
+import ed.unicoach.db.dao.RawSql
 import ed.unicoach.db.dao.StudentsDao
 import ed.unicoach.db.dao.SupporterStudentLinksDao
 import ed.unicoach.db.dao.SupportersDao
@@ -116,14 +117,13 @@ class SupporterCoachingServiceTest {
 
   private fun createUser(name: String = "Parent Jane"): UserId {
     val userId = UUID.randomUUID()
-    sqlSession
-      .prepareStatement("INSERT INTO users (id, email, name, password_hash) VALUES (?, ?, ?, 'hash')")
-      .use { stmt ->
-        stmt.setObject(1, userId)
-        stmt.setString(2, "parent-$userId@example.com")
-        stmt.setString(3, name)
-        stmt.executeUpdate()
-      }
+    RawSql.execute(
+      sqlSession,
+      "INSERT INTO users (id, email, name, password_hash) VALUES (?, ?, ?, 'hash')",
+      userId,
+      "parent-$userId@example.com",
+      name,
+    )
     return UserId(userId)
   }
 
@@ -142,24 +142,16 @@ class SupporterCoachingServiceTest {
 
   private fun studentNamed(name: String): StudentId {
     val student = CostsTestDb.createStudent()
-    sqlSession
-      .prepareStatement(
-        "UPDATE users SET name = ?, version = version + 1 WHERE id = (SELECT user_id FROM students WHERE id = ?)",
-      ).use { stmt ->
-        stmt.setString(1, name)
-        stmt.setObject(2, student.value)
-        stmt.executeUpdate()
-      }
+    RawSql.execute(
+      sqlSession,
+      "UPDATE users SET name = ?, version = version + 1 WHERE id = (SELECT user_id FROM students WHERE id = ?)",
+      name,
+      student.value,
+    )
     return student
   }
 
-  private fun countConvos(): Int =
-    sqlSession.prepareStatement("SELECT COUNT(*) FROM convos").use { stmt ->
-      stmt.executeQuery().use { rs ->
-        rs.next()
-        rs.getInt(1)
-      }
-    }
+  private fun countConvos(): Int = RawSql.count(sqlSession, "SELECT COUNT(*) FROM convos")
 
   /** Starts and drains a conversation, returning its id. */
   private fun startedConvo(

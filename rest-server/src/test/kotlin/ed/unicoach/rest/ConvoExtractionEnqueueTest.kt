@@ -14,6 +14,7 @@ import ed.unicoach.coaching.extraction.ExtractionConfig
 import ed.unicoach.common.config.AppConfig
 import ed.unicoach.db.Database
 import ed.unicoach.db.DatabaseConfig
+import ed.unicoach.db.dao.RawSql
 import ed.unicoach.rest.auth.SessionConfig
 import ed.unicoach.rest.config.ClientKeyGateConfig
 import ed.unicoach.rest.config.RequestSizeConfig
@@ -227,17 +228,6 @@ class ConvoExtractionEnqueueTest {
     path: String,
   ) = "http://localhost:$port$path"
 
-  /** Marks a registered user verified by direct SQL so it passes the verification gate. */
-  private fun markEmailVerified(email: String) {
-    connection
-      .prepareStatement(
-        "UPDATE users SET version = version + 1, email_verified_at = NOW() WHERE email = ? AND email_verified_at IS NULL",
-      ).use { stmt ->
-        stmt.setString(1, email)
-        stmt.executeUpdate()
-      }
-  }
-
   private suspend fun registerWithStudent(port: Int): String {
     val email = "enq${java.util.UUID.randomUUID()}@company.com"
     val req = RegisterRequest(email, "Password123!", "Enq User")
@@ -247,7 +237,7 @@ class ConvoExtractionEnqueueTest {
         setBody(mapper.writeValueAsString(req))
       }
     assertEquals(HttpStatusCode.Created, reg.status)
-    markEmailVerified(email)
+    markEmailVerified(connection, email)
     val cookie =
       reg.headers[HttpHeaders.SetCookie]!!
         .split(";")
@@ -274,22 +264,15 @@ class ConvoExtractionEnqueueTest {
       setBody(mapper.writeValueAsString(CreateConversationRequest(message, null)))
     }
 
-  private fun extractionJobs(convoId: String): List<Pair<String, Long>> {
-    val out = mutableListOf<Pair<String, Long>>()
-    connection
-      .prepareStatement(
-        "SELECT payload FROM jobs WHERE job_type = 'EXTRACT_CONVERSATION' AND payload->>'convoId' = ?",
-      ).use { stmt ->
-        stmt.setString(1, convoId)
-        stmt.executeQuery().use { rs ->
-          while (rs.next()) {
-            val payload = mapper.readTree(rs.getString("payload"))
-            out.add(payload["convoId"].asText() to payload["throughRequestId"].asLong())
-          }
-        }
-      }
-    return out
-  }
+  private fun extractionJobs(convoId: String): List<Pair<String, Long>> =
+    RawSql.list(
+      connection,
+      "SELECT payload FROM jobs WHERE job_type = 'EXTRACT_CONVERSATION' AND payload->>'convoId' = ?",
+      convoId,
+    ) { rs ->
+      val payload = mapper.readTree(rs.getString("payload"))
+      payload["convoId"].asText() to payload["throughRequestId"].asLong()
+    }
 
   // ---------------------------------------------------------------------------
 

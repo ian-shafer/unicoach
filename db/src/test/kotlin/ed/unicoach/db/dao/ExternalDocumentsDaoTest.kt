@@ -75,9 +75,7 @@ class ExternalDocumentsDaoTest {
     }
 
     private fun deleteOurs() {
-      connection.createStatement().use { stmt ->
-        stmt.execute("DELETE FROM external_documents WHERE url LIKE '$PREFIX%'")
-      }
+      RawSql.execute(connection, "DELETE FROM external_documents WHERE url LIKE ?", "$PREFIX%")
     }
   }
 
@@ -308,12 +306,11 @@ class ExternalDocumentsDaoTest {
    */
   private fun refusalOf(columns: Map<String, String>): String? =
     try {
-      connection.createStatement().use { stmt ->
-        stmt.execute(
-          "INSERT INTO external_documents (${columns.keys.joinToString(", ")}) " +
-            "VALUES (${columns.values.joinToString(", ")})",
-        )
-      }
+      RawSql.execute(
+        connection,
+        "INSERT INTO external_documents (${columns.keys.joinToString(", ")}) " +
+          "VALUES (${columns.values.joinToString(", ")})",
+      )
       null
     } catch (e: SQLException) {
       val server = (e as? org.postgresql.util.PSQLException)?.serverErrorMessage
@@ -331,28 +328,20 @@ class ExternalDocumentsDaoTest {
    */
   private fun violatedConstraint(columns: Map<String, String>): String? = refusalOf(EVIDENCE + columns)
 
-  private fun statusOf(url: String): String? = scalar("SELECT url_status FROM external_documents WHERE url = '$url'")
+  private fun statusOf(url: String): String? = scalar("SELECT url_status FROM external_documents WHERE url = ?", url)
 
   private fun checkedOnOf(url: String): LocalDate? =
-    scalar("SELECT url_checked_on FROM external_documents WHERE url = '$url'")?.let(LocalDate::parse)
+    scalar("SELECT url_checked_on FROM external_documents WHERE url = ?", url)?.let(LocalDate::parse)
 
-  private fun scalar(sql: String): String? =
-    connection.createStatement().use { stmt ->
-      stmt.executeQuery(sql).use { rs ->
-        if (rs.next()) rs.getString(1) else null
-      }
-    }
+  private fun scalar(
+    sql: String,
+    vararg args: Any?,
+  ): String? = RawSql.single(connection, sql, *args) { it.getString(1) }
 
   private fun countOurs(): Int = countRows("external_documents", "url LIKE '$PREFIX%'")
 
   private fun countRows(
     table: String,
     where: String,
-  ): Int =
-    connection.createStatement().use { stmt ->
-      stmt.executeQuery("SELECT COUNT(*) FROM $table WHERE $where").use { rs ->
-        rs.next()
-        rs.getInt(1)
-      }
-    }
+  ): Int = RawSql.count(connection, "SELECT COUNT(*) FROM $table WHERE $where")
 }

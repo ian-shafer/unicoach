@@ -65,10 +65,13 @@ class FitLensRunsDaoTest {
   private fun createStudent(): StudentId {
     val userId = UUID.randomUUID()
     val studentId = UUID.randomUUID()
-    connection.createStatement().use { stmt ->
-      stmt.execute("INSERT INTO users (id, email, name, password_hash) VALUES ('$userId', 'flr-$userId@test.com', 'FLR User', 'ahash')")
-      StudentRowFixture.insert(connection, studentId, userId)
-    }
+    RawSql.execute(
+      connection,
+      "INSERT INTO users (id, email, name, password_hash) VALUES (?, ?, 'FLR User', 'ahash')",
+      userId,
+      "flr-$userId@test.com",
+    )
+    StudentRowFixture.insert(connection, studentId, userId)
     return StudentId(studentId)
   }
 
@@ -77,26 +80,15 @@ class FitLensRunsDaoTest {
   // instance per test, so a counter would collide on (name, version).
   private fun createPrompt(name: String): SystemPromptId {
     val id = UUID.randomUUID()
-    connection.prepareStatement("INSERT INTO system_prompts (id, name, version, body) VALUES (?, ?, ?, 'body')").use { stmt ->
-      stmt.setObject(1, id)
-      stmt.setString(2, name)
-      stmt.setString(3, "p-$id")
-      stmt.executeUpdate()
-    }
+    RawSql.execute(connection, "INSERT INTO system_prompts (id, name, version, body) VALUES (?, ?, ?, 'body')", id, name, "p-$id")
     return SystemPromptId(id)
   }
 
-  private fun appendLlmRequest(): Long {
-    connection
-      .prepareStatement(
-        "INSERT INTO llm_requests (provider, model_requested, content, max_tokens) VALUES ('anthropic', 'claude-opus-4-8', '[]'::jsonb, 1024) RETURNING id",
-      ).use { stmt ->
-        stmt.executeQuery().use { rs ->
-          rs.next()
-          return rs.getLong("id")
-        }
-      }
-  }
+  private fun appendLlmRequest(): Long =
+    RawSql.single(
+      connection,
+      "INSERT INTO llm_requests (provider, model_requested, content, max_tokens) VALUES ('anthropic', 'claude-opus-4-8', '[]'::jsonb, 1024) RETURNING id",
+    ) { it.getLong("id") }
 
   /** A default `Applied` outcome, for cases that don't assert on the suggestions count. */
   private fun applied(suggestionsWritten: Int = 0): FitLensOutcome.Applied = FitLensOutcome.Applied(suggestionsWritten = suggestionsWritten)

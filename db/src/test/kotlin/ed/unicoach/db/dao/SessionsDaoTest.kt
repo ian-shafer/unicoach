@@ -64,11 +64,12 @@ class SessionsDaoTest {
 
   private fun createUser(): UserId {
     val rawId = UUID.randomUUID()
-    connection.createStatement().use { stmt ->
-      stmt.execute(
-        "INSERT INTO users (id, email, name, password_hash) VALUES ('$rawId', 'sess-$rawId@test.com', 'Sess User', 'ahash')",
-      )
-    }
+    RawSql.execute(
+      connection,
+      "INSERT INTO users (id, email, name, password_hash) VALUES (?, ?, 'Sess User', 'ahash')",
+      rawId,
+      "sess-$rawId@test.com",
+    )
     return UserId(rawId)
   }
 
@@ -383,25 +384,14 @@ class SessionsDaoTest {
   private fun sqlString(
     sql: String,
     id: SessionId,
-  ): String? =
-    connection.prepareStatement(sql).use { stmt ->
-      stmt.setObject(1, id.value)
-      stmt.executeQuery().use { rs ->
-        check(rs.next()) { "no session row [${id.value}]" }
-        rs.getString(1)
-      }
-    }
+  ): String? = RawSql.single(connection, sql, id.value) { it.getString(1) }
 
   /** Writes [rawJson] straight into the column, as a row no codec wrote. */
   private fun storeRawMetadata(
     id: SessionId,
     rawJson: String?,
   ) {
-    connection.prepareStatement("UPDATE sessions SET metadata = ?::jsonb, version = version + 1 WHERE id = ?").use { stmt ->
-      stmt.setString(1, rawJson)
-      stmt.setObject(2, id.value)
-      stmt.executeUpdate()
-    }
+    RawSql.execute(connection, "UPDATE sessions SET metadata = ?::jsonb, version = version + 1 WHERE id = ?", rawJson, id.value)
   }
 
   @Test

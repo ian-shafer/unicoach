@@ -94,7 +94,7 @@ object AdmissionTestStateProgrammeFixture {
 
   /** Empties the corpus. NAMED and called by the caller, never hidden inside a `seed` verb ([AdmissionTestCalendarFixture]'s rule). */
   fun deleteAll(session: SqlSession) {
-    session.prepareStatement("DELETE FROM admission_test_state_programmes").use { it.executeUpdate() }
+    RawSql.execute(session, "DELETE FROM admission_test_state_programmes")
   }
 
   /** Writes [rows] through the DAO's own upsert, so a fixture cannot write a row the read path could not have read. */

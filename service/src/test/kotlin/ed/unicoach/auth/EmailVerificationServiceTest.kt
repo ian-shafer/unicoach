@@ -6,6 +6,7 @@ import ed.unicoach.common.models.EmailAddress
 import ed.unicoach.common.models.ValidationResult
 import ed.unicoach.db.Database
 import ed.unicoach.db.DatabaseConfig
+import ed.unicoach.db.dao.RawSql
 import ed.unicoach.db.dao.SqlSession
 import ed.unicoach.db.dao.UsersDao
 import ed.unicoach.db.dao.VerificationTokensDao
@@ -115,14 +116,7 @@ class EmailVerificationServiceTest {
 
   private fun sendEmailJobs(): List<EmailJobPayload> = SendEmailJobQueries.payloads(connection)
 
-  private fun countRows(sql: String): Int {
-    connection.prepareStatement(sql).use { stmt ->
-      stmt.executeQuery().use { rs ->
-        rs.next()
-        return rs.getInt(1)
-      }
-    }
-  }
+  private fun countRows(sql: String): Int = RawSql.count(connection, sql)
 
   @Test
   fun `enqueue inserts a SEND_EMAIL job carrying the token`() =

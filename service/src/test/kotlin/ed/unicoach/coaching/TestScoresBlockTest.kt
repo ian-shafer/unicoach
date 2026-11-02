@@ -10,6 +10,7 @@ import ed.unicoach.coaching.budget.generousBudgetService
 import ed.unicoach.coaching.extraction.disabledExtraction
 import ed.unicoach.coaching.testing.TestScoreService
 import ed.unicoach.coaching.testing.TestScoreWrite
+import ed.unicoach.db.dao.RawSql
 import ed.unicoach.db.dao.StudentRowFixture
 import ed.unicoach.db.models.AdmissionTestScoreComponent
 import ed.unicoach.db.models.PartialDate
@@ -88,12 +89,13 @@ class TestScoresBlockTest {
   ): StudentId {
     val userId = UUID.randomUUID()
     val studentId = UUID.randomUUID()
-    CoachingTestDb.connection.createStatement().use { stmt ->
-      stmt.execute(
-        "INSERT INTO users (id, email, name, password_hash) VALUES ('$userId', '$label-$userId@test.com', 'Block User', 'ahash')",
-      )
-      StudentRowFixture.insert(CoachingTestDb.connection, studentId, userId, graduation)
-    }
+    RawSql.execute(
+      CoachingTestDb.connection,
+      "INSERT INTO users (id, email, name, password_hash) VALUES (?, ?, 'Block User', 'ahash')",
+      userId,
+      "$label-$userId@test.com",
+    )
+    StudentRowFixture.insert(CoachingTestDb.connection, studentId, userId, graduation)
     return StudentId(studentId)
   }
 

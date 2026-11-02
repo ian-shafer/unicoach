@@ -549,13 +549,7 @@ class AutomaticAwardSeedTest {
   private fun countRows(
     connection: Connection,
     table: String,
-  ): Int =
-    connection.createStatement().use { stmt ->
-      stmt.executeQuery("SELECT COUNT(*) FROM $table").use { rs ->
-        rs.next()
-        rs.getInt(1)
-      }
-    }
+  ): Int = RawSql.count(connection, "SELECT COUNT(*) FROM $table")
 
   /**
    * Today, in the zone this whole feature's dates are in.

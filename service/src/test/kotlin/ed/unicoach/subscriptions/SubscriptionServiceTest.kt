@@ -6,6 +6,7 @@ import ed.unicoach.appstore.ScriptedAppStoreTransport
 import ed.unicoach.coaching.budget.testSubscriptionPlans
 import ed.unicoach.db.Database
 import ed.unicoach.db.DatabaseConfig
+import ed.unicoach.db.dao.RawSql
 import ed.unicoach.db.dao.SqlSession
 import ed.unicoach.db.dao.StudentRowFixture
 import ed.unicoach.db.dao.SubscriptionsDao
@@ -80,9 +81,12 @@ class SubscriptionServiceTest {
    */
   private fun createAccount(): UserId {
     val userId = UUID.randomUUID()
-    connection.createStatement().use { stmt ->
-      stmt.execute("INSERT INTO users (id, email, name, password_hash) VALUES ('$userId', 'ss-$userId@test.com', 'Sub User', 'ahash')")
-    }
+    RawSql.execute(
+      connection,
+      "INSERT INTO users (id, email, name, password_hash) VALUES (?, ?, 'Sub User', 'ahash')",
+      userId,
+      "ss-$userId@test.com",
+    )
     return UserId(userId)
   }
 
@@ -112,21 +116,9 @@ class SubscriptionServiceTest {
   ) =
     ScriptedAppStoreTransport.of(200, AppStoreTestFixtures.activeStatusResponseBody(purchaseDate = purchaseDate, expiresDate = expiresDate))
 
-  private fun studentRowCount(): Int =
-    connection.prepareStatement("SELECT COUNT(*) AS n FROM students").use { stmt ->
-      stmt.executeQuery().use { rs ->
-        rs.next()
-        rs.getInt("n")
-      }
-    }
+  private fun studentRowCount(): Int = RawSql.count(connection, "SELECT COUNT(*) AS n FROM students")
 
-  private fun rowCount(): Int =
-    connection.prepareStatement("SELECT COUNT(*) AS n FROM subscriptions").use { stmt ->
-      stmt.executeQuery().use { rs ->
-        rs.next()
-        rs.getInt("n")
-      }
-    }
+  private fun rowCount(): Int = RawSql.count(connection, "SELECT COUNT(*) AS n FROM subscriptions")
 
   // ---------------------------------------------------------------------------
   // Happy paths

@@ -15,6 +15,7 @@ import ed.unicoach.db.dao.LlmCallsDao
 import ed.unicoach.db.dao.MoneyProfilesDao
 import ed.unicoach.db.dao.NotFoundException
 import ed.unicoach.db.dao.ObservationsDao
+import ed.unicoach.db.dao.RawSql
 import ed.unicoach.db.dao.SharingPermissionsDao
 import ed.unicoach.db.dao.SqlSession
 import ed.unicoach.db.dao.StudentsDao
@@ -103,11 +104,7 @@ class ErasedRowReadsTest {
   private fun ids(
     sql: String,
     vararg args: Any?,
-  ): List<String> =
-    connection.prepareStatement(sql).use { stmt ->
-      args.forEachIndexed { i, arg -> stmt.setObject(i + 1, arg) }
-      stmt.executeQuery().use { rs -> buildList { while (rs.next()) add(rs.getString(1)) } }
-    }
+  ): List<String> = RawSql.list(connection, sql, *args) { it.getString(1) }
 
   /** The ids of [table]'s rows erased with the account's student (key moved onto deleted_students). */
   private fun erasedOf(

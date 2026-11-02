@@ -1,5 +1,6 @@
 package ed.unicoach.rest
 
+import ed.unicoach.db.dao.RawSql
 import ed.unicoach.rest.ParentCoachServer.ScriptedCoach
 import ed.unicoach.web.common.routing.registeredRoutes
 import io.ktor.http.HttpMethod
@@ -185,38 +186,32 @@ class SupporterCoachingCutPointTest {
     convoId: String,
     sentinel: String,
   ) {
-    parentCoach.db
-      .prepareStatement(
-        """
-        INSERT INTO observations (student_id, convo_id, source_request_id, uttered_at, quote)
-        SELECT ?::uuid, ?::uuid, MAX(id), NOW(), ? FROM convo_requests WHERE convo_id = ?::uuid
-        """.trimIndent(),
-      ).use { stmt ->
-        stmt.setString(1, studentId)
-        stmt.setString(2, convoId)
-        stmt.setString(3, "I said $sentinel")
-        stmt.setString(4, convoId)
-        stmt.executeUpdate()
-      }
-    parentCoach.db
-      .prepareStatement(
-        "INSERT INTO claims (student_id, origin, kind, subject, topic, statement) VALUES (?::uuid, 'student_stated', 'goal', 'student', 'academics', ?)",
-      ).use { stmt ->
-        stmt.setString(1, studentId)
-        stmt.setString(2, "The student wants $sentinel")
-        stmt.executeUpdate()
-      }
+    RawSql.execute(
+      parentCoach.db,
+      """
+      INSERT INTO observations (student_id, convo_id, source_request_id, uttered_at, quote)
+      SELECT ?::uuid, ?::uuid, MAX(id), NOW(), ? FROM convo_requests WHERE convo_id = ?::uuid
+      """.trimIndent(),
+      studentId,
+      convoId,
+      "I said $sentinel",
+      convoId,
+    )
+    RawSql.execute(
+      parentCoach.db,
+      "INSERT INTO claims (student_id, origin, kind, subject, topic, statement) VALUES (?::uuid, 'student_stated', 'goal', 'student', 'academics', ?)",
+      studentId,
+      "The student wants $sentinel",
+    )
   }
 
   /** An open, explicit commitment: the row a turn that "settled" the student's record would mark. */
   private fun seedOpenCommitment(studentId: String) {
-    parentCoach.db
-      .prepareStatement(
-        "INSERT INTO commitments (student_id, lens, disclosure, statement) VALUES (?::uuid, 'gap', 'explicit', 'Ask about deadlines')",
-      ).use { stmt ->
-        stmt.setString(1, studentId)
-        stmt.executeUpdate()
-      }
+    RawSql.execute(
+      parentCoach.db,
+      "INSERT INTO commitments (student_id, lens, disclosure, statement) VALUES (?::uuid, 'gap', 'explicit', 'Ask about deadlines')",
+      studentId,
+    )
   }
 
   /** Every student-keyed table a write could reach, each row as its full JSON, in a stable order. */
@@ -246,11 +241,7 @@ class SupporterCoachingCutPointTest {
   private fun rowsOf(
     sql: String,
     studentId: String,
-  ): List<String> =
-    parentCoach.db.prepareStatement(sql).use { stmt ->
-      stmt.setString(1, studentId)
-      stmt.executeQuery().use { rs -> buildList { while (rs.next()) add(rs.getString(1)) }.sorted() }
-    }
+  ): List<String> = RawSql.list(parentCoach.db, sql, studentId) { it.getString(1) }.sorted()
 
   /** Every parameterless read under `/api/v1/students/me`, from the served tree, status and body. */
   private suspend fun studentReads(cookie: String): List<String> {

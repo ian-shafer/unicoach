@@ -21,6 +21,7 @@ dependencies {
   compileOnly(libs.postgresql)
 
   testImplementation(libs.kotlin.test.junit5)
+  testImplementation(testFixtures(project(":db")))
   testImplementation(libs.kotlinx.coroutines.test)
   testImplementation(libs.hikaricp)
   testImplementation(libs.postgresql)

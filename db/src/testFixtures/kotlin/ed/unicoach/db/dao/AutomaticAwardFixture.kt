@@ -115,7 +115,7 @@ object AutomaticAwardFixture {
   fun deleteAll(session: SqlSession) {
     // The bands go with their award through ON DELETE CASCADE, so one statement
     // is the whole corpus and a second would only be able to disagree with it.
-    session.prepareStatement("DELETE FROM college_automatic_awards").use { it.executeUpdate() }
+    RawSql.execute(session, "DELETE FROM college_automatic_awards")
   }
 
   /** Writes one award and its bands through the DAO's own upsert, so a fixture cannot write a row the read path could not read. */

@@ -377,20 +377,12 @@ class AdmissionTestStateProgrammeDaoTest {
     table: String = "admission_test_state_programmes",
   ): String? =
     try {
-      connection.createStatement().use { stmt ->
-        stmt.execute("INSERT INTO $table (${columns.keys.joinToString(", ")}) VALUES (${columns.values.joinToString(", ")})")
-      }
+      RawSql.execute(connection, "INSERT INTO $table (${columns.keys.joinToString(", ")}) VALUES (${columns.values.joinToString(", ")})")
       null
     } catch (e: SQLException) {
       (e as? PSQLException)?.serverErrorMessage?.constraint
         ?: "a [${e.sqlState}] with no constraint name: ${e.message}"
     }
 
-  private fun countRows(table: String): Int =
-    connection.createStatement().use { stmt ->
-      stmt.executeQuery("SELECT COUNT(*) FROM $table").use { rs ->
-        rs.next()
-        rs.getInt(1)
-      }
-    }
+  private fun countRows(table: String): Int = RawSql.count(connection, "SELECT COUNT(*) FROM $table")
 }

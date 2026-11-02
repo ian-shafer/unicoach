@@ -8,6 +8,7 @@ import ed.unicoach.common.config.AppConfig
 import ed.unicoach.db.Database
 import ed.unicoach.db.DatabaseConfig
 import ed.unicoach.db.dao.IntendedSubjectsDao
+import ed.unicoach.db.dao.RawSql
 import ed.unicoach.db.models.StudentId
 import ed.unicoach.rest.models.RegisterRequest
 import ed.unicoach.rest.models.UpdateIntendedSubjectsRequest
@@ -99,16 +100,6 @@ class IntendedSubjectsRoutingTest {
 
   private fun uniqueEmail(): String = "is${UUID.randomUUID()}@company.com"
 
-  private fun markEmailVerified(email: String) {
-    dbConnection
-      .prepareStatement(
-        "UPDATE users SET version = version + 1, email_verified_at = NOW() WHERE email = ? AND email_verified_at IS NULL",
-      ).use { stmt ->
-        stmt.setString(1, email)
-        stmt.executeUpdate()
-      }
-  }
-
   private suspend fun registerAndGetCookie(): String {
     val email = uniqueEmail()
     val req = RegisterRequest(email, "Password123!", "Intended Subjects User")
@@ -118,7 +109,7 @@ class IntendedSubjectsRoutingTest {
         setBody(mapper.writeValueAsString(req))
       }
     assertEquals(HttpStatusCode.Created, response.status)
-    markEmailVerified(email)
+    markEmailVerified(dbConnection, email)
     return response.headers[HttpHeaders.SetCookie]!!
       .split(";")
       .first()
@@ -178,14 +169,7 @@ class IntendedSubjectsRoutingTest {
     slug: String,
     name: String,
   ) {
-    dbConnection
-      .prepareStatement(
-        "INSERT INTO subjects (slug, name, cip_prefixes) VALUES (?, ?, '{51}'::TEXT[])",
-      ).use { stmt ->
-        stmt.setString(1, slug)
-        stmt.setString(2, name)
-        stmt.executeUpdate()
-      }
+    RawSql.execute(dbConnection, "INSERT INTO subjects (slug, name, cip_prefixes) VALUES (?, ?, '{51}'::TEXT[])", slug, name)
   }
 
   @Test

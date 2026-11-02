@@ -4,6 +4,7 @@ import ed.unicoach.admin.AdminTestSupport
 import ed.unicoach.db.dao.CostReportSharesDao
 import ed.unicoach.db.dao.ErasureFixture
 import ed.unicoach.db.dao.NotFoundException
+import ed.unicoach.db.dao.RawSql
 import ed.unicoach.db.dao.UsersDao
 import ed.unicoach.db.models.NewCostReportShare
 import ed.unicoach.db.models.SoftDeleteScope
@@ -558,14 +559,12 @@ class UsersResourceTest {
   private fun linkRequestedEmailCount(): Int =
     runBlocking {
       AdminTestSupport.database.withConnection { session ->
-        session.prepareStatement("SELECT count(*) FROM jobs WHERE job_type = ? AND payload->>'template' = ?").use { stmt ->
-          stmt.setString(1, JobType.SEND_EMAIL.value)
-          stmt.setString(2, EmailTemplate.LINK_REQUESTED.name)
-          stmt.executeQuery().use { rs ->
-            rs.next()
-            rs.getInt(1)
-          }
-        }
+        RawSql.count(
+          session,
+          "SELECT count(*) FROM jobs WHERE job_type = ? AND payload->>'template' = ?",
+          JobType.SEND_EMAIL.value,
+          EmailTemplate.LINK_REQUESTED.name,
+        )
       }
     }
 
@@ -803,15 +802,7 @@ private fun unconsumedTokenCount(id: UserId): Int {
   val sql = "SELECT COUNT(*) FROM verification_tokens WHERE user_id = ? AND consumed_at IS NULL"
   return java.sql.DriverManager
     .getConnection(dbConfig.jdbcUrl, dbConfig.user, dbConfig.password ?: "")
-    .use { conn ->
-      conn.prepareStatement(sql).use { stmt ->
-        stmt.setObject(1, id.value)
-        stmt.executeQuery().use { rs ->
-          rs.next()
-          rs.getInt(1)
-        }
-      }
-    }
+    .use { conn -> RawSql.count(conn, sql, id.value) }
 }
 
 /** Counts SEND_EMAIL jobs whose payload `to` matches [recipient] via a direct test-DB query. */
@@ -823,15 +814,7 @@ private fun sendEmailJobsTo(recipient: String): Int {
   val sql = "SELECT COUNT(*) FROM jobs WHERE job_type = 'SEND_EMAIL' AND payload->>'to' = ?"
   return java.sql.DriverManager
     .getConnection(dbConfig.jdbcUrl, dbConfig.user, dbConfig.password ?: "")
-    .use { conn ->
-      conn.prepareStatement(sql).use { stmt ->
-        stmt.setString(1, recipient)
-        stmt.executeQuery().use { rs ->
-          rs.next()
-          rs.getInt(1)
-        }
-      }
-    }
+    .use { conn -> RawSql.count(conn, sql, recipient) }
 }
 
 /** Extracts the href of the first `/user/{id}` detail link in the rendered list HTML. */

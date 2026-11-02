@@ -12,6 +12,7 @@ import ed.unicoach.chat.ToolRegistry
 import ed.unicoach.coaching.budget.generousBudgetService
 import ed.unicoach.coaching.extraction.ExtractionScheduler
 import ed.unicoach.coaching.extraction.testExtractionScheduler
+import ed.unicoach.db.dao.RawSql
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.toList
@@ -153,15 +154,11 @@ class CoachingServiceExtractionTest {
 
   /** Every queued extraction job as (convoId, throughRequestId), in insertion order. */
   private fun extractionJobs(): List<Pair<String, Long>> =
-    CoachingTestDb.connection
-      .prepareStatement(
-        "SELECT payload->>'convoId', (payload->>'throughRequestId')::bigint FROM jobs " +
-          "WHERE job_type = 'EXTRACT_CONVERSATION' ORDER BY 2",
-      ).use { stmt ->
-        stmt.executeQuery().use { rs ->
-          buildList { while (rs.next()) add(rs.getString(1) to rs.getLong(2)) }
-        }
-      }
+    RawSql.list(
+      CoachingTestDb.connection,
+      "SELECT payload->>'convoId', (payload->>'throughRequestId')::bigint FROM jobs " +
+        "WHERE job_type = 'EXTRACT_CONVERSATION' ORDER BY 2",
+    ) { rs -> rs.getString(1) to rs.getLong(2) }
 
   private suspend fun drain(reply: Flow<ReplyEvent>): ReplyEvent.Terminal = reply.toList().filterIsInstance<ReplyEvent.Terminal>().single()
 

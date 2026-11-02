@@ -10,6 +10,7 @@ import ed.unicoach.coaching.budget.generousBudgetService
 import ed.unicoach.coaching.collegelist.CollegeListBlock
 import ed.unicoach.coaching.extraction.disabledExtraction
 import ed.unicoach.db.dao.CodebookReferenceFixture
+import ed.unicoach.db.dao.RawSql
 import ed.unicoach.db.dao.StudentRowFixture
 import ed.unicoach.db.models.PartialDate
 import ed.unicoach.db.models.StudentId
@@ -151,12 +152,12 @@ class GraduationSentenceIsUnchangedTest {
   private fun createStudent(graduation: PartialDate): StudentId {
     val userId = java.util.UUID.randomUUID()
     val studentId = java.util.UUID.randomUUID()
-    CoachingTestDb.connection.createStatement().use { stmt ->
-      stmt.execute(
-        "INSERT INTO users (id, email, name, password_hash) VALUES " +
-          "('$userId', 'grad-$userId@test.com', 'Grad User', 'ahash')",
-      )
-    }
+    RawSql.execute(
+      CoachingTestDb.connection,
+      "INSERT INTO users (id, email, name, password_hash) VALUES (?, ?, 'Grad User', 'ahash')",
+      userId,
+      "grad-$userId@test.com",
+    )
     StudentRowFixture.insert(CoachingTestDb.connection, studentId, userId, graduation)
     return StudentId(studentId)
   }

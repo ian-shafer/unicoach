@@ -3,6 +3,7 @@ package ed.unicoach.rest
 import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
 import ed.unicoach.common.config.AppConfig
 import ed.unicoach.db.DatabaseConfig
+import ed.unicoach.db.dao.RawSql
 import ed.unicoach.db.dao.StudentRowFixture
 import ed.unicoach.family.SupporterCeiling
 import ed.unicoach.rest.models.AcceptSupporterInviteRequest
@@ -85,16 +86,6 @@ class SupporterRoutingTest {
 
   private fun uniqueEmail(prefix: String) = "$prefix${java.util.UUID.randomUUID()}@company.com"
 
-  private fun markEmailVerified(email: String) {
-    dbConnection
-      .prepareStatement(
-        "UPDATE users SET version = version + 1, email_verified_at = NOW() WHERE email = ? AND email_verified_at IS NULL",
-      ).use { stmt ->
-        stmt.setString(1, email)
-        stmt.executeUpdate()
-      }
-  }
-
   /** Registers a fresh user and returns the session cookie, leaving the address UNVERIFIED. */
   private suspend fun register(
     email: String,
@@ -118,7 +109,7 @@ class SupporterRoutingTest {
     email: String = uniqueEmail("parent"),
   ): String {
     val cookie = register(email, name)
-    markEmailVerified(email)
+    markEmailVerified(dbConnection, email)
     return cookie
   }
 
@@ -126,7 +117,7 @@ class SupporterRoutingTest {
   private suspend fun registerStudent(name: String): String {
     val email = uniqueEmail("student")
     val cookie = register(email, name)
-    markEmailVerified(email)
+    markEmailVerified(dbConnection, email)
     val response =
       client.post(buildUrl("/api/v1/students")) {
         header(HttpHeaders.ContentType, ContentType.Application.Json.toString())
@@ -210,26 +201,16 @@ class SupporterRoutingTest {
    * its `user_id` and no live one can replace it.
    */
   private fun closeSupporter(supporterId: String) {
-    dbConnection
-      .prepareStatement("UPDATE supporters SET deleted_at = NOW(), version = version + 1 WHERE id = ?::uuid")
-      .use { stmt ->
-        stmt.setString(1, supporterId)
-        stmt.executeUpdate()
-      }
+    RawSql.execute(dbConnection, "UPDATE supporters SET deleted_at = NOW(), version = version + 1 WHERE id = ?::uuid", supporterId)
   }
 
   /** How many supporter rows this one account holds — the idempotence claim, per user. */
-  private fun supporterRowsFor(supporterId: String): Int {
-    dbConnection
-      .prepareStatement("SELECT count(*) FROM supporters WHERE user_id = (SELECT user_id FROM supporters WHERE id = ?::uuid)")
-      .use { stmt ->
-        stmt.setString(1, supporterId)
-        stmt.executeQuery().use { rs ->
-          rs.next()
-          return rs.getInt(1)
-        }
-      }
-  }
+  private fun supporterRowsFor(supporterId: String): Int =
+    RawSql.count(
+      dbConnection,
+      "SELECT count(*) FROM supporters WHERE user_id = (SELECT user_id FROM supporters WHERE id = ?::uuid)",
+      supporterId,
+    )
 
   private fun supporterIdOf(body: String): String =
     mapper

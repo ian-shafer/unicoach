@@ -7,6 +7,7 @@ import ed.unicoach.common.json.deserialize
 import ed.unicoach.common.models.EmailAddress
 import ed.unicoach.common.models.ValidationResult
 import ed.unicoach.db.dao.CostReportSharesDao
+import ed.unicoach.db.dao.RawSql
 import ed.unicoach.db.dao.SessionsDao
 import ed.unicoach.db.dao.StudentRowFixture
 import ed.unicoach.db.dao.SupporterInvitesDao
@@ -97,16 +98,14 @@ class AccountClosureServiceTest {
   ): Account {
     val userId = UUID.randomUUID()
     val email = "user-$userId@example.com"
-    connection
-      .prepareStatement(
-        "INSERT INTO users (id, email, name, password_hash, email_verified_at) VALUES (?, ?, ?, 'hash', ?)",
-      ).use { stmt ->
-        stmt.setObject(1, userId)
-        stmt.setString(2, email)
-        stmt.setString(3, name)
-        stmt.setObject(4, if (verified) java.sql.Timestamp.from(Instant.now()) else null)
-        stmt.executeUpdate()
-      }
+    RawSql.execute(
+      connection,
+      "INSERT INTO users (id, email, name, password_hash, email_verified_at) VALUES (?, ?, ?, 'hash', ?)",
+      userId,
+      email,
+      name,
+      if (verified) java.sql.Timestamp.from(Instant.now()) else null,
+    )
     val hash = TokenHash(UUID.randomUUID().toString().toByteArray())
     SessionsDao
       .create(
@@ -189,24 +188,15 @@ class AccountClosureServiceTest {
     table: String,
     id: UUID,
   ): Boolean =
-    connection.prepareStatement("SELECT deleted_at IS NULL FROM $table WHERE id = ?").use { stmt ->
-      stmt.setObject(1, id)
-      stmt.executeQuery().use { rs ->
-        assertTrue(rs.next(), "the [$table] row [$id] must still be there")
-        rs.getBoolean(1)
-      }
-    }
+    assertNotNull(
+      RawSql.singleOrNull(connection, "SELECT deleted_at IS NULL FROM $table WHERE id = ?", id) { it.getBoolean(1) },
+      "the [$table] row [$id] must still be there",
+    )
 
   private fun linkIsLive(link: SupporterStudentLink) = isLive("supporter_student_links", link.id.value)
 
   private fun linkHistoryCount(link: SupporterStudentLink): Int =
-    connection.prepareStatement("SELECT count(*) FROM supporter_student_links_versions WHERE id = ?").use { stmt ->
-      stmt.setObject(1, link.id.value)
-      stmt.executeQuery().use { rs ->
-        rs.next()
-        rs.getInt(1)
-      }
-    }
+    RawSql.count(connection, "SELECT count(*) FROM supporter_student_links_versions WHERE id = ?", link.id.value)
 
   private fun inviteIsLive(invite: SupporterInvite) =
     SupporterInvitesDao.findLiveByTokenHash(sqlSession, invite.tokenHash).getOrThrow() != null
@@ -419,12 +409,8 @@ class AccountClosureServiceTest {
   }
 
   private fun resolutionOf(request: SupporterLinkRequest): SupporterLinkRequestResolution? =
-    connection.prepareStatement("SELECT resolution FROM supporter_link_requests WHERE id = ?").use { stmt ->
-      stmt.setObject(1, request.id.value)
-      stmt.executeQuery().use { rs ->
-        assertTrue(rs.next())
-        rs.getString(1)?.let { SupporterLinkRequestResolution.fromValue(it) }
-      }
+    RawSql.single(connection, "SELECT resolution FROM supporter_link_requests WHERE id = ?", request.id.value) { rs ->
+      rs.getString(1)?.let { SupporterLinkRequestResolution.fromValue(it) }
     }
 
   @Test

@@ -82,9 +82,12 @@ class SubscriptionsDaoTest {
    */
   private fun createAccount(): UserId {
     val userId = UUID.randomUUID()
-    connection.createStatement().use { stmt ->
-      stmt.execute("INSERT INTO users (id, email, name, password_hash) VALUES ('$userId', 'sub-$userId@test.com', 'Sub User', 'ahash')")
-    }
+    RawSql.execute(
+      connection,
+      "INSERT INTO users (id, email, name, password_hash) VALUES (?, ?, 'Sub User', 'ahash')",
+      userId,
+      "sub-$userId@test.com",
+    )
     return UserId(userId)
   }
 
@@ -119,27 +122,18 @@ class SubscriptionsDaoTest {
       .getOrThrow()
 
   private fun versionRowCount(subscription: Subscription): Int =
-    connection
-      .prepareStatement("SELECT COUNT(*) AS n FROM subscriptions_versions WHERE id = ?")
-      .use { stmt ->
-        stmt.setObject(1, subscription.id.value)
-        stmt.executeQuery().use { rs ->
-          rs.next()
-          rs.getInt("n")
-        }
-      }
+    RawSql.count(connection, "SELECT COUNT(*) AS n FROM subscriptions_versions WHERE id = ?", subscription.id.value)
 
   private fun hasVersionRow(
     subscription: Subscription,
     version: Int,
   ): Boolean =
-    connection
-      .prepareStatement("SELECT 1 FROM subscriptions_versions WHERE id = ? AND version = ?")
-      .use { stmt ->
-        stmt.setObject(1, subscription.id.value)
-        stmt.setInt(2, version)
-        stmt.executeQuery().use { it.next() }
-      }
+    RawSql.single(
+      connection,
+      "SELECT EXISTS (SELECT 1 FROM subscriptions_versions WHERE id = ? AND version = ?)",
+      subscription.id.value,
+      version,
+    ) { it.getBoolean(1) }
 
   // ---------------------------------------------------------------------------
   // upsert
@@ -633,48 +627,30 @@ class SubscriptionsDaoTest {
   }
 
   private fun studentRowCount(userId: UserId): Int =
-    connection.prepareStatement("SELECT COUNT(*) AS n FROM students WHERE user_id = ?").use { stmt ->
-      stmt.setObject(1, userId.value)
-      stmt.executeQuery().use { rs ->
-        rs.next()
-        rs.getInt("n")
-      }
-    }
+    RawSql.count(connection, "SELECT COUNT(*) AS n FROM students WHERE user_id = ?", userId.value)
 
   /** The one indexed hop a caller holding a [StudentId] makes to reach the payer. */
   private fun accountOfStudent(studentId: StudentId): UserId =
-    connection.prepareStatement("SELECT user_id FROM students WHERE id = ?").use { stmt ->
-      stmt.setObject(1, studentId.value)
-      stmt.executeQuery().use { rs ->
-        rs.next()
-        UserId(UUID.fromString(rs.getString("user_id")))
-      }
+    RawSql.single(connection, "SELECT user_id FROM students WHERE id = ?", studentId.value) {
+      UserId(UUID.fromString(it.getString("user_id")))
     }
 
   private fun versionRowUserId(
     subscription: Subscription,
     version: Int,
   ): UUID =
-    connection
-      .prepareStatement("SELECT user_id FROM subscriptions_versions WHERE id = ? AND version = ?")
-      .use { stmt ->
-        stmt.setObject(1, subscription.id.value)
-        stmt.setInt(2, version)
-        stmt.executeQuery().use { rs ->
-          rs.next()
-          UUID.fromString(rs.getString("user_id"))
-        }
-      }
+    RawSql.single(connection, "SELECT user_id FROM subscriptions_versions WHERE id = ? AND version = ?", subscription.id.value, version) {
+      UUID.fromString(it.getString("user_id"))
+    }
 
   private fun hasColumn(
     table: String,
     column: String,
   ): Boolean =
-    connection
-      .prepareStatement("SELECT 1 FROM information_schema.columns WHERE table_name = ? AND column_name = ?")
-      .use { stmt ->
-        stmt.setString(1, table)
-        stmt.setString(2, column)
-        stmt.executeQuery().use { it.next() }
-      }
+    RawSql.single(
+      connection,
+      "SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = ? AND column_name = ?)",
+      table,
+      column,
+    ) { it.getBoolean(1) }
 }

@@ -3,6 +3,7 @@ package ed.unicoach.rest
 import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
 import ed.unicoach.common.config.AppConfig
 import ed.unicoach.db.DatabaseConfig
+import ed.unicoach.db.dao.RawSql
 import ed.unicoach.rest.models.RegisterRequest
 import ed.unicoach.rest.models.UpdateMoneyProfileRequest
 import io.ktor.client.HttpClient
@@ -68,16 +69,6 @@ class MoneyProfileRoutingTest {
 
   private fun uniqueEmail(): String = "mp${UUID.randomUUID()}@company.com"
 
-  private fun markEmailVerified(email: String) {
-    dbConnection
-      .prepareStatement(
-        "UPDATE users SET version = version + 1, email_verified_at = NOW() WHERE email = ? AND email_verified_at IS NULL",
-      ).use { stmt ->
-        stmt.setString(1, email)
-        stmt.executeUpdate()
-      }
-  }
-
   private suspend fun registerAndGetCookie(): String {
     val email = uniqueEmail()
     val req = RegisterRequest(email, "Password123!", "Money Profile User")
@@ -87,7 +78,7 @@ class MoneyProfileRoutingTest {
         setBody(mapper.writeValueAsString(req))
       }
     assertEquals(HttpStatusCode.Created, response.status)
-    markEmailVerified(email)
+    markEmailVerified(dbConnection, email)
     return response.headers[HttpHeaders.SetCookie]!!
       .split(";")
       .first()

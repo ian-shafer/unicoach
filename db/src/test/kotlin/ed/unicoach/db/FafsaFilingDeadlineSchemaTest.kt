@@ -1,5 +1,6 @@
 package ed.unicoach.db
 
+import ed.unicoach.db.dao.RawSql
 import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.BeforeEach
@@ -314,12 +315,11 @@ class FafsaFilingDeadlineSchemaTest {
   /** The refusal for one literal-SQL row, or null when the database ACCEPTED it. */
   private fun refusalFor(columns: Map<String, String>): Refusal? =
     try {
-      connection.createStatement().use { stmt ->
-        stmt.execute(
-          "INSERT INTO fafsa_filing_deadlines (${columns.keys.joinToString(", ")}) " +
-            "VALUES (${columns.values.joinToString(", ")})",
-        )
-      }
+      RawSql.execute(
+        connection,
+        "INSERT INTO fafsa_filing_deadlines (${columns.keys.joinToString(", ")}) " +
+          "VALUES (${columns.values.joinToString(", ")})",
+      )
       null
     } catch (e: SQLException) {
       val server = (e as? PSQLException)?.serverErrorMessage
@@ -338,11 +338,5 @@ class FafsaFilingDeadlineSchemaTest {
    */
   private fun violatedConstraint(columns: Map<String, String>): String? = refusalFor(columns)?.constraint
 
-  private fun countRows(): Int =
-    connection.createStatement().use { stmt ->
-      stmt.executeQuery("SELECT COUNT(*) FROM fafsa_filing_deadlines").use { rs ->
-        rs.next()
-        rs.getInt(1)
-      }
-    }
+  private fun countRows(): Int = RawSql.count(connection, "SELECT COUNT(*) FROM fafsa_filing_deadlines")
 }

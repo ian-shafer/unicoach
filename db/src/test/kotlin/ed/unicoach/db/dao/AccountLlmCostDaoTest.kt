@@ -94,13 +94,12 @@ class AccountLlmCostDaoTest {
 
   private fun createUser(): UserId {
     val userId = UUID.randomUUID()
-    connection
-      .prepareStatement("INSERT INTO users (id, email, name, password_hash) VALUES (?, ?, 'Account Cost User', 'ahash')")
-      .use { stmt ->
-        stmt.setObject(1, userId)
-        stmt.setString(2, "alcd-$userId@test.com")
-        stmt.executeUpdate()
-      }
+    RawSql.execute(
+      connection,
+      "INSERT INTO users (id, email, name, password_hash) VALUES (?, ?, 'Account Cost User', 'ahash')",
+      userId,
+      "alcd-$userId@test.com",
+    )
     return UserId(userId)
   }
 
@@ -115,13 +114,7 @@ class AccountLlmCostDaoTest {
 
   private fun createSystemPrompt(): UUID {
     val id = UUID.randomUUID()
-    connection
-      .prepareStatement("INSERT INTO system_prompts (id, name, version, body) VALUES (?, 'coach', ?, 'coach')")
-      .use { stmt ->
-        stmt.setObject(1, id)
-        stmt.setString(2, "v-$id")
-        stmt.executeUpdate()
-      }
+    RawSql.execute(connection, "INSERT INTO system_prompts (id, name, version, body) VALUES (?, 'coach', ?, 'coach')", id, "v-$id")
     return id
   }
 
@@ -140,24 +133,23 @@ class AccountLlmCostDaoTest {
     createdAt: Instant? = null,
   ) {
     val convoId = UUID.randomUUID()
-    connection.prepareStatement("INSERT INTO convos (id, student_id, name, party) VALUES (?, ?, 'Convo', 'student')").use { stmt ->
-      stmt.setObject(1, convoId)
-      stmt.setObject(2, studentId.value)
-      stmt.executeUpdate()
-    }
+    RawSql.execute(
+      connection,
+      "INSERT INTO convos (id, student_id, name, party) VALUES (?, ?, 'Convo', 'student')",
+      convoId,
+      studentId.value,
+    )
     val requestId = appendCall(costNanodollars, costIsEstimated, createdAt)
-    connection
-      .prepareStatement(
-        """
-        INSERT INTO convo_requests (convo_id, system_prompt_id, llm_request_id, turn_id)
-        VALUES (?, ?, ?, nextval('convo_turn_id_seq'))
-        """.trimIndent(),
-      ).use { stmt ->
-        stmt.setObject(1, convoId)
-        stmt.setObject(2, createSystemPrompt())
-        stmt.setLong(3, requestId)
-        stmt.executeUpdate()
-      }
+    RawSql.execute(
+      connection,
+      """
+      INSERT INTO convo_requests (convo_id, system_prompt_id, llm_request_id, turn_id)
+      VALUES (?, ?, ?, nextval('convo_turn_id_seq'))
+      """.trimIndent(),
+      convoId,
+      createSystemPrompt(),
+      requestId,
+    )
   }
 
   /** The row `family/06` will write per parent-coaching call. */
@@ -185,13 +177,7 @@ class AccountLlmCostDaoTest {
     keyColumn: String,
     key: UUID,
   ): LlmCostAggregate =
-    connection.prepareStatement("$LLM_COST_AGGREGATE_PROJECTION FROM $view WHERE $keyColumn = ?").use { stmt ->
-      stmt.setObject(1, key)
-      stmt.executeQuery().use { rs ->
-        rs.next()
-        mapLlmCostAggregate(rs)
-      }
-    }
+    RawSql.single(connection, "$LLM_COST_AGGREGATE_PROJECTION FROM $view WHERE $keyColumn = ?", key) { rs -> mapLlmCostAggregate(rs) }
 
   // ---------------------------------------------------------------------------
   // The regression: a student-only account reads what it always read
@@ -260,27 +246,24 @@ class AccountLlmCostDaoTest {
     costNanodollars: Long,
   ) {
     val convoId = UUID.randomUUID()
-    connection
-      .prepareStatement("INSERT INTO convos (id, student_id, name, party, supporter_id) VALUES (?, ?, 'Parent', 'supporter', ?)")
-      .use { stmt ->
-        stmt.setObject(1, convoId)
-        stmt.setObject(2, studentId.value)
-        stmt.setObject(3, supporterId.value)
-        stmt.executeUpdate()
-      }
+    RawSql.execute(
+      connection,
+      "INSERT INTO convos (id, student_id, name, party, supporter_id) VALUES (?, ?, 'Parent', 'supporter', ?)",
+      convoId,
+      studentId.value,
+      supporterId.value,
+    )
     val requestId = appendCall(costNanodollars, false)
-    connection
-      .prepareStatement(
-        """
-        INSERT INTO convo_requests (convo_id, system_prompt_id, llm_request_id, turn_id)
-        VALUES (?, ?, ?, nextval('convo_turn_id_seq'))
-        """.trimIndent(),
-      ).use { stmt ->
-        stmt.setObject(1, convoId)
-        stmt.setObject(2, createSystemPrompt())
-        stmt.setLong(3, requestId)
-        stmt.executeUpdate()
-      }
+    RawSql.execute(
+      connection,
+      """
+      INSERT INTO convo_requests (convo_id, system_prompt_id, llm_request_id, turn_id)
+      VALUES (?, ?, ?, nextval('convo_turn_id_seq'))
+      """.trimIndent(),
+      convoId,
+      createSystemPrompt(),
+      requestId,
+    )
     SupporterLlmCostsDao.insert(session, LlmRequestId(requestId), supporterId).getOrThrow()
   }
 
@@ -453,11 +436,7 @@ class AccountLlmCostDaoTest {
   private fun LlmCostAggregate.numbers() = Triple(costNanodollars.value, uncostedCalls, estimatedCalls)
 
   private fun accountIdsInView(): Set<UUID> =
-    connection.createStatement().use { stmt ->
-      stmt.executeQuery("SELECT DISTINCT user_id FROM account_llm_cost").use { rs ->
-        buildSet { while (rs.next()) add(rs.getObject(1, UUID::class.java)) }
-      }
-    }
+    RawSql.list(connection, "SELECT DISTINCT user_id FROM account_llm_cost") { rs -> rs.getObject(1, UUID::class.java) }.toSet()
 
   @Test
   fun `an account's spend is the same before and after its student moves to the deleted key`() {

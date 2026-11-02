@@ -1,6 +1,7 @@
 package ed.unicoach.db
 
 import ed.unicoach.db.dao.CodebookReferenceFixture
+import ed.unicoach.db.dao.RawSql
 import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.Test
@@ -85,19 +86,14 @@ class SourceDocumentsAdoptionTest {
     // migrated-only test database holds no colleges (they arrive at ingest), so
     // one is inserted here, like CollegeScoreBandsMigrationTest does, and its
     // real, database-generated id is returned.
-    return connection.createStatement().use { stmt ->
-      stmt
-        .executeQuery(
-          """
-          INSERT INTO colleges (ipeds_unit_id, name, city, state, control)
-          VALUES (900000 + (SELECT COUNT(*) FROM colleges), 'Adoption Probe', 'Townsville', 'CA', 1)
-          RETURNING id
-          """.trimIndent(),
-        ).use { rs ->
-          rs.next()
-          rs.getString("id")
-        }
-    }
+    return RawSql.single(
+      connection,
+      """
+      INSERT INTO colleges (ipeds_unit_id, name, city, state, control)
+      VALUES (900000 + (SELECT COUNT(*) FROM colleges), 'Adoption Probe', 'Townsville', 'CA', 1)
+      RETURNING id
+      """.trimIndent(),
+    ) { rs -> rs.getString("id") }
   }
 
   /** Runs [body] in one explicit transaction and ALWAYS rolls it back. */
@@ -247,11 +243,5 @@ class SourceDocumentsAdoptionTest {
   private fun countWhere(
     table: String,
     where: String,
-  ): Int =
-    connection.createStatement().use { stmt ->
-      stmt.executeQuery("SELECT COUNT(*) FROM $table WHERE $where").use { rs ->
-        rs.next()
-        rs.getInt(1)
-      }
-    }
+  ): Int = RawSql.count(connection, "SELECT COUNT(*) FROM $table WHERE $where")
 }

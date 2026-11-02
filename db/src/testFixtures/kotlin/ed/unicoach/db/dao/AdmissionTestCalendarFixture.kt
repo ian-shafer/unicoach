@@ -180,7 +180,7 @@ object AdmissionTestCalendarFixture {
 
   /** Empties the calendar. NAMED and called by the caller, never hidden inside a `seed` verb (`CanonicalCohortFixture`'s rule). */
   fun deleteAll(session: SqlSession) {
-    session.prepareStatement("DELETE FROM admission_test_administrations").use { it.executeUpdate() }
+    RawSql.execute(session, "DELETE FROM admission_test_administrations")
   }
 
   /** Writes [rows] through the DAO's own upsert, so a fixture cannot write a row the read path could not have read. */

@@ -1,6 +1,7 @@
 package ed.unicoach.college
 
 import ed.unicoach.db.dao.CollegesDao
+import ed.unicoach.db.dao.RawSql
 import ed.unicoach.db.dao.SqlSession
 import ed.unicoach.db.models.NewCollege
 import kotlinx.coroutines.runBlocking
@@ -500,29 +501,23 @@ class IpedsIngestTest : CollegeScorecardTestBase() {
 
   private fun row(ipedsUnitId: Int): IpedsRow? =
     withSession { session ->
-      session
-        .prepareStatement(
-          "SELECT sector, ug_offer, rel_affil, has_rotc, offers_housing, application_fee_usd, test_policy, " +
-            "athletic_assoc::text FROM college_ipeds WHERE ipeds_unit_id = ?",
-        ).use { stmt ->
-          stmt.setInt(1, ipedsUnitId)
-          stmt.executeQuery().use { rs ->
-            if (!rs.next()) {
-              null
-            } else {
-              IpedsRow(
-                sector = rs.getInt(1).takeUnless { rs.wasNull() },
-                ugOffer = rs.getBoolean(2).takeUnless { rs.wasNull() },
-                relAffil = rs.getInt(3).takeUnless { rs.wasNull() },
-                hasRotc = rs.getBoolean(4).takeUnless { rs.wasNull() },
-                offersHousing = rs.getBoolean(5).takeUnless { rs.wasNull() },
-                applicationFeeUsd = rs.getInt(6).takeUnless { rs.wasNull() },
-                testPolicy = rs.getInt(7).takeUnless { rs.wasNull() },
-                athleticAssoc = rs.getString(8),
-              )
-            }
-          }
-        }
+      RawSql.singleOrNull(
+        session,
+        "SELECT sector, ug_offer, rel_affil, has_rotc, offers_housing, application_fee_usd, test_policy, " +
+          "athletic_assoc::text FROM college_ipeds WHERE ipeds_unit_id = ?",
+        ipedsUnitId,
+      ) { rs ->
+        IpedsRow(
+          sector = rs.getInt(1).takeUnless { rs.wasNull() },
+          ugOffer = rs.getBoolean(2).takeUnless { rs.wasNull() },
+          relAffil = rs.getInt(3).takeUnless { rs.wasNull() },
+          hasRotc = rs.getBoolean(4).takeUnless { rs.wasNull() },
+          offersHousing = rs.getBoolean(5).takeUnless { rs.wasNull() },
+          applicationFeeUsd = rs.getInt(6).takeUnless { rs.wasNull() },
+          testPolicy = rs.getInt(7).takeUnless { rs.wasNull() },
+          athleticAssoc = rs.getString(8),
+        )
+      }
     }
 
   private data class BuildRow(
@@ -536,20 +531,17 @@ class IpedsIngestTest : CollegeScorecardTestBase() {
     session: SqlSession,
     id: UUID,
   ): BuildRow? =
-    session
-      .prepareStatement(
-        "SELECT method_version, sources::text, rows_ingested::text, change_summary::text " +
-          "FROM college_index_build WHERE id = ?",
-      ).use { stmt ->
-        stmt.setObject(1, id)
-        stmt.executeQuery().use { rs ->
-          if (!rs.next()) return null
-          BuildRow(
-            methodVersion = rs.getInt(1),
-            sources = rs.getString(2),
-            rowsIngested = rs.getString(3),
-            changeSummary = rs.getString(4),
-          )
-        }
-      }
+    RawSql.singleOrNull(
+      session,
+      "SELECT method_version, sources::text, rows_ingested::text, change_summary::text " +
+        "FROM college_index_build WHERE id = ?",
+      id,
+    ) { rs ->
+      BuildRow(
+        methodVersion = rs.getInt(1),
+        sources = rs.getString(2),
+        rowsIngested = rs.getString(3),
+        changeSummary = rs.getString(4),
+      )
+    }
 }

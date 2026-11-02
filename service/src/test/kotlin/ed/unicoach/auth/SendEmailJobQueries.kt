@@ -1,6 +1,7 @@
 package ed.unicoach.auth
 
 import ed.unicoach.common.json.deserialize
+import ed.unicoach.db.dao.RawSql
 import ed.unicoach.email.EmailJobPayload
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
@@ -15,37 +16,16 @@ import java.sql.Connection
 object SendEmailJobQueries {
   /** Deserialized payloads of every enqueued `SEND_EMAIL` job, insertion order. */
   fun payloads(connection: Connection): List<EmailJobPayload> =
-    connection.prepareStatement("SELECT payload FROM jobs WHERE job_type = 'SEND_EMAIL'").use { stmt ->
-      stmt.executeQuery().use { rs ->
-        buildList {
-          while (rs.next()) {
-            add(Json.decodeFromString<JsonObject>(rs.getString("payload")).deserialize<EmailJobPayload>())
-          }
-        }
-      }
+    RawSql.list(connection, "SELECT payload FROM jobs WHERE job_type = 'SEND_EMAIL'") { rs ->
+      Json.decodeFromString<JsonObject>(rs.getString("payload")).deserialize<EmailJobPayload>()
     }
 
   /** Total count of enqueued `SEND_EMAIL` jobs. */
-  fun count(connection: Connection): Int =
-    connection.prepareStatement("SELECT COUNT(*) FROM jobs WHERE job_type = 'SEND_EMAIL'").use { stmt ->
-      stmt.executeQuery().use { rs ->
-        rs.next()
-        rs.getInt(1)
-      }
-    }
+  fun count(connection: Connection): Int = RawSql.count(connection, "SELECT COUNT(*) FROM jobs WHERE job_type = 'SEND_EMAIL'")
 
   /** Count of enqueued `SEND_EMAIL` jobs addressed to [recipient]. */
   fun countTo(
     connection: Connection,
     recipient: String,
-  ): Int =
-    connection
-      .prepareStatement("SELECT COUNT(*) FROM jobs WHERE job_type = 'SEND_EMAIL' AND payload->>'to' = ?")
-      .use { stmt ->
-        stmt.setString(1, recipient)
-        stmt.executeQuery().use { rs ->
-          rs.next()
-          rs.getInt(1)
-        }
-      }
+  ): Int = RawSql.count(connection, "SELECT COUNT(*) FROM jobs WHERE job_type = 'SEND_EMAIL' AND payload->>'to' = ?", recipient)
 }

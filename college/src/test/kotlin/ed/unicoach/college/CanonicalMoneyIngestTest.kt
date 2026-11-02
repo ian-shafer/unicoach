@@ -1,6 +1,7 @@
 package ed.unicoach.college
 
 import ed.unicoach.db.dao.MoneyVocabularyFixture
+import ed.unicoach.db.dao.RawSql
 import ed.unicoach.db.dao.SqlSession
 import ed.unicoach.db.models.FigureStatus
 import kotlinx.coroutines.runBlocking
@@ -156,33 +157,22 @@ class CanonicalMoneyIngestTest : CollegeScorecardTestBase() {
     assertEquals(3, report.sources.size, "no vocabulary digest was recorded for a file this run never read")
   }
 
-  private fun scalar(sql: String): Int =
-    withSession { session ->
-      session.prepareStatement(sql).use { stmt ->
-        stmt.executeQuery().use { rs ->
-          rs.next()
-          rs.getInt(1)
-        }
-      }
-    }
+  private fun scalar(sql: String): Int = withSession { session -> RawSql.single(session, sql) { rs -> rs.getInt(1) } }
 
   private fun buildColumns(
     session: SqlSession,
     id: UUID,
   ): Triple<Int?, Int?, String?> =
-    session
-      .prepareStatement(
-        "SELECT price_figure_rows, cohort_money_stat_rows, canonical_money_summary::text " +
-          "FROM college_index_build WHERE id = ?",
-      ).use { stmt ->
-        stmt.setObject(1, id)
-        stmt.executeQuery().use { rs ->
-          assertTrue(rs.next(), "no college_index_build row for [$id]")
-          Triple(
-            rs.getInt(1).takeUnless { rs.wasNull() },
-            rs.getInt(2).takeUnless { rs.wasNull() },
-            rs.getString(3),
-          )
-        }
-      }
+    RawSql.single(
+      session,
+      "SELECT price_figure_rows, cohort_money_stat_rows, canonical_money_summary::text " +
+        "FROM college_index_build WHERE id = ?",
+      id,
+    ) { rs ->
+      Triple(
+        rs.getInt(1).takeUnless { rs.wasNull() },
+        rs.getInt(2).takeUnless { rs.wasNull() },
+        rs.getString(3),
+      )
+    }
 }

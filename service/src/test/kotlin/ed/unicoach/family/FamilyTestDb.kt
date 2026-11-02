@@ -1,6 +1,7 @@
 package ed.unicoach.family
 
 import ed.unicoach.coaching.costs.CostsTestDb
+import ed.unicoach.db.dao.RawSql
 import ed.unicoach.db.dao.SupporterStudentLinksDao
 import ed.unicoach.db.dao.SupportersDao
 import ed.unicoach.db.models.NewSupporter
@@ -25,13 +26,12 @@ object FamilyTestDb {
   /** A fresh adult account with no link to anyone. */
   fun createUser(): UserId {
     val userId = UUID.randomUUID()
-    CostsTestDb.sqlSession
-      .prepareStatement("INSERT INTO users (id, email, name, password_hash) VALUES (?, ?, 'Parent Jane', 'hash')")
-      .use { stmt ->
-        stmt.setObject(1, userId)
-        stmt.setString(2, "parent-$userId@example.com")
-        stmt.executeUpdate()
-      }
+    RawSql.execute(
+      CostsTestDb.sqlSession,
+      "INSERT INTO users (id, email, name, password_hash) VALUES (?, ?, 'Parent Jane', 'hash')",
+      userId,
+      "parent-$userId@example.com",
+    )
     return UserId(userId)
   }
 

@@ -2,6 +2,7 @@ package ed.unicoach.cron.dao
 
 import ed.unicoach.cron.PeriodicJobName
 import ed.unicoach.db.DatabaseConfig
+import ed.unicoach.db.dao.RawSql
 import ed.unicoach.db.dao.SqlSession
 import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.BeforeAll
@@ -78,21 +79,19 @@ class PeriodicJobsDaoTest {
     nextRunAt: Instant,
     enabled: Boolean = true,
   ): PeriodicJobName {
-    connection
-      .prepareStatement(
-        """
-        INSERT INTO periodic_jobs (name, job_type, payload, schedule, timezone, next_run_at, enabled)
-        VALUES (?, ?, '{}'::jsonb, ?, ?, ?, ?)
-        """.trimIndent(),
-      ).use { stmt ->
-        stmt.setString(1, name)
-        stmt.setString(2, jobType)
-        stmt.setString(3, schedule)
-        stmt.setString(4, timezone)
-        stmt.setTimestamp(5, Timestamp.from(nextRunAt))
-        stmt.setBoolean(6, enabled)
-        stmt.executeUpdate()
-      }
+    RawSql.execute(
+      connection,
+      """
+      INSERT INTO periodic_jobs (name, job_type, payload, schedule, timezone, next_run_at, enabled)
+      VALUES (?, ?, '{}'::jsonb, ?, ?, ?, ?)
+      """.trimIndent(),
+      name,
+      jobType,
+      schedule,
+      timezone,
+      Timestamp.from(nextRunAt),
+      enabled,
+    )
     return PeriodicJobName(name)
   }
 
@@ -109,15 +108,9 @@ class PeriodicJobsDaoTest {
     nextRunAt: Instant,
   ): PeriodicJobName {
     insertRow(name = name, nextRunAt = nextRunAt)
-    connection
-      .prepareStatement("UPDATE periodic_jobs SET payload = to_jsonb(?::text) WHERE name = ?")
-      .use { stmt ->
-        // A JSON string ("not-an-object") decodes fine as a JsonElement but not as
-        // a JsonObject, so mapRow's Json.decodeFromString<JsonObject> throws.
-        stmt.setString(1, "not-an-object")
-        stmt.setString(2, name)
-        stmt.executeUpdate()
-      }
+    // A JSON string ("not-an-object") decodes fine as a JsonElement but not as
+    // a JsonObject, so mapRow's Json.decodeFromString<JsonObject> throws.
+    RawSql.execute(connection, "UPDATE periodic_jobs SET payload = to_jsonb(?::text) WHERE name = ?", "not-an-object", name)
     return PeriodicJobName(name)
   }
 

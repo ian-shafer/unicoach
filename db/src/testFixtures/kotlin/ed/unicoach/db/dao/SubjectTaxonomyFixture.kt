@@ -63,14 +63,13 @@ object SubjectTaxonomyFixture {
         "got [${prefixes.joinToString(", ")}]"
     }
     val elements = prefixes.indices.joinToString(", ") { "?" }
-    session
-      .prepareStatement("INSERT INTO subjects (slug, name, cip_prefixes) VALUES (?, ?, ARRAY[$elements]::TEXT[])")
-      .use { stmt ->
-        stmt.setString(1, slug)
-        stmt.setString(2, name)
-        prefixes.forEachIndexed { index, prefix -> stmt.setString(index + 3, prefix) }
-        stmt.executeUpdate()
-      }
+    RawSql.execute(
+      session,
+      "INSERT INTO subjects (slug, name, cip_prefixes) VALUES (?, ?, ARRAY[$elements]::TEXT[])",
+      slug,
+      name,
+      *prefixes,
+    )
   }
 
   /**

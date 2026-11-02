@@ -63,13 +63,12 @@ class CostReportSharesDaoTest {
   private fun createStudent(): StudentId {
     val userId = UUID.randomUUID()
     val studentId = UUID.randomUUID()
-    connection
-      .prepareStatement("INSERT INTO users (id, email, name, password_hash) VALUES (?, ?, 'CRS User', 'ahash')")
-      .use { stmt ->
-        stmt.setObject(1, userId)
-        stmt.setString(2, "crs-$userId@test.com")
-        stmt.executeUpdate()
-      }
+    RawSql.execute(
+      connection,
+      "INSERT INTO users (id, email, name, password_hash) VALUES (?, ?, 'CRS User', 'ahash')",
+      userId,
+      "crs-$userId@test.com",
+    )
     StudentRowFixture.insert(connection, studentId, userId)
     return StudentId(studentId)
   }
@@ -83,15 +82,8 @@ class CostReportSharesDaoTest {
    */
   private fun newId(): CostReportShareId = CostReportSharesDao.nextId(session).getOrThrow()
 
-  private fun countShares(studentId: StudentId): Int {
-    connection.prepareStatement("SELECT COUNT(*) FROM cost_report_shares WHERE student_id = ?").use { stmt ->
-      stmt.setObject(1, studentId.value)
-      stmt.executeQuery().use { rs ->
-        rs.next()
-        return rs.getInt(1)
-      }
-    }
-  }
+  private fun countShares(studentId: StudentId): Int =
+    RawSql.count(connection, "SELECT COUNT(*) FROM cost_report_shares WHERE student_id = ?", studentId.value)
 
   @Test
   fun `create inserts a live row for the student`() {

@@ -1,5 +1,6 @@
 package ed.unicoach.db
 
+import ed.unicoach.db.dao.RawSql
 import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.BeforeEach
@@ -175,9 +176,7 @@ class CitationAdoptionSchemaTest {
     table: String = "admission_test_administrations",
   ): Any? =
     try {
-      connection.createStatement().use { stmt ->
-        stmt.execute("INSERT INTO $table (${columns.keys.joinToString(", ")}) VALUES (${columns.values.joinToString(", ")})")
-      }
+      RawSql.execute(connection, "INSERT INTO $table (${columns.keys.joinToString(", ")}) VALUES (${columns.values.joinToString(", ")})")
       null
     } catch (e: SQLException) {
       Refusal(

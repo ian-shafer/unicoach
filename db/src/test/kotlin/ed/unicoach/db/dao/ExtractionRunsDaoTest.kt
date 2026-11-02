@@ -69,20 +69,24 @@ class ExtractionRunsDaoTest {
   private fun createStudent(): StudentId {
     val userId = UUID.randomUUID()
     val studentId = UUID.randomUUID()
-    connection.createStatement().use { stmt ->
-      stmt.execute("INSERT INTO users (id, email, name, password_hash) VALUES ('$userId', 'er-$userId@test.com', 'ER User', 'ahash')")
-      StudentRowFixture.insert(connection, studentId, userId)
-    }
+    RawSql.execute(
+      connection,
+      "INSERT INTO users (id, email, name, password_hash) VALUES (?, ?, 'ER User', 'ahash')",
+      userId,
+      "er-$userId@test.com",
+    )
+    StudentRowFixture.insert(connection, studentId, userId)
     return StudentId(studentId)
   }
 
   private fun createConvo(studentId: StudentId): ConvoId {
     val convoId = UUID.randomUUID()
-    connection.prepareStatement("INSERT INTO convos (id, student_id, name, party) VALUES (?, ?, 'Convo', 'student')").use { stmt ->
-      stmt.setObject(1, convoId)
-      stmt.setObject(2, studentId.value)
-      stmt.executeUpdate()
-    }
+    RawSql.execute(
+      connection,
+      "INSERT INTO convos (id, student_id, name, party) VALUES (?, ?, 'Convo', 'student')",
+      convoId,
+      studentId.value,
+    )
     return ConvoId(convoId)
   }
 
@@ -91,44 +95,36 @@ class ExtractionRunsDaoTest {
   // instance per test, so a counter would collide on (name, version).
   private fun createSystemPrompt(): SystemPromptId {
     val id = UUID.randomUUID()
-    connection.prepareStatement("INSERT INTO system_prompts (id, name, version, body) VALUES (?, 'extraction', ?, 'distill')").use { stmt ->
-      stmt.setObject(1, id)
-      stmt.setString(2, "v-$id")
-      stmt.executeUpdate()
-    }
+    RawSql.execute(
+      connection,
+      "INSERT INTO system_prompts (id, name, version, body) VALUES (?, 'extraction', ?, 'distill')",
+      id,
+      "v-$id",
+    )
     return SystemPromptId(id)
   }
 
-  private fun appendLlmRequest(): Long {
-    connection
-      .prepareStatement(
-        "INSERT INTO llm_requests (provider, model_requested, content, max_tokens) VALUES ('anthropic', 'claude-opus-4-8', '[]'::jsonb, 1024) RETURNING id",
-      ).use { stmt ->
-        stmt.executeQuery().use { rs ->
-          rs.next()
-          return rs.getLong("id")
-        }
-      }
-  }
+  private fun appendLlmRequest(): Long =
+    RawSql.single(
+      connection,
+      "INSERT INTO llm_requests (provider, model_requested, content, max_tokens) VALUES ('anthropic', 'claude-opus-4-8', '[]'::jsonb, 1024) RETURNING id",
+    ) { it.getLong("id") }
 
   private fun appendRequest(convoId: ConvoId): ConvoRequestId {
     val promptId = createSystemPrompt()
     val llmRequestId = appendLlmRequest()
-    connection
-      .prepareStatement(
+    return ConvoRequestId(
+      RawSql.single(
+        connection,
         """
         INSERT INTO convo_requests (convo_id, system_prompt_id, llm_request_id, turn_id)
         VALUES (?, ?, ?, nextval('convo_turn_id_seq')) RETURNING id
         """.trimIndent(),
-      ).use { stmt ->
-        stmt.setObject(1, convoId.value)
-        stmt.setObject(2, promptId.value)
-        stmt.setLong(3, llmRequestId)
-        stmt.executeQuery().use { rs ->
-          rs.next()
-          return ConvoRequestId(rs.getLong("id"))
-        }
-      }
+        convoId.value,
+        promptId.value,
+        llmRequestId,
+      ) { it.getLong("id") },
+    )
   }
 
   @Test

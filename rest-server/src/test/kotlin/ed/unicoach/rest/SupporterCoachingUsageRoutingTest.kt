@@ -13,6 +13,7 @@ import ed.unicoach.common.config.AppConfig
 import ed.unicoach.db.Database
 import ed.unicoach.db.DatabaseConfig
 import ed.unicoach.db.dao.LlmCallRowFixture
+import ed.unicoach.db.dao.RawSql
 import ed.unicoach.rest.auth.SessionConfig
 import ed.unicoach.rest.models.RegisterRequest
 import ed.unicoach.rest.models.SubscriptionVerifyRequest
@@ -162,22 +163,13 @@ class SupporterCoachingUsageRoutingTest {
     )
   }
 
-  private fun markEmailVerified(email: String) {
-    dbConnection
-      .prepareStatement("UPDATE users SET version = version + 1, email_verified_at = NOW() WHERE email = ?")
-      .use { stmt ->
-        stmt.setString(1, email)
-        stmt.executeUpdate()
-      }
-  }
-
   private fun uniqueEmail(prefix: String) = "$prefix${UUID.randomUUID()}@company.com"
 
   /** A verified account with NO student profile and NO supporter row. */
   private suspend fun registerVerifiedAccount(): Pair<String, String> {
     val email = uniqueEmail("usage")
     val cookie = register(email)
-    markEmailVerified(email)
+    markEmailVerified(dbConnection, email)
     return cookie to email
   }
 
@@ -467,13 +459,5 @@ class SupporterCoachingUsageRoutingTest {
 
   /** How many `students` rows this address's account holds — 0 is what "no student profile" MEANS. */
   private fun studentRowsFor(email: String): Int =
-    dbConnection
-      .prepareStatement("SELECT count(*) FROM students s JOIN users u ON u.id = s.user_id WHERE u.email = ?")
-      .use { stmt ->
-        stmt.setString(1, email)
-        stmt.executeQuery().use { rs ->
-          rs.next()
-          rs.getInt(1)
-        }
-      }
+    RawSql.count(dbConnection, "SELECT count(*) FROM students s JOIN users u ON u.id = s.user_id WHERE u.email = ?", email)
 }

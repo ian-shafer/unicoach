@@ -68,10 +68,13 @@ class CollegeListEntriesDaoTest {
   private fun createStudent(): StudentId {
     val userId = UUID.randomUUID()
     val studentId = UUID.randomUUID()
-    connection.createStatement().use { stmt ->
-      stmt.execute("INSERT INTO users (id, email, name, password_hash) VALUES ('$userId', 'cle-$userId@test.com', 'CLE User', 'ahash')")
-      StudentRowFixture.insert(connection, studentId, userId)
-    }
+    RawSql.execute(
+      connection,
+      "INSERT INTO users (id, email, name, password_hash) VALUES (?, ?, 'CLE User', 'ahash')",
+      userId,
+      "cle-$userId@test.com",
+    )
+    StudentRowFixture.insert(connection, studentId, userId)
     return StudentId(studentId)
   }
 
@@ -198,15 +201,8 @@ class CollegeListEntriesDaoTest {
     )
   }
 
-  private fun countVersions(id: CollegeListEntryId): Int {
-    connection.prepareStatement("SELECT COUNT(*) FROM college_list_entries_versions WHERE id = ?").use { stmt ->
-      stmt.setObject(1, id.value)
-      stmt.executeQuery().use { rs ->
-        rs.next()
-        return rs.getInt(1)
-      }
-    }
-  }
+  private fun countVersions(id: CollegeListEntryId): Int =
+    RawSql.count(connection, "SELECT COUNT(*) FROM college_list_entries_versions WHERE id = ?", id.value)
 
   @Test
   fun `create persists all columns with default status considering`() {

@@ -5,6 +5,7 @@ import ed.unicoach.common.models.ValidationError
 import ed.unicoach.common.models.ValidationResult
 import ed.unicoach.db.Database
 import ed.unicoach.db.DatabaseConfig
+import ed.unicoach.db.dao.RawSql
 import ed.unicoach.db.dao.SessionsDao
 import ed.unicoach.db.dao.SqlSession
 import ed.unicoach.db.dao.UserAuthIdentitiesDao
@@ -69,13 +70,7 @@ class SsoAuthServiceTest {
 
   private fun sendEmailJobCount(): Int = SendEmailJobQueries.count(connection)
 
-  private fun userCount(): Int =
-    connection.createStatement().use { stmt ->
-      stmt.executeQuery("SELECT COUNT(*) FROM users").use { rs ->
-        rs.next()
-        rs.getInt(1)
-      }
-    }
+  private fun userCount(): Int = RawSql.count(connection, "SELECT COUNT(*) FROM users")
 
   private val sqlSession =
     object : SqlSession {

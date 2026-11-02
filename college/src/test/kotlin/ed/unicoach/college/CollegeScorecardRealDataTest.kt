@@ -1,6 +1,7 @@
 package ed.unicoach.college
 
 import ed.unicoach.db.dao.CollegesDao
+import ed.unicoach.db.dao.RawSql
 import ed.unicoach.db.dao.SqlSession
 import ed.unicoach.db.models.FigureArrangement
 import ed.unicoach.db.models.IncomeBand
@@ -408,14 +409,10 @@ class CollegeScorecardRealDataTest : CollegeScorecardTestBase() {
     session: SqlSession,
     collegeId: String,
   ): Set<String> =
-    session.prepareStatement("SELECT cip_code FROM college_programs WHERE college_id = ?::uuid").use { stmt ->
-      stmt.setString(1, collegeId)
-      stmt.executeQuery().use { rs ->
-        val out = mutableSetOf<String>()
-        while (rs.next()) out.add(rs.getString(1))
-        out
-      }
-    }
+    RawSql
+      .list(session, "SELECT cip_code FROM college_programs WHERE college_id = ?::uuid", collegeId) { rs ->
+        rs.getString(1)
+      }.toSet()
 
   private fun programTitle(
     session: SqlSession,
@@ -423,28 +420,24 @@ class CollegeScorecardRealDataTest : CollegeScorecardTestBase() {
     cipCode: String,
     credentialLevel: Int,
   ): String? =
-    session
-      .prepareStatement(
-        "SELECT cip_title FROM college_programs " +
-          "WHERE college_id = ?::uuid AND cip_code = ? AND credential_level = ?",
-      ).use { stmt ->
-        stmt.setString(1, collegeId)
-        stmt.setString(2, cipCode)
-        stmt.setInt(3, credentialLevel)
-        stmt.executeQuery().use { rs -> if (rs.next()) rs.getString(1) else null }
-      }
+    RawSql.singleOrNull(
+      session,
+      "SELECT cip_title FROM college_programs " +
+        "WHERE college_id = ?::uuid AND cip_code = ? AND credential_level = ?",
+      collegeId,
+      cipCode,
+      credentialLevel,
+    ) { rs -> rs.getString(1)!! }
 
   private fun programCollegeId(
     session: SqlSession,
     cipCode: String,
     credentialLevel: Int,
   ): String? =
-    session
-      .prepareStatement(
-        "SELECT college_id FROM college_programs WHERE cip_code = ? AND credential_level = ?",
-      ).use { stmt ->
-        stmt.setString(1, cipCode)
-        stmt.setInt(2, credentialLevel)
-        stmt.executeQuery().use { rs -> if (rs.next()) rs.getString(1) else null }
-      }
+    RawSql.singleOrNull(
+      session,
+      "SELECT college_id FROM college_programs WHERE cip_code = ? AND credential_level = ?",
+      cipCode,
+      credentialLevel,
+    ) { rs -> rs.getString(1)!! }
 }

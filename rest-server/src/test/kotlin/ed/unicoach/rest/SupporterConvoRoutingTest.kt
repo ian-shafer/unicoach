@@ -1,6 +1,7 @@
 package ed.unicoach.rest
 
 import ed.unicoach.db.dao.LlmCallRowFixture
+import ed.unicoach.db.dao.RawSql
 import ed.unicoach.rest.models.SupporterConversation
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.cio.CIO
@@ -269,15 +270,11 @@ class SupporterConvoRoutingTest {
   /** Spend far past any allowance, attributed to [parent]'s supporter row. */
   private fun exhaustParent(parent: FamilyRoutes.Account) {
     val supporterId =
-      parentCoach.db
-        .prepareStatement("SELECT sp.id FROM supporters sp JOIN users u ON u.id = sp.user_id WHERE u.email = ?")
-        .use { stmt ->
-          stmt.setString(1, parent.email)
-          stmt.executeQuery().use { rs ->
-            rs.next()
-            rs.getObject(1, UUID::class.java)
-          }
-        }
+      RawSql.single(
+        parentCoach.db,
+        "SELECT sp.id FROM supporters sp JOIN users u ON u.id = sp.user_id WHERE u.email = ?",
+        parent.email,
+      ) { it.getObject(1, UUID::class.java) }
     LlmCallRowFixture.attributeToSupporter(parentCoach.db, supporterId, LlmCallRowFixture.insert(parentCoach.db, 1_000_000_000_000_000L))
   }
 }

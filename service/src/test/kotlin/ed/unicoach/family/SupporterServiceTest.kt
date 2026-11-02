@@ -5,6 +5,7 @@ import ed.unicoach.auth.SendEmailJobQueries
 import ed.unicoach.coaching.CoachingTestDb
 import ed.unicoach.common.json.deserialize
 import ed.unicoach.db.dao.CostReportSharesDao
+import ed.unicoach.db.dao.RawSql
 import ed.unicoach.db.dao.StudentRowFixture
 import ed.unicoach.db.dao.SupporterStudentLinksDao
 import ed.unicoach.db.dao.SupportersDao
@@ -62,12 +63,13 @@ class SupporterServiceTest {
 
   private fun createUser(name: String = "Test User"): UserId {
     val userId = UUID.randomUUID()
-    connection.prepareStatement("INSERT INTO users (id, email, name, password_hash) VALUES (?, ?, ?, 'hash')").use { stmt ->
-      stmt.setObject(1, userId)
-      stmt.setString(2, "user-$userId@example.com")
-      stmt.setString(3, name)
-      stmt.executeUpdate()
-    }
+    RawSql.execute(
+      connection,
+      "INSERT INTO users (id, email, name, password_hash) VALUES (?, ?, ?, 'hash')",
+      userId,
+      "user-$userId@example.com",
+      name,
+    )
     return UserId(userId)
   }
 
@@ -77,13 +79,7 @@ class SupporterServiceTest {
     return StudentId(studentId)
   }
 
-  private fun supporterRowCount(): Int =
-    connection.createStatement().use { stmt ->
-      stmt.executeQuery("SELECT count(*) FROM supporters").use { rs ->
-        rs.next()
-        rs.getInt(1)
-      }
-    }
+  private fun supporterRowCount(): Int = RawSql.count(connection, "SELECT count(*) FROM supporters")
 
   /**
    * The two answers `POST /api/v1/supporters` turns into `201` and `200`, and
@@ -244,13 +240,10 @@ class SupporterServiceTest {
     table: String,
     id: UUID,
   ): Boolean =
-    connection.prepareStatement("SELECT deleted_at IS NULL FROM $table WHERE id = ?").use { stmt ->
-      stmt.setObject(1, id)
-      stmt.executeQuery().use { rs ->
-        assertTrue(rs.next(), "the [$table] row [$id] must still be there")
-        rs.getBoolean(1)
-      }
-    }
+    assertNotNull(
+      RawSql.singleOrNull(connection, "SELECT deleted_at IS NULL FROM $table WHERE id = ?", id) { it.getBoolean(1) },
+      "the [$table] row [$id] must still be there",
+    )
 
   @Test
   fun `supportersOf names the adults in the student's voice and says whether the cost report link is live`(): Unit =
@@ -347,10 +340,7 @@ class SupporterServiceTest {
     }
 
   private fun verify(userId: UserId): UserId {
-    connection.prepareStatement("UPDATE users SET email_verified_at = NOW(), version = version + 1 WHERE id = ?").use { stmt ->
-      stmt.setObject(1, userId.value)
-      stmt.executeUpdate()
-    }
+    RawSql.execute(connection, "UPDATE users SET email_verified_at = NOW(), version = version + 1 WHERE id = ?", userId.value)
     return userId
   }
 

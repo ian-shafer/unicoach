@@ -176,14 +176,8 @@ object CodebookReferenceFixture {
    * states go first: they foreign-key the region.
    */
   fun removeOtherJurisdictions(connection: Connection) {
-    connection.prepareStatement("DELETE FROM us_states WHERE ipeds_region = ?").use { stmt ->
-      stmt.setString(1, OMITTED_REGION)
-      stmt.executeUpdate()
-    }
-    connection.prepareStatement("DELETE FROM ipeds_regions WHERE slug = ?").use { stmt ->
-      stmt.setString(1, OMITTED_REGION)
-      stmt.executeUpdate()
-    }
+    RawSql.execute(connection, "DELETE FROM us_states WHERE ipeds_region = ?", OMITTED_REGION)
+    RawSql.execute(connection, "DELETE FROM ipeds_regions WHERE slug = ?", OMITTED_REGION)
   }
 
   /**

@@ -78,10 +78,13 @@ class StudentLlmCostViewTest {
   private fun createStudent(): UUID {
     val userId = UUID.randomUUID()
     val studentId = UUID.randomUUID()
-    connection.createStatement().use { stmt ->
-      stmt.execute("INSERT INTO users (id, email, name, password_hash) VALUES ('$userId', 'slc-$userId@test.com', 'SLC User', 'ahash')")
-      StudentRowFixture.insert(connection, studentId, userId)
-    }
+    RawSql.execute(
+      connection,
+      "INSERT INTO users (id, email, name, password_hash) VALUES (?, ?, 'SLC User', 'ahash')",
+      userId,
+      "slc-$userId@test.com",
+    )
+    StudentRowFixture.insert(connection, studentId, userId)
     return studentId
   }
 
@@ -90,11 +93,7 @@ class StudentLlmCostViewTest {
   // instance per test, so a counter would collide on (name, version).
   private fun createSystemPrompt(): UUID {
     val id = UUID.randomUUID()
-    connection.prepareStatement("INSERT INTO system_prompts (id, name, version, body) VALUES (?, 'extraction', ?, 'distill')").use { stmt ->
-      stmt.setObject(1, id)
-      stmt.setString(2, "v-$id")
-      stmt.executeUpdate()
-    }
+    RawSql.execute(connection, "INSERT INTO system_prompts (id, name, version, body) VALUES (?, 'extraction', ?, 'distill')", id, "v-$id")
     return id
   }
 
@@ -107,11 +106,7 @@ class StudentLlmCostViewTest {
 
   private fun createConvo(studentId: UUID): UUID {
     val convoId = UUID.randomUUID()
-    connection.prepareStatement("INSERT INTO convos (id, student_id, name, party) VALUES (?, ?, 'Convo', 'student')").use { stmt ->
-      stmt.setObject(1, convoId)
-      stmt.setObject(2, studentId)
-      stmt.executeUpdate()
-    }
+    RawSql.execute(connection, "INSERT INTO convos (id, student_id, name, party) VALUES (?, ?, 'Convo', 'student')", convoId, studentId)
     return convoId
   }
 
@@ -120,18 +115,16 @@ class StudentLlmCostViewTest {
     llmRequestId: Long,
   ) {
     val promptId = createSystemPrompt()
-    connection
-      .prepareStatement(
-        """
-        INSERT INTO convo_requests (convo_id, system_prompt_id, llm_request_id, turn_id)
-        VALUES (?, ?, ?, nextval('convo_turn_id_seq'))
-        """.trimIndent(),
-      ).use { stmt ->
-        stmt.setObject(1, convoId)
-        stmt.setObject(2, promptId)
-        stmt.setLong(3, llmRequestId)
-        stmt.executeUpdate()
-      }
+    RawSql.execute(
+      connection,
+      """
+      INSERT INTO convo_requests (convo_id, system_prompt_id, llm_request_id, turn_id)
+      VALUES (?, ?, ?, nextval('convo_turn_id_seq'))
+      """.trimIndent(),
+      convoId,
+      promptId,
+      llmRequestId,
+    )
   }
 
   private fun appendExtractionRun(
@@ -140,20 +133,18 @@ class StudentLlmCostViewTest {
     throughRequestId: Long,
     llmRequestId: Long,
   ) {
-    connection
-      .prepareStatement(
-        """
-        INSERT INTO extraction_runs (convo_id, student_id, through_request_id, outcome, system_prompt_id, llm_request_id)
-        VALUES (?, ?, ?, 'applied', ?, ?)
-        """.trimIndent(),
-      ).use { stmt ->
-        stmt.setObject(1, convoId)
-        stmt.setObject(2, studentId)
-        stmt.setLong(3, throughRequestId)
-        stmt.setObject(4, createSystemPrompt())
-        stmt.setLong(5, llmRequestId)
-        stmt.executeUpdate()
-      }
+    RawSql.execute(
+      connection,
+      """
+      INSERT INTO extraction_runs (convo_id, student_id, through_request_id, outcome, system_prompt_id, llm_request_id)
+      VALUES (?, ?, ?, 'applied', ?, ?)
+      """.trimIndent(),
+      convoId,
+      studentId,
+      throughRequestId,
+      createSystemPrompt(),
+      llmRequestId,
+    )
   }
 
   /** Returns the created convo_requests id (an extraction watermark target). */
@@ -162,36 +153,29 @@ class StudentLlmCostViewTest {
     llmRequestId: Long,
   ): Long {
     val promptId = createSystemPrompt()
-    connection
-      .prepareStatement(
-        """
-        INSERT INTO convo_requests (convo_id, system_prompt_id, llm_request_id, turn_id)
-        VALUES (?, ?, ?, nextval('convo_turn_id_seq')) RETURNING id
-        """.trimIndent(),
-      ).use { stmt ->
-        stmt.setObject(1, convoId)
-        stmt.setObject(2, promptId)
-        stmt.setLong(3, llmRequestId)
-        stmt.executeQuery().use { rs ->
-          rs.next()
-          return rs.getLong("id")
-        }
-      }
+    return RawSql.single(
+      connection,
+      """
+      INSERT INTO convo_requests (convo_id, system_prompt_id, llm_request_id, turn_id)
+      VALUES (?, ?, ?, nextval('convo_turn_id_seq')) RETURNING id
+      """.trimIndent(),
+      convoId,
+      promptId,
+      llmRequestId,
+    ) { it.getLong("id") }
   }
 
   private fun appendSynthesisRun(
     studentId: UUID,
     llmRequestId: Long,
   ) {
-    connection
-      .prepareStatement(
-        "INSERT INTO synthesis_runs (student_id, outcome, system_prompt_id, llm_request_id) VALUES (?, 'applied', ?, ?)",
-      ).use { stmt ->
-        stmt.setObject(1, studentId)
-        stmt.setObject(2, createSystemPrompt())
-        stmt.setLong(3, llmRequestId)
-        stmt.executeUpdate()
-      }
+    RawSql.execute(
+      connection,
+      "INSERT INTO synthesis_runs (student_id, outcome, system_prompt_id, llm_request_id) VALUES (?, 'applied', ?, ?)",
+      studentId,
+      createSystemPrompt(),
+      llmRequestId,
+    )
   }
 
   private fun appendFitLensRun(
@@ -199,31 +183,25 @@ class StudentLlmCostViewTest {
     queryLlmRequestId: Long,
     reasonLlmRequestId: Long,
   ) {
-    connection
-      .prepareStatement(
-        """
-        INSERT INTO fit_lens_runs
-          (student_id, outcome, query_system_prompt_id, reason_system_prompt_id, query_llm_request_id, reason_llm_request_id, suggestions_written, matches_considered)
-        VALUES (?, 'applied', ?, ?, ?, ?, 0, 0)
-        """.trimIndent(),
-      ).use { stmt ->
-        stmt.setObject(1, studentId)
-        stmt.setObject(2, createSystemPrompt())
-        stmt.setObject(3, createSystemPrompt())
-        stmt.setLong(4, queryLlmRequestId)
-        stmt.setLong(5, reasonLlmRequestId)
-        stmt.executeUpdate()
-      }
+    RawSql.execute(
+      connection,
+      """
+      INSERT INTO fit_lens_runs
+        (student_id, outcome, query_system_prompt_id, reason_system_prompt_id, query_llm_request_id, reason_llm_request_id, suggestions_written, matches_considered)
+      VALUES (?, 'applied', ?, ?, ?, ?, 0, 0)
+      """.trimIndent(),
+      studentId,
+      createSystemPrompt(),
+      createSystemPrompt(),
+      queryLlmRequestId,
+      reasonLlmRequestId,
+    )
   }
 
   /** The one indexed hop from a student to the account that pays for them — the key the meter is read by. */
   private fun accountOf(studentId: UUID): UserId =
-    connection.prepareStatement("SELECT user_id FROM students WHERE id = ?").use { stmt ->
-      stmt.setObject(1, studentId)
-      stmt.executeQuery().use { rs ->
-        rs.next()
-        UserId(UUID.fromString(rs.getString("user_id")))
-      }
+    RawSql.single(connection, "SELECT user_id FROM students WHERE id = ?", studentId) {
+      UserId(UUID.fromString(it.getString("user_id")))
     }
 
   /** This student's lifetime spend as the gate reads it: through the account their profile hangs off. */

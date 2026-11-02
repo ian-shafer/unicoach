@@ -3,6 +3,7 @@ package ed.unicoach.auth
 import com.google.protobuf.ByteString
 import ed.unicoach.db.Database
 import ed.unicoach.db.DatabaseConfig
+import ed.unicoach.db.dao.RawSql
 import ed.unicoach.db.dao.SessionMetadataFixtures
 import ed.unicoach.db.dao.SessionsDao
 import ed.unicoach.db.models.LoginMethod
@@ -65,9 +66,12 @@ class SessionMetadataServiceTest {
   private fun liveSession(): Session {
     val userId = UUID.randomUUID()
     database.createRawConnection().use { connection ->
-      connection.createStatement().use {
-        it.execute("INSERT INTO users (id, email, name, password_hash) VALUES ('$userId', 'meta-$userId@test.com', 'Meta User', 'ahash')")
-      }
+      RawSql.execute(
+        connection,
+        "INSERT INTO users (id, email, name, password_hash) VALUES (?, ?, 'Meta User', 'ahash')",
+        userId,
+        "meta-$userId@test.com",
+      )
     }
     return runBlocking {
       database.withConnection { sql ->

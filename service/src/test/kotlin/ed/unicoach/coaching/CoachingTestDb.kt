@@ -7,6 +7,7 @@ import ed.unicoach.db.dao.CdsAdmissionsDao
 import ed.unicoach.db.dao.CollegeIpedsDao
 import ed.unicoach.db.dao.CollegeListEntriesDao
 import ed.unicoach.db.dao.CountingSqlSession
+import ed.unicoach.db.dao.RawSql
 import ed.unicoach.db.dao.SourceDocumentsDao
 import ed.unicoach.db.dao.SqlSession
 import ed.unicoach.db.dao.StudentRowFixture
@@ -79,9 +80,7 @@ object CoachingTestDb {
 
   /** Truncates exactly the tables the calling suite touches, cascading through the CDS/list FKs. */
   fun truncate(vararg tables: String) {
-    connection.createStatement().use { stmt ->
-      stmt.execute("TRUNCATE TABLE ${tables.joinToString(", ")} CASCADE")
-    }
+    RawSql.execute(connection, "TRUNCATE TABLE ${tables.joinToString(", ")} CASCADE")
   }
 
   /**
@@ -143,43 +142,40 @@ object CoachingTestDb {
 
   @PublishedApi
   internal fun tableExists(table: String): Boolean =
-    connection.prepareStatement("SELECT to_regclass(?::text) IS NOT NULL").use { stmt ->
-      stmt.setString(1, table)
-      stmt.executeQuery().use { rs -> rs.next() && rs.getBoolean(1) }
-    }
+    RawSql.single(connection, "SELECT to_regclass(?::text) IS NOT NULL", table) { it.getBoolean(1) }
 
   /** The rename itself, one way; [withTableHidden] is the only caller and owns the inverse. */
   @PublishedApi
   internal fun renameTable(
     from: String,
     to: String,
-  ) = connection.prepareStatement("ALTER TABLE $from RENAME TO $to").use { it.executeUpdate() }
+  ) = RawSql.execute(connection, "ALTER TABLE $from RENAME TO $to")
 
   /** The body of the coach prompt row [config] pins, from the migration-seeded catalog. */
   fun pinnedPromptBody(config: CoachingConfig): String =
-    connection.prepareStatement("SELECT body FROM system_prompts WHERE name = ? AND version = ?").use { stmt ->
-      stmt.setString(1, config.systemPromptName)
-      stmt.setString(2, config.systemPromptVersion)
-      stmt.executeQuery().use { rs ->
-        check(rs.next()) {
-          "the pinned coach prompt row [${config.systemPromptName}/${config.systemPromptVersion}] " +
-            "must exist in the migration-seeded catalog"
-        }
-        rs.getString("body")
-      }
+    checkNotNull(
+      RawSql.singleOrNull(
+        connection,
+        "SELECT body FROM system_prompts WHERE name = ? AND version = ?",
+        config.systemPromptName,
+        config.systemPromptVersion,
+      ) { it.getString("body") },
+    ) {
+      "the pinned coach prompt row [${config.systemPromptName}/${config.systemPromptVersion}] " +
+        "must exist in the migration-seeded catalog"
     }
 
   /** A student and the user row it hangs off; [label] only distinguishes the seeded email. */
   fun createStudent(label: String): StudentId {
     val userId = UUID.randomUUID()
     val studentId = UUID.randomUUID()
-    connection.createStatement().use { stmt ->
-      stmt.execute(
-        "INSERT INTO users (id, email, name, password_hash) VALUES " +
-          "('$userId', '$label-$userId@test.com', 'Test User', 'ahash')",
-      )
-      StudentRowFixture.insert(connection, studentId, userId)
-    }
+    RawSql.execute(
+      connection,
+      "INSERT INTO users (id, email, name, password_hash) VALUES (?, ?, 'Test User', 'ahash')",
+      userId,
+      "$label-$userId@test.com",
+    )
+    StudentRowFixture.insert(connection, studentId, userId)
     return StudentId(studentId)
   }
 

@@ -15,6 +15,7 @@ import ed.unicoach.coaching.budget.BudgetConfig
 import ed.unicoach.common.config.AppConfig
 import ed.unicoach.db.Database
 import ed.unicoach.db.DatabaseConfig
+import ed.unicoach.db.dao.RawSql
 import ed.unicoach.rest.models.CreateConversationRequest
 import ed.unicoach.rest.models.RegisterRequest
 import ed.unicoach.rest.models.SubscriptionVerifyRequest
@@ -157,12 +158,7 @@ class SubscriptionRoutingTest {
         .first()
         .trim()
     if (verified) {
-      dbConnection
-        .prepareStatement("UPDATE users SET version = version + 1, email_verified_at = NOW() WHERE email = ?")
-        .use { stmt ->
-          stmt.setString(1, email)
-          stmt.executeUpdate()
-        }
+      markEmailVerified(dbConnection, email)
     }
     return cookie to email
   }
@@ -190,35 +186,16 @@ class SubscriptionRoutingTest {
   )
 
   private fun studentIdOf(email: String): UUID =
-    dbConnection
-      .prepareStatement("SELECT s.id FROM students s JOIN users u ON u.id = s.user_id WHERE u.email = ?")
-      .use { stmt ->
-        stmt.setString(1, email)
-        stmt.executeQuery().use { rs ->
-          rs.next()
-          rs.getObject("id") as UUID
-        }
-      }
+    RawSql.single(dbConnection, "SELECT s.id FROM students s JOIN users u ON u.id = s.user_id WHERE u.email = ?", email) {
+      it.getObject("id") as UUID
+    }
 
   /** The ACCOUNT behind an address — the key `subscriptions` is now on (RFC 244). */
   private fun userIdOf(email: String): UUID =
-    dbConnection.prepareStatement("SELECT id FROM users WHERE email = ?").use { stmt ->
-      stmt.setString(1, email)
-      stmt.executeQuery().use { rs ->
-        rs.next()
-        rs.getObject("id") as UUID
-      }
-    }
+    RawSql.single(dbConnection, "SELECT id FROM users WHERE email = ?", email) { it.getObject("id") as UUID }
 
   /** How many `students` rows this account holds — 0 is what "no student profile" MEANS. */
-  private fun studentRowsFor(userId: UUID): Int =
-    dbConnection.prepareStatement("SELECT count(*) FROM students WHERE user_id = ?").use { stmt ->
-      stmt.setObject(1, userId)
-      stmt.executeQuery().use { rs ->
-        rs.next()
-        rs.getInt(1)
-      }
-    }
+  private fun studentRowsFor(userId: UUID): Int = RawSql.count(dbConnection, "SELECT count(*) FROM students WHERE user_id = ?", userId)
 
   // ---------------------------------------------------------------------------
   // Apple scripting + verify requests
@@ -284,41 +261,29 @@ class SubscriptionRoutingTest {
 
   /** The row Apple's key names, or null when no account holds that transaction. */
   private fun subscriptionRow(originalTransactionId: String): SubscriptionRow? =
-    dbConnection
-      .prepareStatement(
-        """
-        SELECT s.user_id, s.status, s.product_id, s.version, s.updated_at,
-               (SELECT count(*) FROM subscriptions_versions v WHERE v.id = s.id) AS version_rows
-          FROM subscriptions s
-         WHERE s.original_transaction_id = ?
-        """.trimIndent(),
-      ).use { stmt ->
-        stmt.setString(1, originalTransactionId)
-        stmt.executeQuery().use { rs ->
-          if (!rs.next()) {
-            null
-          } else {
-            SubscriptionRow(
-              userId = rs.getObject("user_id") as UUID,
-              status = rs.getString("status"),
-              productId = rs.getString("product_id"),
-              version = rs.getInt("version"),
-              updatedAt = rs.getTimestamp("updated_at").toInstant(),
-              versionRows = rs.getInt("version_rows"),
-            )
-          }
-        }
-      }
+    RawSql.singleOrNull(
+      dbConnection,
+      """
+      SELECT s.user_id, s.status, s.product_id, s.version, s.updated_at,
+             (SELECT count(*) FROM subscriptions_versions v WHERE v.id = s.id) AS version_rows
+        FROM subscriptions s
+       WHERE s.original_transaction_id = ?
+      """.trimIndent(),
+      originalTransactionId,
+    ) { rs ->
+      SubscriptionRow(
+        userId = rs.getObject("user_id") as UUID,
+        status = rs.getString("status"),
+        productId = rs.getString("product_id"),
+        version = rs.getInt("version"),
+        updatedAt = rs.getTimestamp("updated_at").toInstant(),
+        versionRows = rs.getInt("version_rows"),
+      )
+    }
 
   /** How many `subscriptions` rows this ACCOUNT holds. */
   private fun subscriptionRowsFor(userId: UUID): Int =
-    dbConnection.prepareStatement("SELECT count(*) FROM subscriptions WHERE user_id = ?").use { stmt ->
-      stmt.setObject(1, userId)
-      stmt.executeQuery().use { rs ->
-        rs.next()
-        rs.getInt(1)
-      }
-    }
+    RawSql.count(dbConnection, "SELECT count(*) FROM subscriptions WHERE user_id = ?", userId)
 
   // ---------------------------------------------------------------------------
   // Spend seeding (CoachingBudgetRoutingTest's helper, plus a created_at knob)
@@ -330,49 +295,39 @@ class SubscriptionRoutingTest {
     createdAt: Instant,
   ) {
     val llmRequestId =
-      dbConnection
-        .prepareStatement(
-          "INSERT INTO llm_requests (provider, model_requested, content, max_tokens) " +
-            "VALUES ('anthropic', 'claude-sonnet-4-6', '[]'::jsonb, 1024) RETURNING id",
-        ).use { stmt ->
-          stmt.executeQuery().use { rs ->
-            rs.next()
-            rs.getLong("id")
-          }
-        }
-    dbConnection
-      .prepareStatement(
-        """
-        INSERT INTO llm_responses
-          (request_id, outcome, content, model_resolved, stop_reason, cost_nanodollars, cost_is_estimated, input_tokens, output_tokens, latency_ms, created_at)
-        VALUES (?, 'completed', '[]'::jsonb, 'm', 'end_turn', ?, false, 1, 1, 1, ?)
-        """.trimIndent(),
-      ).use { stmt ->
-        stmt.setLong(1, llmRequestId)
-        stmt.setLong(2, costNanodollars)
-        stmt.setTimestamp(3, java.sql.Timestamp.from(createdAt))
-        stmt.executeUpdate()
-      }
-    dbConnection
-      .prepareStatement(
-        "INSERT INTO synthesis_runs (student_id, outcome, system_prompt_id, llm_request_id) VALUES (?, 'applied', ?, ?)",
-      ).use { stmt ->
-        stmt.setObject(1, studentId)
-        stmt.setObject(2, seedSystemPrompt())
-        stmt.setLong(3, llmRequestId)
-        stmt.executeUpdate()
-      }
+      RawSql.single(
+        dbConnection,
+        "INSERT INTO llm_requests (provider, model_requested, content, max_tokens) " +
+          "VALUES ('anthropic', 'claude-sonnet-4-6', '[]'::jsonb, 1024) RETURNING id",
+      ) { it.getLong("id") }
+    RawSql.execute(
+      dbConnection,
+      """
+      INSERT INTO llm_responses
+        (request_id, outcome, content, model_resolved, stop_reason, cost_nanodollars, cost_is_estimated, input_tokens, output_tokens, latency_ms, created_at)
+      VALUES (?, 'completed', '[]'::jsonb, 'm', 'end_turn', ?, false, 1, 1, 1, ?)
+      """.trimIndent(),
+      llmRequestId,
+      costNanodollars,
+      java.sql.Timestamp.from(createdAt),
+    )
+    RawSql.execute(
+      dbConnection,
+      "INSERT INTO synthesis_runs (student_id, outcome, system_prompt_id, llm_request_id) VALUES (?, 'applied', ?, ?)",
+      studentId,
+      seedSystemPrompt(),
+      llmRequestId,
+    )
   }
 
   private fun seedSystemPrompt(): UUID {
     val id = UUID.randomUUID()
-    dbConnection
-      .prepareStatement("INSERT INTO system_prompts (id, name, version, body) VALUES (?, 'synthesis', ?, 'reflect')")
-      .use { stmt ->
-        stmt.setObject(1, id)
-        stmt.setString(2, "sub-${UUID.randomUUID()}")
-        stmt.executeUpdate()
-      }
+    RawSql.execute(
+      dbConnection,
+      "INSERT INTO system_prompts (id, name, version, body) VALUES (?, 'synthesis', ?, 'reflect')",
+      id,
+      "sub-${UUID.randomUUID()}",
+    )
     return id
   }
 

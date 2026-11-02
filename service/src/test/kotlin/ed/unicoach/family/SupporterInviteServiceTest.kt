@@ -1,6 +1,7 @@
 package ed.unicoach.family
 
 import ed.unicoach.coaching.CoachingTestDb
+import ed.unicoach.db.dao.RawSql
 import ed.unicoach.db.dao.SupporterInvitesDao
 import ed.unicoach.db.dao.SupporterStudentLinksDao
 import ed.unicoach.db.dao.SupportersDao
@@ -44,12 +45,13 @@ class SupporterInviteServiceTest {
 
   private fun createUser(name: String = "Test User"): UserId {
     val userId = UUID.randomUUID()
-    connection.prepareStatement("INSERT INTO users (id, email, name, password_hash) VALUES (?, ?, ?, 'hash')").use { stmt ->
-      stmt.setObject(1, userId)
-      stmt.setString(2, "user-$userId@example.com")
-      stmt.setString(3, name)
-      stmt.executeUpdate()
-    }
+    RawSql.execute(
+      connection,
+      "INSERT INTO users (id, email, name, password_hash) VALUES (?, ?, ?, 'hash')",
+      userId,
+      "user-$userId@example.com",
+      name,
+    )
     return UserId(userId)
   }
 
@@ -352,38 +354,22 @@ class SupporterInviteServiceTest {
     }
 
   private fun closeUser(userId: UserId) {
-    connection.prepareStatement("UPDATE users SET deleted_at = NOW(), version = version + 1 WHERE id = ?").use { stmt ->
-      stmt.setObject(1, userId.value)
-      stmt.executeUpdate()
-    }
+    RawSql.execute(connection, "UPDATE users SET deleted_at = NOW(), version = version + 1 WHERE id = ?", userId.value)
   }
 
   /** Every column of every `supporter_invites` row, as text. */
   private fun rowTextContains(needle: String): Boolean =
-    connection.prepareStatement("SELECT count(*) FROM supporter_invites WHERE supporter_invites::text LIKE ?").use { stmt ->
-      stmt.setString(1, "%$needle%")
-      stmt.executeQuery().use { rows ->
-        rows.next()
-        rows.getInt(1) > 0
-      }
+    RawSql.single(connection, "SELECT count(*) FROM supporter_invites WHERE supporter_invites::text LIKE ?", "%$needle%") {
+      it.getInt(1) > 0
     }
 
-  private fun linkCount(): Int =
-    connection.createStatement().use { stmt ->
-      stmt.executeQuery("SELECT count(*) FROM supporter_student_links WHERE deleted_at IS NULL").use { rows ->
-        rows.next()
-        rows.getInt(1)
-      }
-    }
+  private fun linkCount(): Int = RawSql.count(connection, "SELECT count(*) FROM supporter_student_links WHERE deleted_at IS NULL")
 
   /**
    * Soft-closes a student. `version = version + 1` because `students` carries
    * `enforce_versioning`, which refuses an update that does not advance it.
    */
   private fun closeStudent(studentId: StudentId) {
-    connection.prepareStatement("UPDATE students SET deleted_at = NOW(), version = version + 1 WHERE id = ?").use { stmt ->
-      stmt.setObject(1, studentId.value)
-      stmt.executeUpdate()
-    }
+    RawSql.execute(connection, "UPDATE students SET deleted_at = NOW(), version = version + 1 WHERE id = ?", studentId.value)
   }
 }

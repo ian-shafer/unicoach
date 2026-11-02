@@ -390,11 +390,5 @@ class FafsaFilingDeadlineDaoTest {
   /** The page a fixture row cites -- named, so a case can assert the citation came back through the join. */
   private fun sourceUrlFor(program: String): String = "https://example-aid.gov/${program.replace(" ", "-").lowercase()}"
 
-  private fun countRows(): Int =
-    connection.createStatement().use { stmt ->
-      stmt.executeQuery("SELECT COUNT(*) FROM fafsa_filing_deadlines").use { rs ->
-        rs.next()
-        rs.getInt(1)
-      }
-    }
+  private fun countRows(): Int = RawSql.count(connection, "SELECT COUNT(*) FROM fafsa_filing_deadlines")
 }

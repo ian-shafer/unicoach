@@ -4,6 +4,7 @@ import ed.unicoach.common.config.AppConfig
 import ed.unicoach.common.json.asJson
 import ed.unicoach.db.Database
 import ed.unicoach.db.DatabaseConfig
+import ed.unicoach.db.dao.RawSql
 import ed.unicoach.queue.JobResult
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.runBlocking
@@ -106,31 +107,21 @@ class EmailSendHandlerTest {
       userId = null,
     ).asJson()
 
-  private fun countRows(): Int {
+  private fun countRows(): Int =
     DriverManager.getConnection(jdbcUrl, dbUser, dbPassword ?: "").use { c ->
-      c.prepareStatement("SELECT COUNT(*) FROM email_sends").use { stmt ->
-        stmt.executeQuery().use { rs ->
-          rs.next()
-          return rs.getInt(1)
-        }
-      }
+      RawSql.count(c, "SELECT COUNT(*) FROM email_sends")
     }
-  }
 
-  private fun firstRow(): Map<String, String?> {
+  private fun firstRow(): Map<String, String?> =
     DriverManager.getConnection(jdbcUrl, dbUser, dbPassword ?: "").use { c ->
-      c.prepareStatement("SELECT * FROM email_sends").use { stmt ->
-        stmt.executeQuery().use { rs ->
-          assertTrue(rs.next())
-          return mapOf(
-            "status" to rs.getString("status"),
-            "recipient_email" to rs.getString("recipient_email"),
-            "body" to rs.getString("body"),
-          )
-        }
+      RawSql.single(c, "SELECT * FROM email_sends") { rs ->
+        mapOf(
+          "status" to rs.getString("status"),
+          "recipient_email" to rs.getString("recipient_email"),
+          "body" to rs.getString("body"),
+        )
       }
     }
-  }
 
   @Test
   fun `valid job sends, records SENT, returns Success`() =
@@ -168,25 +159,15 @@ class EmailSendHandlerTest {
   private fun account(): java.util.UUID {
     val id = java.util.UUID.randomUUID()
     DriverManager.getConnection(jdbcUrl, dbUser, dbPassword ?: "").use { c ->
-      c.prepareStatement("INSERT INTO users (id, email, name) VALUES (?, ?, ?)").use { stmt ->
-        stmt.setObject(1, id)
-        stmt.setString(2, "handler-$id@example.com")
-        stmt.setString(3, "Handler Recipient")
-        stmt.executeUpdate()
-      }
+      RawSql.execute(c, "INSERT INTO users (id, email, name) VALUES (?, ?, ?)", id, "handler-$id@example.com", "Handler Recipient")
     }
     return id
   }
 
-  private fun loggedUserIds(): List<java.util.UUID?> {
+  private fun loggedUserIds(): List<java.util.UUID?> =
     DriverManager.getConnection(jdbcUrl, dbUser, dbPassword ?: "").use { c ->
-      c.prepareStatement("SELECT user_id FROM email_sends").use { stmt ->
-        stmt.executeQuery().use { rs ->
-          return buildList { while (rs.next()) add(rs.getObject("user_id", java.util.UUID::class.java)) }
-        }
-      }
+      RawSql.list(c, "SELECT user_id FROM email_sends") { it.getObject("user_id", java.util.UUID::class.java) }
     }
-  }
 
   /** RFC 263: the worker passes the payload's account through to the logged send, with no lookup. */
   @Test

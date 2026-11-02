@@ -1,5 +1,6 @@
 package ed.unicoach.coaching
 
+import ed.unicoach.db.dao.RawSql
 import ed.unicoach.db.dao.SharingPermissionsDao
 import ed.unicoach.db.models.SharingPermission
 import ed.unicoach.db.models.SharingPermissionStatus
@@ -86,14 +87,6 @@ class SharingPermissionServiceTest {
   /** Live grants for [student] as another connection sees them: committed rows only. */
   private fun committedGrantCount(student: StudentId): Int =
     CoachingTestDb.database.createRawConnection().use { conn ->
-      conn
-        .prepareStatement("SELECT count(*) FROM sharing_permissions WHERE student_id = ? AND status = 'granted'")
-        .use { stmt ->
-          stmt.setObject(1, student.value)
-          stmt.executeQuery().use { rs ->
-            rs.next()
-            rs.getInt(1)
-          }
-        }
+      RawSql.count(conn, "SELECT count(*) FROM sharing_permissions WHERE student_id = ? AND status = 'granted'", student.value)
     }
 }

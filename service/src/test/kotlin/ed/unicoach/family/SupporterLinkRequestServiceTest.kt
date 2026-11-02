@@ -16,6 +16,7 @@ import ed.unicoach.common.config.AppConfig
 import ed.unicoach.common.json.asJson
 import ed.unicoach.common.json.deserialize
 import ed.unicoach.db.dao.CostReportSharesDao
+import ed.unicoach.db.dao.RawSql
 import ed.unicoach.db.dao.ShareEventsDao
 import ed.unicoach.db.dao.StudentRowFixture
 import ed.unicoach.db.dao.StudentsDao
@@ -102,16 +103,15 @@ class SupporterLinkRequestServiceTest {
     passwordHash: String? = "hash",
   ): UserId {
     val id = UUID.randomUUID()
-    connection
-      .prepareStatement("INSERT INTO users (id, email, name, password_hash, email_verified_at) VALUES (?, ?, ?, ?, ?)")
-      .use { stmt ->
-        stmt.setObject(1, id)
-        stmt.setString(2, "user-$id@example.com")
-        stmt.setString(3, name)
-        stmt.setString(4, passwordHash)
-        stmt.setObject(5, if (verified) java.sql.Timestamp.from(Instant.now()) else null)
-        stmt.executeUpdate()
-      }
+    RawSql.execute(
+      connection,
+      "INSERT INTO users (id, email, name, password_hash, email_verified_at) VALUES (?, ?, ?, ?, ?)",
+      id,
+      "user-$id@example.com",
+      name,
+      passwordHash,
+      if (verified) java.sql.Timestamp.from(Instant.now()) else null,
+    )
     return UserId(id)
   }
 
@@ -153,13 +153,7 @@ class SupporterLinkRequestServiceTest {
 
   private fun supporterIdOf(userId: UserId): SupporterId? = SupportersDao.findByUserId(session, userId).getOrThrow()?.id
 
-  private fun linkCount(): Int =
-    connection.createStatement().use { stmt ->
-      stmt.executeQuery("SELECT count(*) FROM supporter_student_links").use { rs ->
-        rs.next()
-        rs.getInt(1)
-      }
-    }
+  private fun linkCount(): Int = RawSql.count(connection, "SELECT count(*) FROM supporter_student_links")
 
   private fun requestsOf(student: StudentId) = runBlocking { supporterService.supportersOf(student).getOrThrow().requests }
 
@@ -169,12 +163,7 @@ class SupporterLinkRequestServiceTest {
     }
 
   private fun markVerified(userId: UserId) {
-    connection
-      .prepareStatement("UPDATE users SET email_verified_at = NOW(), version = version + 1 WHERE id = ?")
-      .use { stmt ->
-        stmt.setObject(1, userId.value)
-        stmt.executeUpdate()
-      }
+    RawSql.execute(connection, "UPDATE users SET email_verified_at = NOW(), version = version + 1 WHERE id = ?", userId.value)
   }
 
   private fun release(userId: UserId) = runBlocking { database.withConnection { service.releaseOnVerified(it, userId) } }
@@ -185,13 +174,7 @@ class SupporterLinkRequestServiceTest {
 
   private fun pendingRequestCount(): Int = countOf("SELECT count(*) FROM supporter_link_requests WHERE resolution IS NULL")
 
-  private fun countOf(sql: String): Int =
-    connection.createStatement().use { stmt ->
-      stmt.executeQuery(sql).use { rs ->
-        rs.next()
-        rs.getInt(1)
-      }
-    }
+  private fun countOf(sql: String): Int = RawSql.count(connection, sql)
 
   // --- claiming ---------------------------------------------------------------
 

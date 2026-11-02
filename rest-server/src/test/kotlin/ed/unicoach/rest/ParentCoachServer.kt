@@ -140,20 +140,16 @@ class ParentCoachServer private constructor(
 
   /** Every `llm_requests` body above [watermark], whole: system, messages (tool results included) and tools. */
   fun llmRequestBodiesAbove(watermark: Long): List<String> =
-    db
-      .prepareStatement(
-        "SELECT COALESCE(system, '') || ' ' || content::text || ' ' || COALESCE(tools::text, '') FROM llm_requests WHERE id > ? ORDER BY id",
-      ).use { stmt ->
-        stmt.setLong(1, watermark)
-        stmt.executeQuery().use { rs ->
-          buildList { while (rs.next()) add(rs.getString(1)) }
-        }
-      }
+    RawSql.list(
+      db,
+      "SELECT COALESCE(system, '') || ' ' || content::text || ' ' || COALESCE(tools::text, '') FROM llm_requests WHERE id > ? ORDER BY id",
+      watermark,
+    ) { it.getString(1) }
 
   fun count(
     sql: String,
     vararg args: Any,
-  ): Int = RawSql.single(db, sql, *args) { it.getInt(1) }
+  ): Int = RawSql.count(db, sql, *args)
 
   /**
    * A [ChatProvider] answering from a queue of terminals: each call takes the

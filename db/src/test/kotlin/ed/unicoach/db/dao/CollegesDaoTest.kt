@@ -1289,18 +1289,12 @@ class CollegesDaoTest {
 
   /** The stored words of one college, alphabetical, read straight from the derived table. */
   private fun nameWordsFor(ipedsUnitId: Int): List<String> =
-    connection
-      .prepareStatement(
-        "SELECT nw.word FROM college_name_words nw JOIN colleges c ON c.id = nw.college_id " +
-          "WHERE c.ipeds_unit_id = ? ORDER BY nw.word",
-      ).use { stmt ->
-        stmt.setInt(1, ipedsUnitId)
-        stmt.executeQuery().use { rs ->
-          val words = mutableListOf<String>()
-          while (rs.next()) words += rs.getString("word")
-          words
-        }
-      }
+    RawSql.list(
+      connection,
+      "SELECT nw.word FROM college_name_words nw JOIN colleges c ON c.id = nw.college_id " +
+        "WHERE c.ipeds_unit_id = ? ORDER BY nw.word",
+      ipedsUnitId,
+    ) { it.getString("word") }
 
   // ---------------------------------------------------------------------------
   // nonNullCounts (RFC 139)
@@ -1461,19 +1455,17 @@ class CollegesDaoTest {
         Triple("other_expenses", "not_applicable" to "on_campus", 2800),
       )
     for ((concept, axes, amount) in cells) {
-      session
-        .prepareStatement(
-          "INSERT INTO price_figures (college_id, price_concept, residency_basis, arrangement, " +
-            "academic_year, amount_usd, status, source, source_variable) " +
-            "VALUES (?, ?, ?, ?, 2023, ?, 'reported', 'ipeds_ic_ay', 'FIXTURE')",
-        ).use { stmt ->
-          stmt.setObject(1, collegeId.value)
-          stmt.setString(2, concept)
-          stmt.setString(3, axes.first)
-          stmt.setString(4, axes.second)
-          stmt.setInt(5, amount)
-          stmt.executeUpdate()
-        }
+      RawSql.execute(
+        session,
+        "INSERT INTO price_figures (college_id, price_concept, residency_basis, arrangement, " +
+          "academic_year, amount_usd, status, source, source_variable) " +
+          "VALUES (?, ?, ?, ?, 2023, ?, 'reported', 'ipeds_ic_ay', 'FIXTURE')",
+        collegeId.value,
+        concept,
+        axes.first,
+        axes.second,
+        amount,
+      )
     }
     rebuildSearchIndex()
   }
@@ -2215,22 +2207,19 @@ class CollegesDaoTest {
 
   /** The percentile columns the index holds for one seeded college, read back raw. */
   private fun percentilesOf(ipedsUnitId: Int): Map<String, Double?> =
-    connection
-      .prepareStatement(
-        """
-        SELECT undergrad_enrollment_percentile_share AS size, net_price_percentile_share AS price
-        FROM college_search_index WHERE ipeds_unit_id = ?
-        """.trimIndent(),
-      ).use { stmt ->
-        stmt.setInt(1, ipedsUnitId)
-        stmt.executeQuery().use { rs ->
-          assertTrue(rs.next(), "no index row for $ipedsUnitId")
-          mapOf(
-            "size" to rs.getObject("size")?.let { (it as Number).toDouble() },
-            "price" to rs.getObject("price")?.let { (it as Number).toDouble() },
-          )
-        }
-      }
+    RawSql.single(
+      connection,
+      """
+      SELECT undergrad_enrollment_percentile_share AS size, net_price_percentile_share AS price
+      FROM college_search_index WHERE ipeds_unit_id = ?
+      """.trimIndent(),
+      ipedsUnitId,
+    ) { rs ->
+      mapOf(
+        "size" to rs.getObject("size")?.let { (it as Number).toDouble() },
+        "price" to rs.getObject("price")?.let { (it as Number).toDouble() },
+      )
+    }
 
   /**
    * The distance emitter at its OWN level (RFC 153 D66), which is where the

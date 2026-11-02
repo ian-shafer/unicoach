@@ -194,7 +194,7 @@ object FafsaFilingDeadlineFixture {
    * deadline row cannot appear in any answer or any count.
    */
   fun deleteAll(session: SqlSession) {
-    session.prepareStatement("DELETE FROM fafsa_filing_deadlines").use { it.executeUpdate() }
+    RawSql.execute(session, "DELETE FROM fafsa_filing_deadlines")
   }
 
   /**

@@ -65,10 +65,13 @@ class FitSuggestionsDaoTest {
   private fun createStudent(): StudentId {
     val userId = UUID.randomUUID()
     val studentId = UUID.randomUUID()
-    connection.createStatement().use { stmt ->
-      stmt.execute("INSERT INTO users (id, email, name, password_hash) VALUES ('$userId', 'fs-$userId@test.com', 'FS User', 'ahash')")
-      StudentRowFixture.insert(connection, studentId, userId)
-    }
+    RawSql.execute(
+      connection,
+      "INSERT INTO users (id, email, name, password_hash) VALUES (?, ?, 'FS User', 'ahash')",
+      userId,
+      "fs-$userId@test.com",
+    )
+    StudentRowFixture.insert(connection, studentId, userId)
     return StudentId(studentId)
   }
 
@@ -112,11 +115,12 @@ class FitSuggestionsDaoTest {
 
   private fun createConvo(studentId: StudentId): ConvoId {
     val convoId = UUID.randomUUID()
-    connection.prepareStatement("INSERT INTO convos (id, student_id, name, party) VALUES (?, ?, 'A convo', 'student')").use { stmt ->
-      stmt.setObject(1, convoId)
-      stmt.setObject(2, studentId.value)
-      stmt.executeUpdate()
-    }
+    RawSql.execute(
+      connection,
+      "INSERT INTO convos (id, student_id, name, party) VALUES (?, ?, 'A convo', 'student')",
+      convoId,
+      studentId.value,
+    )
     return ConvoId(convoId)
   }
 

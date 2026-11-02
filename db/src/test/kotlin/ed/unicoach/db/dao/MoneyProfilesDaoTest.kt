@@ -62,10 +62,13 @@ class MoneyProfilesDaoTest {
   private fun createStudent(): StudentId {
     val userId = UUID.randomUUID()
     val studentId = UUID.randomUUID()
-    connection.createStatement().use { stmt ->
-      stmt.execute("INSERT INTO users (id, email, name, password_hash) VALUES ('$userId', 'mp-$userId@test.com', 'MP User', 'ahash')")
-      StudentRowFixture.insert(connection, studentId, userId)
-    }
+    RawSql.execute(
+      connection,
+      "INSERT INTO users (id, email, name, password_hash) VALUES (?, ?, 'MP User', 'ahash')",
+      userId,
+      "mp-$userId@test.com",
+    )
+    StudentRowFixture.insert(connection, studentId, userId)
     return StudentId(studentId)
   }
 
@@ -82,15 +85,8 @@ class MoneyProfilesDaoTest {
       dependencyStatus = AnswerStatus.UNANSWERED,
     )
 
-  private fun countVersions(id: MoneyProfileId): Int {
-    connection.prepareStatement("SELECT COUNT(*) FROM money_profiles_versions WHERE id = ?").use { stmt ->
-      stmt.setObject(1, id.value)
-      stmt.executeQuery().use { rs ->
-        rs.next()
-        return rs.getInt(1)
-      }
-    }
-  }
+  private fun countVersions(id: MoneyProfileId): Int =
+    RawSql.count(connection, "SELECT COUNT(*) FROM money_profiles_versions WHERE id = ?", id.value)
 
   @Test
   fun `create persists an unanswered profile with defaults`() {

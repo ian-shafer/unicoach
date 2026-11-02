@@ -1,6 +1,7 @@
 package ed.unicoach.college
 
 import ed.unicoach.db.dao.CodebooksDao
+import ed.unicoach.db.dao.RawSql
 import ed.unicoach.db.dao.StudentRowFixture
 import ed.unicoach.db.models.NewCipCode
 import ed.unicoach.db.models.NewSubject
@@ -248,22 +249,27 @@ class SubjectLoaderTest : CollegeScorecardTestBase() {
     val userId = UUID.randomUUID()
     val studentId = UUID.randomUUID()
     withSession { session ->
-      session
-        .prepareStatement(
-          """
-          WITH u AS (
-            INSERT INTO users (id, email, name, password_hash)
-            VALUES ('$userId', 'sl-$userId@test.com', 'SL User', 'ahash') RETURNING id
-          ), s AS (
-            INSERT INTO students (id, user_id, expected_high_school_graduation_on,
-              expected_high_school_graduation_precision, date_of_birth)
-            SELECT '$studentId', id, DATE '2028-01-01', 'year', DATE '${StudentRowFixture.DEFAULT_DATE_OF_BIRTH}' FROM u RETURNING id
-          ), a AS (
-            INSERT INTO intended_subject_status (student_id, status) SELECT id, 'answered' FROM s RETURNING student_id
-          )
-          INSERT INTO intended_subjects (student_id, subject_slug) SELECT student_id, '$slug' FROM a
-          """.trimIndent(),
-        ).use { it.execute() }
+      RawSql.execute(
+        session,
+        """
+        WITH u AS (
+          INSERT INTO users (id, email, name, password_hash)
+          VALUES (?, ?, 'SL User', 'ahash') RETURNING id
+        ), s AS (
+          INSERT INTO students (id, user_id, expected_high_school_graduation_on,
+            expected_high_school_graduation_precision, date_of_birth)
+          SELECT ?::uuid, id, DATE '2028-01-01', 'year', ?::date FROM u RETURNING id
+        ), a AS (
+          INSERT INTO intended_subject_status (student_id, status) SELECT id, 'answered' FROM s RETURNING student_id
+        )
+        INSERT INTO intended_subjects (student_id, subject_slug) SELECT student_id, ?::text FROM a
+        """.trimIndent(),
+        userId,
+        "sl-$userId@test.com",
+        studentId,
+        StudentRowFixture.DEFAULT_DATE_OF_BIRTH,
+        slug,
+      )
     }
   }
 

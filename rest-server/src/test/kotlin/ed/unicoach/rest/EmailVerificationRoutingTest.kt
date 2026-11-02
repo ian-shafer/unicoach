@@ -1,6 +1,7 @@
 package ed.unicoach.rest
 
 import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
+import ed.unicoach.db.dao.RawSql
 import ed.unicoach.rest.models.RegisterRequest
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.cio.CIO
@@ -99,14 +100,7 @@ class EmailVerificationRoutingTest {
         .split(";")
         .first()
         .trim()
-    val userId =
-      connection.prepareStatement("SELECT id FROM users WHERE email = ?").use { stmt ->
-        stmt.setString(1, email)
-        stmt.executeQuery().use { rs ->
-          assertTrue(rs.next())
-          UUID.fromString(rs.getString("id"))
-        }
-      }
+    val userId = RawSql.single(connection, "SELECT id FROM users WHERE email = ?", email) { UUID.fromString(it.getString("id")) }
     return cookiePair to userId
   }
 
@@ -115,24 +109,17 @@ class EmailVerificationRoutingTest {
     rawToken: String,
     expiresAt: Instant,
   ) {
-    connection
-      .prepareStatement("INSERT INTO verification_tokens (user_id, token_hash, expires_at) VALUES (?, ?, ?)")
-      .use { stmt ->
-        stmt.setObject(1, userId)
-        stmt.setBytes(2, sha256(rawToken))
-        stmt.setTimestamp(3, Timestamp.from(expiresAt))
-        stmt.executeUpdate()
-      }
+    RawSql.execute(
+      connection,
+      "INSERT INTO verification_tokens (user_id, token_hash, expires_at) VALUES (?, ?, ?)",
+      userId,
+      sha256(rawToken),
+      Timestamp.from(expiresAt),
+    )
   }
 
   private fun outstandingTokenCount(userId: UUID): Int =
-    connection.prepareStatement("SELECT COUNT(*) FROM verification_tokens WHERE user_id = ? AND consumed_at IS NULL").use { stmt ->
-      stmt.setObject(1, userId)
-      stmt.executeQuery().use { rs ->
-        rs.next()
-        rs.getInt(1)
-      }
-    }
+    RawSql.count(connection, "SELECT COUNT(*) FROM verification_tokens WHERE user_id = ? AND consumed_at IS NULL", userId)
 
   /** Count of SEND_EMAIL jobs enqueued to [recipient] (proves enqueue, not delivery). */
   private fun enqueuedEmailCountTo(recipient: String): Int = EnqueuedVerificationEmail.countTo(connection, recipient)

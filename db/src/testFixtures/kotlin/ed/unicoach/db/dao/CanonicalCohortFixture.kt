@@ -7,7 +7,6 @@ import ed.unicoach.db.models.CollegeId
 import ed.unicoach.db.models.FigureStatus
 import ed.unicoach.db.models.IncomeBand
 import ed.unicoach.db.models.MoneySource
-import java.sql.Types
 
 /**
  * `cohort_money_stats` rows for tests, written RAW -- the
@@ -42,36 +41,27 @@ object CanonicalCohortFixture {
     source: MoneySource = MoneySource.SCORECARD,
     sourceVariable: String = "FIXTURE",
   ) {
-    session
-      .prepareStatement(
-        "INSERT INTO cohort_money_stats (college_id, measure, population, residency_scope, aid_scope, " +
-          "income_band, vintage, value, status, source, source_variable) " +
-          "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-      ).use { stmt ->
-        // A CURSOR, never eleven hand-typed ordinals -- `CollegesDao`'s own
-        // idiom for a bind list (`bindPredicate`'s `var idx = from` /
-        // `idx++`). Slots 4 and 5 are `residency_scope` and `aid_scope`, and
-        // both admit the literal value 'all', so a one-slot renumber slip
-        // writes a row at a DIFFERENT address that passes every CHECK and
-        // every foreign key -- and the suite reads green about a cell the
-        // reader never finds.
-        var idx = 1
-        stmt.setObject(idx++, collegeId.value)
-        stmt.setString(idx++, address.measure.value)
-        stmt.setString(idx++, address.population.value)
-        stmt.setString(idx++, residencyScope.value)
-        stmt.setString(idx++, address.aidScope.value)
-        if (incomeBand == null) stmt.setNull(idx++, Types.VARCHAR) else stmt.setString(idx++, incomeBand.value)
-        if (vintage == null) stmt.setNull(idx++, Types.SMALLINT) else stmt.setInt(idx++, vintage)
-        if (value == null) stmt.setNull(idx++, Types.NUMERIC) else stmt.setDouble(idx++, value)
-        stmt.setString(
-          idx++,
-          if (value == null) FigureStatus.SUPPRESSED_BY_PUBLISHER.value else FigureStatus.REPORTED.value,
-        )
-        stmt.setString(idx++, source.value)
-        stmt.setString(idx++, sourceVariable)
-        stmt.executeUpdate()
-      }
+    // Slots 4 and 5 are `residency_scope` and `aid_scope`, and both admit the
+    // literal value 'all', so a one-slot transposition writes a row at a
+    // DIFFERENT address that passes every CHECK and every foreign key -- and
+    // the suite reads green about a cell the reader never finds.
+    RawSql.execute(
+      session,
+      "INSERT INTO cohort_money_stats (college_id, measure, population, residency_scope, aid_scope, " +
+        "income_band, vintage, value, status, source, source_variable) " +
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      collegeId.value,
+      address.measure.value,
+      address.population.value,
+      residencyScope.value,
+      address.aidScope.value,
+      incomeBand?.value,
+      vintage,
+      value,
+      if (value == null) FigureStatus.SUPPRESSED_BY_PUBLISHER.value else FigureStatus.REPORTED.value,
+      source.value,
+      sourceVariable,
+    )
   }
 
   /**
@@ -121,10 +111,7 @@ object CanonicalCohortFixture {
     session: SqlSession,
     collegeId: CollegeId,
   ) {
-    session.prepareStatement("DELETE FROM cohort_money_stats WHERE college_id = ?").use { stmt ->
-      stmt.setObject(1, collegeId.value)
-      stmt.executeUpdate()
-    }
+    RawSql.execute(session, "DELETE FROM cohort_money_stats WHERE college_id = ?", collegeId.value)
   }
 
   /**

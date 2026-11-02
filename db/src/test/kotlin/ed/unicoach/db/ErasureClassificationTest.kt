@@ -1,5 +1,6 @@
 package ed.unicoach.db
 
+import ed.unicoach.db.dao.RawSql
 import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.Test
@@ -542,7 +543,7 @@ class ErasureClassificationTest {
       FROM reach r JOIN pg_class c ON c.oid = r.rel
       GROUP BY c.relname
       """.trimIndent(),
-      { stmt -> stmt.setArray(1, connection.createArrayOf("text", SEEDS.toTypedArray())) },
+      connection.createArrayOf("text", SEEDS.toTypedArray()),
     ) { it.getString(1) to it.getBoolean(2) }.toMap()
 
   /** Every column of every table in `public`, with whether its type is `pii.*`. */
@@ -596,15 +597,9 @@ class ErasureClassificationTest {
 
   private fun <T> query(
     sql: String,
-    bind: (java.sql.PreparedStatement) -> Unit = {},
+    vararg args: Any?,
     row: (java.sql.ResultSet) -> T,
-  ): List<T> =
-    connection.prepareStatement(sql).use { stmt ->
-      bind(stmt)
-      stmt.executeQuery().use { rs ->
-        buildList { while (rs.next()) add(row(rs)) }
-      }
-    }
+  ): List<T> = RawSql.list(connection, sql, *args, read = row)
 
   @Test
   fun `every column in the erasure reach is personal or named not personal`() {

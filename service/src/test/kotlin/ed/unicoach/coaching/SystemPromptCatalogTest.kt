@@ -31,6 +31,7 @@ import ed.unicoach.college.SimilarCollegesTool
 import ed.unicoach.college.TeachesYourField
 import ed.unicoach.college.figureComparisonWordsIn
 import ed.unicoach.db.DatabaseConfig
+import ed.unicoach.db.dao.RawSql
 import ed.unicoach.db.dao.SqlSession
 import ed.unicoach.db.dao.SystemPromptsDao
 import ed.unicoach.db.models.FigureStatus
@@ -1715,15 +1716,10 @@ class SystemPromptCatalogTest {
     paragraph: CoachParagraph,
     name: String,
   ) {
-    val versionNumbers = mutableListOf<Int>()
-    connection.prepareStatement("SELECT version FROM system_prompts WHERE name = ?").use { statement ->
-      statement.setString(1, coaching.systemPromptName)
-      statement.executeQuery().use { rows ->
-        while (rows.next()) {
-          versionNumberOrNull(rows.getString("version"))?.let { versionNumbers += it }
-        }
-      }
-    }
+    val versionNumbers =
+      RawSql
+        .list(connection, "SELECT version FROM system_prompts WHERE name = ?", coaching.systemPromptName) { it.getString("version") }
+        .mapNotNull { versionNumberOrNull(it) }
 
     // Every body is read through [bodyOf], so each row is matched in the line
     // dialect THAT row was written with rather than in this run's.

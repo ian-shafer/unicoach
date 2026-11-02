@@ -236,12 +236,12 @@ object NationalMeritFixture {
 
   /** Empties the cycles. NAMED and called by the caller, never hidden inside a `seed` verb ([AutomaticAwardFixture]'s rule). */
   fun deleteAllCycles(session: SqlSession) {
-    session.prepareStatement("DELETE FROM national_merit_cycles").use { it.executeUpdate() }
+    RawSql.execute(session, "DELETE FROM national_merit_cycles")
   }
 
   /** Empties the awards; see [deleteAllCycles]. */
   fun deleteAllAwards(session: SqlSession) {
-    session.prepareStatement("DELETE FROM college_national_merit_awards").use { it.executeUpdate() }
+    RawSql.execute(session, "DELETE FROM college_national_merit_awards")
   }
 
   /** The competition [cycle] describes by default: the 2028 competition, sat in October 2026. */

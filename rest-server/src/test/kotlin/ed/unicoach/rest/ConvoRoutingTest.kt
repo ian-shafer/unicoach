@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.JsonNode
 import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
 import ed.unicoach.common.config.AppConfig
 import ed.unicoach.db.DatabaseConfig
+import ed.unicoach.db.dao.RawSql
 import ed.unicoach.rest.models.CreateConversationRequest
 import ed.unicoach.rest.models.PostMessageRequest
 import ed.unicoach.rest.models.RegisterRequest
@@ -71,17 +72,6 @@ class ConvoRoutingTest {
 
   private fun uniqueEmail(): String = "convo${java.util.UUID.randomUUID()}@company.com"
 
-  /** Marks a registered user verified by direct SQL so it passes the verification gate. */
-  private fun markEmailVerified(email: String) {
-    dbConnection
-      .prepareStatement(
-        "UPDATE users SET version = version + 1, email_verified_at = NOW() WHERE email = ? AND email_verified_at IS NULL",
-      ).use { stmt ->
-        stmt.setString(1, email)
-        stmt.executeUpdate()
-      }
-  }
-
   private suspend fun registerAndGetCookie(): String {
     val email = uniqueEmail()
     val req = RegisterRequest(email, "Password123!", "Convo User")
@@ -91,7 +81,7 @@ class ConvoRoutingTest {
         setBody(mapper.writeValueAsString(req))
       }
     assertEquals(HttpStatusCode.Created, response.status)
-    markEmailVerified(email)
+    markEmailVerified(dbConnection, email)
     return response.headers[HttpHeaders.SetCookie]!!
       .split(";")
       .first()
@@ -342,45 +332,30 @@ class ConvoRoutingTest {
   ): String {
     val userId = supporterUserId ?: java.util.UUID.randomUUID()
     if (supporterUserId == null) {
-      dbConnection
-        .prepareStatement("INSERT INTO users (id, email, name, password_hash) VALUES (?, ?, 'Parent', 'ahash')")
-        .use { stmt ->
-          stmt.setObject(1, userId)
-          stmt.setString(2, "parent-$userId@company.com")
-          stmt.executeUpdate()
-        }
+      RawSql.execute(
+        dbConnection,
+        "INSERT INTO users (id, email, name, password_hash) VALUES (?, ?, 'Parent', 'ahash')",
+        userId,
+        "parent-$userId@company.com",
+      )
     }
     val supporterId =
-      dbConnection
-        .prepareStatement(
-          "INSERT INTO supporters (user_id) VALUES (?) ON CONFLICT (user_id) DO UPDATE SET user_id = EXCLUDED.user_id RETURNING id",
-        ).use { stmt ->
-          stmt.setObject(1, userId)
-          stmt.executeQuery().use { rs ->
-            rs.next()
-            rs.getObject(1, java.util.UUID::class.java)
-          }
-        }
-    return dbConnection
-      .prepareStatement(
-        "INSERT INTO convos (student_id, name, party, supporter_id) VALUES (?, 'The parent''s conversation', 'supporter', ?) RETURNING id",
-      ).use { stmt ->
-        stmt.setObject(1, studentId)
-        stmt.setObject(2, supporterId)
-        stmt.executeQuery().use { rs ->
-          rs.next()
-          rs.getString(1)
-        }
-      }
+      RawSql.single(
+        dbConnection,
+        "INSERT INTO supporters (user_id) VALUES (?) ON CONFLICT (user_id) DO UPDATE SET user_id = EXCLUDED.user_id RETURNING id",
+        userId,
+      ) { it.getObject(1, java.util.UUID::class.java) }
+    return RawSql.single(
+      dbConnection,
+      "INSERT INTO convos (student_id, name, party, supporter_id) VALUES (?, 'The parent''s conversation', 'supporter', ?) RETURNING id",
+      studentId,
+      supporterId,
+    ) { it.getString(1) }
   }
 
   private fun userIdOfStudent(studentId: java.util.UUID): java.util.UUID =
-    dbConnection.prepareStatement("SELECT user_id FROM students WHERE id = ?").use { stmt ->
-      stmt.setObject(1, studentId)
-      stmt.executeQuery().use { rs ->
-        rs.next()
-        rs.getObject(1, java.util.UUID::class.java)
-      }
+    RawSql.single(dbConnection, "SELECT user_id FROM students WHERE id = ?", studentId) {
+      it.getObject(1, java.util.UUID::class.java)
     }
 
   @Test

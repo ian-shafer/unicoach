@@ -1,15 +1,20 @@
 package ed.unicoach.db.dao
 
 import java.sql.Connection
+import java.sql.PreparedStatement
 import java.sql.ResultSet
 
 /**
- * Positional-parameter JDBC for tests that write or read a row no DAO exposes:
+ * Positional-parameter JDBC for tests that write or read rows no DAO exposes:
  * every argument is bound with `setObject`, in order.
  *
  * Beside the row fixtures because they and the suites that use them kept a
  * private copy of these few lines each (RFC 264); a copy that binds one
  * argument differently is a test that seeds a row nobody asked for.
+ *
+ * Every operation takes either a raw [Connection] or a pooled [SqlSession]
+ * (`database.withConnection`). All either needs to do is prepare a statement,
+ * so each pair of overloads hands that one capability to a shared body.
  */
 object RawSql {
   /**
@@ -20,11 +25,14 @@ object RawSql {
     connection: Connection,
     sql: String,
     vararg args: Any?,
-  ): Int =
-    connection.prepareStatement(sql).use { stmt ->
-      bind(stmt, args)
-      stmt.executeUpdate()
-    }
+  ): Int = executeOn({ connection.prepareStatement(it) }, sql, args)
+
+  /** [execute] on a pooled session. */
+  fun execute(
+    session: SqlSession,
+    sql: String,
+    vararg args: Any?,
+  ): Int = executeOn({ session.prepareStatement(it) }, sql, args)
 
   /**
    * Runs a query that must answer exactly one row, and reads it with [read].
@@ -36,7 +44,33 @@ object RawSql {
     sql: String,
     vararg args: Any?,
     read: (ResultSet) -> T,
-  ): T = atMostOne(connection, sql, args, "exactly one", read) { error(unexpected("exactly one", sql, args, "none")) }
+  ): T = singleOn({ connection.prepareStatement(it) }, sql, args, read)
+
+  /** [single] on a pooled session. */
+  fun <T> single(
+    session: SqlSession,
+    sql: String,
+    vararg args: Any?,
+    read: (ResultSet) -> T,
+  ): T = singleOn({ session.prepareStatement(it) }, sql, args, read)
+
+  /**
+   * Runs a count query (`SELECT count(*) ...`) and answers its one value.
+   * Like [single], a result of no row or more than one throws, naming the SQL
+   * and its bound arguments.
+   */
+  fun count(
+    connection: Connection,
+    sql: String,
+    vararg args: Any?,
+  ): Int = singleOn({ connection.prepareStatement(it) }, sql, args, ::firstInt)
+
+  /** [count] on a pooled session. */
+  fun count(
+    session: SqlSession,
+    sql: String,
+    vararg args: Any?,
+  ): Int = singleOn({ session.prepareStatement(it) }, sql, args, ::firstInt)
 
   /**
    * Runs a query that answers one row or none, and reads the row with [read];
@@ -49,7 +83,71 @@ object RawSql {
     sql: String,
     vararg args: Any?,
     read: (ResultSet) -> T,
-  ): T? = atMostOne(connection, sql, args, "at most one", read) { null }
+  ): T? = singleOrNullOn({ connection.prepareStatement(it) }, sql, args, read)
+
+  /** [singleOrNull] on a pooled session. */
+  fun <T : Any> singleOrNull(
+    session: SqlSession,
+    sql: String,
+    vararg args: Any?,
+    read: (ResultSet) -> T,
+  ): T? = singleOrNullOn({ session.prepareStatement(it) }, sql, args, read)
+
+  /**
+   * Runs a query and reads every row it answers with [read], in the order the
+   * query returns them; no row is an empty list.
+   */
+  fun <T> list(
+    connection: Connection,
+    sql: String,
+    vararg args: Any?,
+    read: (ResultSet) -> T,
+  ): List<T> = listOn({ connection.prepareStatement(it) }, sql, args, read)
+
+  /** [list] on a pooled session. */
+  fun <T> list(
+    session: SqlSession,
+    sql: String,
+    vararg args: Any?,
+    read: (ResultSet) -> T,
+  ): List<T> = listOn({ session.prepareStatement(it) }, sql, args, read)
+
+  private fun executeOn(
+    prepare: (String) -> PreparedStatement,
+    sql: String,
+    args: Array<out Any?>,
+  ): Int =
+    prepare(sql).use { stmt ->
+      bind(stmt, args)
+      stmt.executeUpdate()
+    }
+
+  private fun <T> singleOn(
+    prepare: (String) -> PreparedStatement,
+    sql: String,
+    args: Array<out Any?>,
+    read: (ResultSet) -> T,
+  ): T = atMostOne(prepare, sql, args, "exactly one", read) { error(unexpected("exactly one", sql, args, "none")) }
+
+  private fun <T : Any> singleOrNullOn(
+    prepare: (String) -> PreparedStatement,
+    sql: String,
+    args: Array<out Any?>,
+    read: (ResultSet) -> T,
+  ): T? = atMostOne(prepare, sql, args, "at most one", read) { null }
+
+  private fun <T> listOn(
+    prepare: (String) -> PreparedStatement,
+    sql: String,
+    args: Array<out Any?>,
+    read: (ResultSet) -> T,
+  ): List<T> =
+    prepare(sql).use { stmt ->
+      bind(stmt, args)
+      stmt.executeQuery().use { rs ->
+        buildList { while (rs.next()) add(read(rs)) }
+      }
+    }
 
   /**
    * The one query loop behind [single] and [singleOrNull]: they differ only in
@@ -57,14 +155,14 @@ object RawSql {
    * the error.
    */
   private inline fun <T> atMostOne(
-    connection: Connection,
+    prepare: (String) -> PreparedStatement,
     sql: String,
     args: Array<out Any?>,
     expected: String,
     read: (ResultSet) -> T,
     none: () -> T,
   ): T =
-    connection.prepareStatement(sql).use { stmt ->
+    prepare(sql).use { stmt ->
       bind(stmt, args)
       stmt.executeQuery().use { rs ->
         if (!rs.next()) return none()
@@ -74,6 +172,8 @@ object RawSql {
       }
     }
 
+  private fun firstInt(rs: ResultSet): Int = rs.getInt(1)
+
   private fun unexpected(
     expected: String,
     sql: String,
@@ -82,7 +182,7 @@ object RawSql {
   ) = "expected $expected row from [$sql] with args ${args.toList()}, got $got"
 
   private fun bind(
-    stmt: java.sql.PreparedStatement,
+    stmt: PreparedStatement,
     args: Array<out Any?>,
   ) {
     args.forEachIndexed { i, arg -> stmt.setObject(i + 1, arg) }

@@ -6,6 +6,7 @@ import ed.unicoach.db.Database
 import ed.unicoach.db.DatabaseConfig
 import ed.unicoach.db.dao.CodebookReferenceFixture
 import ed.unicoach.db.dao.MoneyVocabularyFixture
+import ed.unicoach.db.dao.RawSql
 import ed.unicoach.db.dao.SqlSession
 import kotlinx.coroutines.runBlocking
 import org.junit.jupiter.api.AfterAll
@@ -216,25 +217,10 @@ abstract class CollegeScorecardTestBase {
   protected fun <T> query(
     sql: String,
     map: (ResultSet) -> T,
-  ): List<T> =
-    withSession { session ->
-      session.prepareStatement(sql).use { stmt ->
-        stmt.executeQuery().use { rs ->
-          val rows = mutableListOf<T>()
-          while (rs.next()) rows += map(rs)
-          rows
-        }
-      }
-    }
+  ): List<T> = withSession { session -> RawSql.list(session, sql, read = map) }
 
   protected fun count(
     session: SqlSession,
     table: String,
-  ): Int =
-    session.prepareStatement("SELECT count(*) FROM $table").use { stmt ->
-      stmt.executeQuery().use { rs ->
-        rs.next()
-        rs.getInt(1)
-      }
-    }
+  ): Int = RawSql.count(session, "SELECT count(*) FROM $table")
 }

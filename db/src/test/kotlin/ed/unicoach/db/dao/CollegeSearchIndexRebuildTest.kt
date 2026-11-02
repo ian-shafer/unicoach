@@ -201,33 +201,19 @@ class CollegeSearchIndexRebuildTest {
   )
 
   /** Every column of every index row, as text, in a stable order — the D59 comparison. */
-  private fun snapshotEveryColumn(): List<String> {
-    val rows = mutableListOf<String>()
-    connection
-      .prepareStatement("SELECT i::text AS whole_row FROM college_search_index i ORDER BY i.college_id")
-      .use { stmt ->
-        stmt.executeQuery().use { rs ->
-          while (rs.next()) rows += rs.getString("whole_row")
-        }
-      }
-    return rows
-  }
+  private fun snapshotEveryColumn(): List<String> =
+    RawSql.list(connection, "SELECT i::text AS whole_row FROM college_search_index i ORDER BY i.college_id") {
+      it.getString("whole_row")
+    }
 
   private fun <T> readColumn(
     column: String,
     ipedsUnitId: Int,
     read: (java.sql.ResultSet, String) -> T,
-  ): T {
-    connection
-      .prepareStatement("SELECT $column AS v FROM college_search_index WHERE ipeds_unit_id = ?")
-      .use { stmt ->
-        stmt.setInt(1, ipedsUnitId)
-        stmt.executeQuery().use { rs ->
-          assertTrue(rs.next(), "no index row for ipeds_unit_id $ipedsUnitId")
-          return read(rs, "v")
-        }
-      }
-  }
+  ): T =
+    RawSql.single(connection, "SELECT $column AS v FROM college_search_index WHERE ipeds_unit_id = ?", ipedsUnitId) {
+      read(it, "v")
+    }
 
   private fun stringOrNull(
     column: String,
@@ -275,22 +261,20 @@ class CollegeSearchIndexRebuildTest {
     academicYear: Int = ACADEMIC_YEAR_2023_24,
     status: String = if (amountUsd == null) "suppressed_by_publisher" else "reported",
   ) {
-    connection
-      .prepareStatement(
-        "INSERT INTO price_figures (college_id, price_concept, residency_basis, arrangement, " +
-          "academic_year, amount_usd, status, source, source_variable) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-      ).use { stmt ->
-        stmt.setObject(1, collegeId.value)
-        stmt.setString(2, concept)
-        stmt.setString(3, residency)
-        stmt.setString(4, arrangement)
-        stmt.setInt(5, academicYear)
-        if (amountUsd == null) stmt.setNull(6, java.sql.Types.INTEGER) else stmt.setInt(6, amountUsd)
-        stmt.setString(7, status)
-        stmt.setString(8, "ipeds_ic_ay")
-        stmt.setString(9, "FIXTURE")
-        stmt.executeUpdate()
-      }
+    RawSql.execute(
+      connection,
+      "INSERT INTO price_figures (college_id, price_concept, residency_basis, arrangement, " +
+        "academic_year, amount_usd, status, source, source_variable) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      collegeId.value,
+      concept,
+      residency,
+      arrangement,
+      academicYear,
+      amountUsd,
+      status,
+      "ipeds_ic_ay",
+      "FIXTURE",
+    )
   }
 
   /**
@@ -334,14 +318,7 @@ class CollegeSearchIndexRebuildTest {
     ipedsUnitId: Int,
   ): java.math.BigDecimal? = readColumn(column, ipedsUnitId) { rs, c -> rs.getBigDecimal(c) }
 
-  private fun indexRowCount(): Int {
-    connection.prepareStatement("SELECT count(*) FROM college_search_index").use { stmt ->
-      stmt.executeQuery().use { rs ->
-        rs.next()
-        return rs.getInt(1)
-      }
-    }
-  }
+  private fun indexRowCount(): Int = RawSql.count(connection, "SELECT count(*) FROM college_search_index")
 
   // ---------------------------------------------------------------------------
   // Shape
@@ -1011,18 +988,12 @@ class CollegeSearchIndexRebuildTest {
   /** `college_search_index` column names matching any of [patterns], sorted — read from the catalog, never typed. */
   private fun columnsMatching(vararg patterns: String): List<String> {
     val clause = patterns.joinToString(" OR ") { "column_name LIKE ?" }
-    return connection
-      .prepareStatement(
-        "SELECT column_name FROM information_schema.columns " +
-          "WHERE table_name = 'college_search_index' AND ($clause) ORDER BY column_name",
-      ).use { stmt ->
-        patterns.forEachIndexed { index, pattern -> stmt.setString(index + 1, pattern) }
-        stmt.executeQuery().use { rs ->
-          val names = mutableListOf<String>()
-          while (rs.next()) names += rs.getString(1)
-          names
-        }
-      }
+    return RawSql.list(
+      connection,
+      "SELECT column_name FROM information_schema.columns " +
+        "WHERE table_name = 'college_search_index' AND ($clause) ORDER BY column_name",
+      *patterns,
+    ) { it.getString(1) }
   }
 
   @Test

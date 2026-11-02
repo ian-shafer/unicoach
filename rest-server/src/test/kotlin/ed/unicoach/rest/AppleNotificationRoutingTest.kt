@@ -20,6 +20,7 @@ import ed.unicoach.coaching.budget.BudgetConfig
 import ed.unicoach.common.config.AppConfig
 import ed.unicoach.db.Database
 import ed.unicoach.db.DatabaseConfig
+import ed.unicoach.db.dao.RawSql
 import ed.unicoach.db.dao.SqlSession
 import ed.unicoach.queue.JobType
 import ed.unicoach.queue.NewJob
@@ -69,6 +70,7 @@ import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import java.time.Instant
+import java.time.ZoneOffset
 import java.time.temporal.ChronoUnit
 import java.util.UUID
 import java.util.concurrent.atomic.AtomicLong
@@ -309,15 +311,9 @@ class AppleNotificationRoutingTest {
   // ---------------------------------------------------------------------------
 
   private fun refreshJobPayloads(): List<JsonObject> =
-    dbConnection
-      .prepareStatement("SELECT payload FROM jobs WHERE job_type = 'REFRESH_SUBSCRIPTION' ORDER BY created_at")
-      .use { stmt ->
-        stmt.executeQuery().use { rs ->
-          buildList {
-            while (rs.next()) add(Json.parseToJsonElement(rs.getString("payload")) as JsonObject)
-          }
-        }
-      }
+    RawSql.list(dbConnection, "SELECT payload FROM jobs WHERE job_type = 'REFRESH_SUBSCRIPTION' ORDER BY created_at") {
+      Json.parseToJsonElement(it.getString("payload")) as JsonObject
+    }
 
   private fun JsonObject.text(field: String): String? = this[field]?.jsonPrimitive?.content
 
@@ -553,12 +549,7 @@ class AppleNotificationRoutingTest {
         .split(";")
         .first()
         .trim()
-    dbConnection
-      .prepareStatement("UPDATE users SET version = version + 1, email_verified_at = NOW() WHERE email = ?")
-      .use { stmt ->
-        stmt.setString(1, email)
-        stmt.executeUpdate()
-      }
+    markEmailVerified(dbConnection, email)
     client.post(url("/api/v1/students")) {
       contentType(ContentType.Application.Json)
       header(HttpHeaders.Cookie, cookie)
@@ -568,15 +559,9 @@ class AppleNotificationRoutingTest {
   }
 
   private fun studentIdOf(email: String): UUID =
-    dbConnection
-      .prepareStatement("SELECT s.id FROM students s JOIN users u ON u.id = s.user_id WHERE u.email = ?")
-      .use { stmt ->
-        stmt.setString(1, email)
-        stmt.executeQuery().use { rs ->
-          rs.next()
-          rs.getObject("id") as UUID
-        }
-      }
+    RawSql.single(dbConnection, "SELECT s.id FROM students s JOIN users u ON u.id = s.user_id WHERE u.email = ?", email) {
+      it.getObject("id") as UUID
+    }
 
   private fun installActiveScript(
     originalTransactionId: String,
@@ -626,49 +611,39 @@ class AppleNotificationRoutingTest {
     createdAt: Instant,
   ) {
     val llmRequestId =
-      dbConnection
-        .prepareStatement(
-          "INSERT INTO llm_requests (provider, model_requested, content, max_tokens) " +
-            "VALUES ('anthropic', 'claude-sonnet-4-6', '[]'::jsonb, 1024) RETURNING id",
-        ).use { stmt ->
-          stmt.executeQuery().use { rs ->
-            rs.next()
-            rs.getLong("id")
-          }
-        }
-    dbConnection
-      .prepareStatement(
-        """
-        INSERT INTO llm_responses
-          (request_id, outcome, content, model_resolved, stop_reason, cost_nanodollars, cost_is_estimated, input_tokens, output_tokens, latency_ms, created_at)
-        VALUES (?, 'completed', '[]'::jsonb, 'm', 'end_turn', ?, false, 1, 1, 1, ?)
-        """.trimIndent(),
-      ).use { stmt ->
-        stmt.setLong(1, llmRequestId)
-        stmt.setLong(2, costNanodollars)
-        stmt.setTimestamp(3, java.sql.Timestamp.from(createdAt))
-        stmt.executeUpdate()
-      }
-    dbConnection
-      .prepareStatement(
-        "INSERT INTO synthesis_runs (student_id, outcome, system_prompt_id, llm_request_id) VALUES (?, 'applied', ?, ?)",
-      ).use { stmt ->
-        stmt.setObject(1, studentId)
-        stmt.setObject(2, seedSystemPrompt())
-        stmt.setLong(3, llmRequestId)
-        stmt.executeUpdate()
-      }
+      RawSql.single(
+        dbConnection,
+        "INSERT INTO llm_requests (provider, model_requested, content, max_tokens) " +
+          "VALUES ('anthropic', 'claude-sonnet-4-6', '[]'::jsonb, 1024) RETURNING id",
+      ) { it.getLong("id") }
+    RawSql.execute(
+      dbConnection,
+      """
+      INSERT INTO llm_responses
+        (request_id, outcome, content, model_resolved, stop_reason, cost_nanodollars, cost_is_estimated, input_tokens, output_tokens, latency_ms, created_at)
+      VALUES (?, 'completed', '[]'::jsonb, 'm', 'end_turn', ?, false, 1, 1, 1, ?)
+      """.trimIndent(),
+      llmRequestId,
+      costNanodollars,
+      createdAt.atOffset(ZoneOffset.UTC),
+    )
+    RawSql.execute(
+      dbConnection,
+      "INSERT INTO synthesis_runs (student_id, outcome, system_prompt_id, llm_request_id) VALUES (?, 'applied', ?, ?)",
+      studentId,
+      seedSystemPrompt(),
+      llmRequestId,
+    )
   }
 
   private fun seedSystemPrompt(): UUID {
     val id = UUID.randomUUID()
-    dbConnection
-      .prepareStatement("INSERT INTO system_prompts (id, name, version, body) VALUES (?, 'synthesis', ?, 'reflect')")
-      .use { stmt ->
-        stmt.setObject(1, id)
-        stmt.setString(2, "notif-${UUID.randomUUID()}")
-        stmt.executeUpdate()
-      }
+    RawSql.execute(
+      dbConnection,
+      "INSERT INTO system_prompts (id, name, version, body) VALUES (?, 'synthesis', ?, 'reflect')",
+      id,
+      "notif-${UUID.randomUUID()}",
+    )
     return id
   }
 

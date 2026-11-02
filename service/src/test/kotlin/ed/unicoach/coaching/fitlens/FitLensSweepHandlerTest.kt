@@ -2,6 +2,7 @@ package ed.unicoach.coaching.fitlens
 
 import ed.unicoach.db.Database
 import ed.unicoach.db.DatabaseConfig
+import ed.unicoach.db.dao.RawSql
 import ed.unicoach.db.dao.SqlSession
 import ed.unicoach.db.dao.StudentRowFixture
 import ed.unicoach.queue.JobResult
@@ -61,25 +62,17 @@ class FitLensSweepHandlerTest {
   private fun seedStudent(): String {
     val userId = UUID.randomUUID()
     val studentId = UUID.randomUUID()
-    connection.createStatement().use { stmt ->
-      stmt.execute(
-        "INSERT INTO users (id, email, name, password_hash) VALUES ('$userId', 'flsweep-$userId@test.com', 'FL Sweep', 'ahash')",
-      )
-      StudentRowFixture.insert(connection, studentId, userId)
-    }
+    RawSql.execute(
+      connection,
+      "INSERT INTO users (id, email, name, password_hash) VALUES (?, ?, 'FL Sweep', 'ahash')",
+      userId,
+      "flsweep-$userId@test.com",
+    )
+    StudentRowFixture.insert(connection, studentId, userId)
     return studentId.toString()
   }
 
-  private fun countFitLensJobs(): Int =
-    connection
-      .prepareStatement("SELECT COUNT(*) FROM jobs WHERE job_type = ?")
-      .use { stmt ->
-        stmt.setString(1, JobType.FIT_LENS.value)
-        stmt.executeQuery().use { rs ->
-          rs.next()
-          rs.getInt(1)
-        }
-      }
+  private fun countFitLensJobs(): Int = RawSql.count(connection, "SELECT COUNT(*) FROM jobs WHERE job_type = ?", JobType.FIT_LENS.value)
 
   @Test
   fun `config advertises FIT_LENS_SWEEP and executionTimeout under lockDuration`() {

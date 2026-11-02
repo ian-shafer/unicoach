@@ -1,6 +1,7 @@
 package ed.unicoach.fixture
 
 import ed.unicoach.db.Database
+import ed.unicoach.db.dao.RawSql
 import ed.unicoach.util.Argon2Hasher
 import kotlinx.coroutines.runBlocking
 import org.junit.jupiter.api.AfterAll
@@ -64,33 +65,22 @@ class WorldApplierTest {
     val passwordHash: String,
   )
 
-  private fun findRow(email: String): UserRow? {
-    connection
-      .prepareStatement(
-        "SELECT email, name, is_admin, email_verified_at, password_hash FROM users WHERE email = ? AND deleted_at IS NULL",
-      ).use { stmt ->
-        stmt.setString(1, email)
-        stmt.executeQuery().use { rs ->
-          if (!rs.next()) return null
-          return UserRow(
-            email = rs.getString("email"),
-            name = rs.getString("name"),
-            isAdmin = rs.getBoolean("is_admin"),
-            emailVerifiedAt = rs.getTimestamp("email_verified_at"),
-            passwordHash = rs.getString("password_hash"),
-          )
-        }
-      }
-  }
-
-  private fun activeUserCount(): Int {
-    connection.createStatement().use { stmt ->
-      stmt.executeQuery("SELECT COUNT(*) FROM users WHERE deleted_at IS NULL").use { rs ->
-        rs.next()
-        return rs.getInt(1)
-      }
+  private fun findRow(email: String): UserRow? =
+    RawSql.singleOrNull(
+      connection,
+      "SELECT email, name, is_admin, email_verified_at, password_hash FROM users WHERE email = ? AND deleted_at IS NULL",
+      email,
+    ) { rs ->
+      UserRow(
+        email = rs.getString("email"),
+        name = rs.getString("name"),
+        isAdmin = rs.getBoolean("is_admin"),
+        emailVerifiedAt = rs.getTimestamp("email_verified_at"),
+        passwordHash = rs.getString("password_hash"),
+      )
     }
-  }
+
+  private fun activeUserCount(): Int = RawSql.count(connection, "SELECT COUNT(*) FROM users WHERE deleted_at IS NULL")
 
   @Test
   fun `happy path creates users with expected fields and verification state`() {

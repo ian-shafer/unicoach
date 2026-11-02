@@ -5,6 +5,7 @@ import ed.unicoach.common.models.ValidationResult
 import ed.unicoach.db.Database
 import ed.unicoach.db.DatabaseConfig
 import ed.unicoach.db.dao.NotFoundException
+import ed.unicoach.db.dao.RawSql
 import ed.unicoach.db.dao.SessionsDao
 import ed.unicoach.db.dao.SqlSession
 import ed.unicoach.db.dao.UsersDao
@@ -114,14 +115,7 @@ class AuthServiceTest {
     )
   }
 
-  private fun countRows(sql: String): Int {
-    connection.prepareStatement(sql).use { stmt ->
-      stmt.executeQuery().use { rs ->
-        rs.next()
-        return rs.getInt(1)
-      }
-    }
-  }
+  private fun countRows(sql: String): Int = RawSql.count(connection, sql)
 
   private fun sendEmailJobsTo(recipient: String): Int = SendEmailJobQueries.countTo(connection, recipient)
 

@@ -3,6 +3,7 @@ package ed.unicoach.rest.plugins
 import ed.unicoach.common.config.AppConfig
 import ed.unicoach.db.Database
 import ed.unicoach.db.DatabaseConfig
+import ed.unicoach.db.dao.RawSql
 import ed.unicoach.queue.QueueService
 import ed.unicoach.rest.auth.SessionConfig
 import io.ktor.client.request.get
@@ -71,12 +72,7 @@ class SessionExpiryPluginTest {
   private fun countJobs(): Int =
     runBlocking {
       database.withConnection { session ->
-        session.prepareStatement("SELECT COUNT(*) FROM jobs WHERE job_type = 'SESSION_EXTEND_EXPIRY'").use { stmt ->
-          stmt.executeQuery().use { rs ->
-            rs.next()
-            rs.getInt(1)
-          }
-        }
+        RawSql.count(session, "SELECT COUNT(*) FROM jobs WHERE job_type = 'SESSION_EXTEND_EXPIRY'")
       }
     }
 

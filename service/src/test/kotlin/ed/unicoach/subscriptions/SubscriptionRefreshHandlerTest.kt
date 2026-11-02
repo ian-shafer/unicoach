@@ -7,6 +7,7 @@ import ed.unicoach.coaching.budget.testSubscriptionPlans
 import ed.unicoach.common.json.asJson
 import ed.unicoach.db.Database
 import ed.unicoach.db.DatabaseConfig
+import ed.unicoach.db.dao.RawSql
 import ed.unicoach.db.models.UserId
 import ed.unicoach.queue.JobResult
 import ed.unicoach.queue.JobType
@@ -74,9 +75,12 @@ class SubscriptionRefreshHandlerTest {
   /** The account a subscription is bound to (RFC 244) — a bare `users` row; no role is needed to pay. */
   private fun createAccount(): UserId {
     val userId = UUID.randomUUID()
-    connection.createStatement().use { stmt ->
-      stmt.execute("INSERT INTO users (id, email, name, password_hash) VALUES ('$userId', 'rh-$userId@test.com', 'Sub User', 'ahash')")
-    }
+    RawSql.execute(
+      connection,
+      "INSERT INTO users (id, email, name, password_hash) VALUES (?, ?, 'Sub User', 'ahash')",
+      userId,
+      "rh-$userId@test.com",
+    )
     return UserId(userId)
   }
 

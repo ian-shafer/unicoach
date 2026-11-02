@@ -60,11 +60,12 @@ class UserAuthIdentitiesDaoTest {
 
   private fun createUser(): UserId {
     val rawId = UUID.randomUUID()
-    connection.createStatement().use { stmt ->
-      stmt.execute(
-        "INSERT INTO users (id, email, name, password_hash) VALUES ('$rawId', 'ident-$rawId@test.com', 'Ident User', 'ahash')",
-      )
-    }
+    RawSql.execute(
+      connection,
+      "INSERT INTO users (id, email, name, password_hash) VALUES (?, ?, 'Ident User', 'ahash')",
+      rawId,
+      "ident-$rawId@test.com",
+    )
     return UserId(rawId)
   }
 

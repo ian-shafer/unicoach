@@ -24,6 +24,7 @@ dependencies {
   runtimeOnly(libs.logback.classic)
 
   testImplementation(libs.kotlin.test.junit5)
+  testImplementation(testFixtures(project(":db")))
   testImplementation(libs.kotlinx.coroutines.test)
 }
 

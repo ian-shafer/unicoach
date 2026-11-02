@@ -2,6 +2,7 @@ package ed.unicoach.college
 
 import ed.unicoach.db.dao.CanonicalMoneyDao
 import ed.unicoach.db.dao.MoneyVocabularyFixture
+import ed.unicoach.db.dao.RawSql
 import ed.unicoach.db.models.AidForm
 import ed.unicoach.db.models.AidFormApplicantGroup
 import ed.unicoach.db.models.CohortAidScope
@@ -517,14 +518,8 @@ class MoneyVocabularyLoaderTest : CollegeScorecardTestBase() {
 
   private fun constraintDefinition(constraint: String): String =
     withSession { session ->
-      session
-        .prepareStatement("SELECT pg_get_constraintdef(oid) FROM pg_constraint WHERE conname = ?")
-        .use { stmt ->
-          stmt.setString(1, constraint)
-          stmt.executeQuery().use { rs ->
-            assertTrue(rs.next(), "no constraint named [$constraint]")
-            rs.getString(1)
-          }
-        }
+      RawSql.single(session, "SELECT pg_get_constraintdef(oid) FROM pg_constraint WHERE conname = ?", constraint) { rs ->
+        rs.getString(1)
+      }
     }
 }

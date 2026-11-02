@@ -13,6 +13,7 @@ import ed.unicoach.coaching.extraction.ExtractionConfig
 import ed.unicoach.common.config.AppConfig
 import ed.unicoach.db.Database
 import ed.unicoach.db.DatabaseConfig
+import ed.unicoach.db.dao.RawSql
 import ed.unicoach.rest.auth.SessionConfig
 import ed.unicoach.rest.config.ClientKeyGateConfig
 import ed.unicoach.rest.config.RequestSizeConfig
@@ -161,16 +162,6 @@ class ChatToDbIntegrationTest {
 
   private fun url(path: String) = "http://localhost:$port$path"
 
-  private fun markEmailVerified(email: String) {
-    connection
-      .prepareStatement(
-        "UPDATE users SET version = version + 1, email_verified_at = NOW() WHERE email = ? AND email_verified_at IS NULL",
-      ).use { stmt ->
-        stmt.setString(1, email)
-        stmt.executeUpdate()
-      }
-  }
-
   private suspend fun registerWithStudent(): String {
     val email = "chat${java.util.UUID.randomUUID()}@company.com"
     val reg =
@@ -179,7 +170,7 @@ class ChatToDbIntegrationTest {
         setBody(mapper.writeValueAsString(RegisterRequest(email, "Password123!", "Chat User")))
       }
     assertEquals(HttpStatusCode.Created, reg.status)
-    markEmailVerified(email)
+    markEmailVerified(connection, email)
     val cookie =
       reg.headers[HttpHeaders.SetCookie]!!
         .split(";")
@@ -214,28 +205,19 @@ class ChatToDbIntegrationTest {
     val systemPromptId: String,
   )
 
-  private fun requestRows(convoId: String): List<RequestRow> {
-    val out = mutableListOf<RequestRow>()
-    connection
-      .prepareStatement(
-        // RFC 106 moved provider/model_requested off convo_requests onto the logged
-        // call (llm_requests), reached via convo_requests.llm_request_id.
-        // system_prompt_id stays on convo_requests (a system_prompts FK, RFC 0007).
-        """
-        SELECT cr.id, lr.provider, lr.model_requested, cr.system_prompt_id::text
-        FROM convo_requests cr JOIN llm_requests lr ON cr.llm_request_id = lr.id
-        WHERE cr.convo_id = ?::uuid ORDER BY cr.id
-        """.trimIndent(),
-      ).use { stmt ->
-        stmt.setString(1, convoId)
-        stmt.executeQuery().use { rs ->
-          while (rs.next()) {
-            out.add(RequestRow(rs.getLong(1), rs.getString(2), rs.getString(3), rs.getString(4)))
-          }
-        }
-      }
-    return out
-  }
+  private fun requestRows(convoId: String): List<RequestRow> =
+    RawSql.list(
+      connection,
+      // RFC 106 moved provider/model_requested off convo_requests onto the logged
+      // call (llm_requests), reached via convo_requests.llm_request_id.
+      // system_prompt_id stays on convo_requests (a system_prompts FK, RFC 0007).
+      """
+      SELECT cr.id, lr.provider, lr.model_requested, cr.system_prompt_id::text
+      FROM convo_requests cr JOIN llm_requests lr ON cr.llm_request_id = lr.id
+      WHERE cr.convo_id = ?::uuid ORDER BY cr.id
+      """.trimIndent(),
+      convoId,
+    ) { rs -> RequestRow(rs.getLong(1), rs.getString(2), rs.getString(3), rs.getString(4)) }
 
   private data class ResponseRow(
     val id: Long,
@@ -248,44 +230,36 @@ class ChatToDbIntegrationTest {
     val providerRequestId: String?,
   )
 
-  private fun responseRows(convoId: String): List<ResponseRow> {
-    val out = mutableListOf<ResponseRow>()
-    connection
-      .prepareStatement(
-        // RFC 106: the response lives in llm_responses, reached from the convo turn
-        // via convo_requests.llm_request_id = llm_responses.request_id (1:1).
-        """
-        SELECT resp.id, resp.stop_reason, resp.model_resolved, resp.input_tokens, resp.output_tokens,
-               resp.cache_read_tokens, resp.cache_write_tokens, resp.provider_request_id
-        FROM convo_requests cr JOIN llm_responses resp ON resp.request_id = cr.llm_request_id
-        WHERE cr.convo_id = ?::uuid ORDER BY cr.id
-        """.trimIndent(),
-      ).use { stmt ->
-        stmt.setString(1, convoId)
-        stmt.executeQuery().use { rs ->
-          while (rs.next()) {
-            out.add(
-              ResponseRow(
-                rs.getLong(1),
-                rs.getString(2),
-                rs.getString(3),
-                rs.getObject(4) as Int?,
-                rs.getObject(5) as Int?,
-                rs.getObject(6) as Int?,
-                rs.getObject(7) as Int?,
-                rs.getString(8),
-              ),
-            )
-          }
-        }
-      }
-    return out
-  }
+  private fun responseRows(convoId: String): List<ResponseRow> =
+    RawSql.list(
+      connection,
+      // RFC 106: the response lives in llm_responses, reached from the convo turn
+      // via convo_requests.llm_request_id = llm_responses.request_id (1:1).
+      """
+      SELECT resp.id, resp.stop_reason, resp.model_resolved, resp.input_tokens, resp.output_tokens,
+             resp.cache_read_tokens, resp.cache_write_tokens, resp.provider_request_id
+      FROM convo_requests cr JOIN llm_responses resp ON resp.request_id = cr.llm_request_id
+      WHERE cr.convo_id = ?::uuid ORDER BY cr.id
+      """.trimIndent(),
+      convoId,
+    ) { rs ->
+      ResponseRow(
+        rs.getLong(1),
+        rs.getString(2),
+        rs.getString(3),
+        rs.getObject(4) as Int?,
+        rs.getObject(5) as Int?,
+        rs.getObject(6) as Int?,
+        rs.getObject(7) as Int?,
+        rs.getString(8),
+      )
+    }
 
   private fun rawPayload(responseId: Long): String? =
-    connection.prepareStatement("SELECT payload FROM llm_responses_raw WHERE response_id = ?").use { stmt ->
-      stmt.setLong(1, responseId)
-      stmt.executeQuery().use { rs -> if (rs.next()) rs.getString(1) else null }
+    // A scalar subquery always answers one row: NULL for no raw row, and NULL for
+    // a row whose payload was erased (the column is nullable once deleted).
+    RawSql.single(connection, "SELECT (SELECT payload FROM llm_responses_raw WHERE response_id = ?)", responseId) {
+      it.getString(1)
     }
 
   // ---------------------------------------------------------------------------

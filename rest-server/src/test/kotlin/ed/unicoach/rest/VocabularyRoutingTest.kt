@@ -5,6 +5,7 @@ import ed.unicoach.coaching.moneyprofile.MoneyProfileService
 import ed.unicoach.common.config.AppConfig
 import ed.unicoach.db.DatabaseConfig
 import ed.unicoach.db.dao.CodebookReferenceFixture
+import ed.unicoach.db.dao.RawSql
 import ed.unicoach.db.models.IncomeBand
 import ed.unicoach.rest.models.RegisterRequest
 import ed.unicoach.vocabulary.VocabularyService
@@ -88,16 +89,6 @@ class VocabularyRoutingTest {
 
   private fun buildUrl(path: String) = "http://localhost:$boundPort$path"
 
-  private fun markEmailVerified(email: String) {
-    dbConnection
-      .prepareStatement(
-        "UPDATE users SET version = version + 1, email_verified_at = NOW() WHERE email = ? AND email_verified_at IS NULL",
-      ).use { stmt ->
-        stmt.setString(1, email)
-        stmt.executeUpdate()
-      }
-  }
-
   /** A verified session and NO student profile — the state `profile/02` renders the picker in. */
   private suspend fun registerAndGetCookie(): String {
     val email = "voc${UUID.randomUUID()}@company.com"
@@ -107,7 +98,7 @@ class VocabularyRoutingTest {
         setBody(mapper.writeValueAsString(RegisterRequest(email, "Password123!", "Vocabulary User")))
       }
     assertEquals(HttpStatusCode.Created, response.status)
-    markEmailVerified(email)
+    markEmailVerified(dbConnection, email)
     return response.headers[HttpHeaders.SetCookie]!!
       .split(";")
       .first()

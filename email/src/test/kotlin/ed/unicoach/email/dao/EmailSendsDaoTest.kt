@@ -5,6 +5,7 @@ import ed.unicoach.common.models.EmailAddress
 import ed.unicoach.common.models.ValidationResult
 import ed.unicoach.db.DatabaseConfig
 import ed.unicoach.db.dao.DaoException
+import ed.unicoach.db.dao.RawSql
 import ed.unicoach.db.dao.SqlSession
 import ed.unicoach.db.models.UserId
 import ed.unicoach.email.EmailBody
@@ -188,23 +189,12 @@ class EmailSendsDaoTest {
   /** A real account row, so the send's foreign key has something to point at. */
   private fun account(): UserId {
     val id = UUID.randomUUID()
-    connection.prepareStatement("INSERT INTO users (id, email, name) VALUES (?, ?, ?)").use { stmt ->
-      stmt.setObject(1, id)
-      stmt.setString(2, "send-$id@example.com")
-      stmt.setString(3, "Send Recipient")
-      stmt.executeUpdate()
-    }
+    RawSql.execute(connection, "INSERT INTO users (id, email, name) VALUES (?, ?, ?)", id, "send-$id@example.com", "Send Recipient")
     return UserId(id)
   }
 
   private fun userIdOf(sent: SentEmail): UUID? =
-    connection.prepareStatement("SELECT user_id FROM email_sends WHERE id = ?").use { stmt ->
-      stmt.setObject(1, sent.id)
-      stmt.executeQuery().use { rs ->
-        assertTrue(rs.next())
-        rs.getObject("user_id", UUID::class.java)
-      }
-    }
+    RawSql.single(connection, "SELECT user_id FROM email_sends WHERE id = ?", sent.id) { it.getObject("user_id", UUID::class.java) }
 
   /** RFC 263: a logged send carries the account it went to, so account erasure can reach it. */
   @Test

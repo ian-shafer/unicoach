@@ -210,14 +210,6 @@ class OfflineCoachingE2eTest {
 
   private fun url(path: String) = "http://localhost:$port$path"
 
-  private fun markEmailVerified(email: String) {
-    RawSql.execute(
-      connection,
-      "UPDATE users SET version = version + 1, email_verified_at = NOW() WHERE email = ? AND email_verified_at IS NULL",
-      email,
-    )
-  }
-
   private suspend fun seedClosedConversation(): String {
     val email = "offline${java.util.UUID.randomUUID()}@company.com"
     val reg =
@@ -226,7 +218,7 @@ class OfflineCoachingE2eTest {
         setBody(mapper.writeValueAsString(RegisterRequest(email, "Password123!", "Offline User")))
       }
     assertEquals(HttpStatusCode.Created, reg.status)
-    markEmailVerified(email)
+    markEmailVerified(connection, email)
     val cookie =
       reg.headers[HttpHeaders.SetCookie]!!
         .split(";")
@@ -257,7 +249,7 @@ class OfflineCoachingE2eTest {
   private fun count(
     sql: String,
     vararg args: Any?,
-  ): Int = RawSql.single(connection, sql, *args) { it.getInt(1) }
+  ): Int = RawSql.count(connection, sql, *args)
 
   private fun singleString(
     sql: String,

@@ -497,10 +497,7 @@ class LlmCallsDaoTest {
       val sql =
         "INSERT INTO llm_responses (request_id, outcome, reason, latency_ms, $columns) " +
           "VALUES (?, 'rejected', 'r', 5, $values)"
-      connection.prepareStatement(sql).use { stmt ->
-        stmt.setLong(1, requestId.value)
-        stmt.executeUpdate()
-      }
+      RawSql.execute(connection, sql, requestId.value)
     }.exceptionOrNull()
 
   @Test

@@ -88,10 +88,13 @@ class CdsAdmissionsDaoTest {
   private fun createStudent(): StudentId {
     val userId = UUID.randomUUID()
     val studentId = UUID.randomUUID()
-    connection.createStatement().use { stmt ->
-      stmt.execute("INSERT INTO users (id, email, name, password_hash) VALUES ('$userId', 'cds-$userId@test.com', 'CDS User', 'ahash')")
-      StudentRowFixture.insert(connection, studentId, userId)
-    }
+    RawSql.execute(
+      connection,
+      "INSERT INTO users (id, email, name, password_hash) VALUES (?, ?, 'CDS User', 'ahash')",
+      userId,
+      "cds-$userId@test.com",
+    )
+    StudentRowFixture.insert(connection, studentId, userId)
     return StudentId(studentId)
   }
 
@@ -99,11 +102,12 @@ class CdsAdmissionsDaoTest {
     studentId: StudentId,
     collegeId: CollegeId,
   ) {
-    connection.createStatement().use { stmt ->
-      stmt.execute(
-        "INSERT INTO college_list_entries (student_id, college_id) VALUES ('${studentId.value}', '${collegeId.value}')",
-      )
-    }
+    RawSql.execute(
+      connection,
+      "INSERT INTO college_list_entries (student_id, college_id) VALUES (?, ?)",
+      studentId.value,
+      collegeId.value,
+    )
   }
 
   @Test
@@ -239,12 +243,8 @@ class CdsAdmissionsDaoTest {
     table: String,
     collegeId: CollegeId,
   ): java.sql.Timestamp =
-    connection.prepareStatement("SELECT updated_at FROM $table WHERE college_id = ?").use { stmt ->
-      stmt.setObject(1, collegeId.value)
-      stmt.executeQuery().use { rs ->
-        rs.next()
-        rs.getTimestamp("updated_at")
-      }
+    RawSql.single(connection, "SELECT updated_at FROM $table WHERE college_id = ?", collegeId.value) {
+      it.getTimestamp("updated_at")
     }
 
   // ---------------------------------------------------------------------------
@@ -386,14 +386,12 @@ class CdsAdmissionsDaoTest {
    * that forgot the domain is missing from the list and fails the count check).
    */
   private fun ratingColumns(): List<String> =
-    connection.createStatement().use { stmt ->
-      stmt
-        .executeQuery(
-          "SELECT column_name FROM information_schema.columns " +
-            "WHERE table_name = 'college_admission_factors' AND domain_name = 'cds_factor_rating' " +
-            "ORDER BY ordinal_position",
-        ).use { rs -> generateSequence { if (rs.next()) rs.getString(1) else null }.toList() }
-    }
+    RawSql.list(
+      connection,
+      "SELECT column_name FROM information_schema.columns " +
+        "WHERE table_name = 'college_admission_factors' AND domain_name = 'cds_factor_rating' " +
+        "ORDER BY ordinal_position",
+    ) { it.getString(1) }
 
   @Test
   fun `the rating vocabulary rejects a value outside the enum on every column path`() {

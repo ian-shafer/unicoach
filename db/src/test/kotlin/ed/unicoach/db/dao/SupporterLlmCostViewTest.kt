@@ -93,13 +93,12 @@ class SupporterLlmCostViewTest {
 
   private fun createUser(): UserId {
     val userId = UUID.randomUUID()
-    connection
-      .prepareStatement("INSERT INTO users (id, email, name, password_hash) VALUES (?, ?, 'Supporter Cost User', 'ahash')")
-      .use { stmt ->
-        stmt.setObject(1, userId)
-        stmt.setString(2, "slcd-$userId@test.com")
-        stmt.executeUpdate()
-      }
+    RawSql.execute(
+      connection,
+      "INSERT INTO users (id, email, name, password_hash) VALUES (?, ?, 'Supporter Cost User', 'ahash')",
+      userId,
+      "slcd-$userId@test.com",
+    )
     return UserId(userId)
   }
 
@@ -128,12 +127,8 @@ class SupporterLlmCostViewTest {
 
   /** The account a `supporters` row belongs to — the key the gate's meter is read by. */
   private fun accountOf(supporterId: SupporterId): UserId =
-    connection.prepareStatement("SELECT user_id FROM supporters WHERE id = ?").use { stmt ->
-      stmt.setObject(1, supporterId.value)
-      stmt.executeQuery().use { rs ->
-        rs.next()
-        UserId(UUID.fromString(rs.getString("user_id")))
-      }
+    RawSql.single(connection, "SELECT user_id FROM supporters WHERE id = ?", supporterId.value) {
+      UserId(UUID.fromString(it.getString("user_id")))
     }
 
   /** This supporter's lifetime spend as the gate reads it: through the account their row hangs off. */

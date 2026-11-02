@@ -24,6 +24,7 @@ import ed.unicoach.common.models.EmailAddress
 import ed.unicoach.common.models.ValidationResult
 import ed.unicoach.db.Database
 import ed.unicoach.db.DatabaseConfig
+import ed.unicoach.db.dao.RawSql
 import ed.unicoach.db.dao.StudentRowFixture
 import ed.unicoach.db.dao.UsersDao
 import ed.unicoach.db.models.NewUser
@@ -177,9 +178,7 @@ object WebAuthTestSupport {
 
   /** Truncates users (cascading to sessions) and the job queue, for an isolated test. */
   fun resetDatabase() {
-    withConnection { connection ->
-      connection.createStatement().use { it.execute("TRUNCATE TABLE users, jobs CASCADE") }
-    }
+    withConnection { connection -> RawSql.execute(connection, "TRUNCATE TABLE users, jobs CASCADE") }
   }
 
   fun uniqueEmail(): String = "web-auth-${UUID.randomUUID()}@example.com"
@@ -412,17 +411,7 @@ object WebAuthTestSupport {
   private fun <T> soleRow(
     sql: String,
     read: (ResultSet) -> T,
-  ): T =
-    withConnection { connection ->
-      connection.createStatement().use { statement ->
-        statement.executeQuery(sql).use { rows ->
-          check(rows.next()) { "expected exactly one row from [$sql] and found none" }
-          val value = read(rows)
-          check(!rows.next()) { "expected exactly one row from [$sql] and found several" }
-          value
-        }
-      }
-    }
+  ): T = withConnection { connection -> RawSql.single(connection, sql, read = read) }
 
   /** How many rows [sql] counts: a `SELECT count(*)`, the one row it always returns. */
   fun count(sql: String): Int = soleLong(sql).toInt()

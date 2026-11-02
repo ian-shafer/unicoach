@@ -84,10 +84,13 @@ class AdmissionTestScoresDaoTest {
   private fun createStudent(): StudentId {
     val userId = UUID.randomUUID()
     val studentId = UUID.randomUUID()
-    connection.createStatement().use { stmt ->
-      stmt.execute("INSERT INTO users (id, email, name, password_hash) VALUES ('$userId', 'score-$userId@test.com', 'Score User', 'ahash')")
-      StudentRowFixture.insert(connection, studentId, userId)
-    }
+    RawSql.execute(
+      connection,
+      "INSERT INTO users (id, email, name, password_hash) VALUES (?, ?, 'Score User', 'ahash')",
+      userId,
+      "score-$userId@test.com",
+    )
+    StudentRowFixture.insert(connection, studentId, userId)
     return StudentId(studentId)
   }
 
@@ -100,21 +103,19 @@ class AdmissionTestScoresDaoTest {
     takenOn: LocalDate,
     precision: String,
   ) {
-    connection
-      .prepareStatement(
-        """
-        INSERT INTO admission_test_scores (student_id, test, component, score, taken_on, taken_precision)
-        VALUES (?, ?, ?, ?, ?, ?)
-        """.trimIndent(),
-      ).use { stmt ->
-        stmt.setObject(1, studentId.value)
-        stmt.setString(2, test)
-        stmt.setString(3, component)
-        stmt.setInt(4, score)
-        stmt.setObject(5, takenOn)
-        stmt.setString(6, precision)
-        stmt.executeUpdate()
-      }
+    RawSql.execute(
+      connection,
+      """
+      INSERT INTO admission_test_scores (student_id, test, component, score, taken_on, taken_precision)
+      VALUES (?, ?, ?, ?, ?, ?)
+      """.trimIndent(),
+      studentId.value,
+      test,
+      component,
+      score,
+      takenOn,
+      precision,
+    )
   }
 
   private fun rejectionStateOf(block: () -> Unit): String = assertFailsWith<SQLException> { block() }.sqlState

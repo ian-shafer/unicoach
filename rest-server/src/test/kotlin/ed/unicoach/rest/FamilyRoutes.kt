@@ -5,6 +5,7 @@ import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
 import ed.unicoach.common.config.AppConfig
 import ed.unicoach.db.DatabaseConfig
 import ed.unicoach.db.dao.CodebookReferenceFixture
+import ed.unicoach.db.dao.RawSql
 import ed.unicoach.db.models.SharingPermission
 import ed.unicoach.rest.models.AcceptSupporterInviteRequest
 import ed.unicoach.rest.models.CreateCollegeListEntryRequest
@@ -185,18 +186,16 @@ class FamilyRoutes private constructor(
   fun seedCollege(name: String): UUID {
     val id = UUID.randomUUID()
     CodebookReferenceFixture.seed(db)
-    db
-      .prepareStatement(
-        """
-        INSERT INTO colleges (id, ipeds_unit_id, name, city, state, control)
-        VALUES (?, ?, ?, 'Townsville', 'CA', 1)
-        """.trimIndent(),
-      ).use { stmt ->
-        stmt.setObject(1, id)
-        stmt.setInt(2, (id.leastSignificantBits and 0x3FFFFFFF).toInt())
-        stmt.setString(3, name)
-        stmt.executeUpdate()
-      }
+    RawSql.execute(
+      db,
+      """
+      INSERT INTO colleges (id, ipeds_unit_id, name, city, state, control)
+      VALUES (?, ?, ?, 'Townsville', 'CA', 1)
+      """.trimIndent(),
+      id,
+      (id.leastSignificantBits and 0x3FFFFFFF).toInt(),
+      name,
+    )
     return id
   }
 
@@ -270,10 +269,7 @@ class FamilyRoutes private constructor(
     sql: String,
     account: Account,
   ) {
-    db.prepareStatement(sql).use { stmt ->
-      stmt.setString(1, account.email)
-      assertEquals(1, stmt.executeUpdate(), "the closure must hit exactly one row for [${account.email}]: [$sql]")
-    }
+    assertEquals(1, RawSql.execute(db, sql, account.email), "the closure must hit exactly one row for [${account.email}]: [$sql]")
   }
 
   /** This response, after asserting its status with the request and the body that explains a miss. */
