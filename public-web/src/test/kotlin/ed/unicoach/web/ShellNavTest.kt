@@ -56,7 +56,7 @@ class ShellNavTest {
   fun `the signed-in shell carries the account link and the sign-out form, and no sign-in link`() =
     testApplication {
       val email = WebAuthTestSupport.uniqueEmail()
-      WebAuthTestSupport.seedUser(email)
+      WebAuthTestSupport.seedStudentUser(email)
       application { testPublicWebModule() }
       val token = WebAuthTestSupport.login(email)
 
@@ -127,7 +127,7 @@ class ShellNavTest {
   fun `the account page renders at the wide measure`() =
     testApplication {
       val email = WebAuthTestSupport.uniqueEmail()
-      WebAuthTestSupport.seedUser(email)
+      WebAuthTestSupport.seedStudentUser(email)
       application { testPublicWebModule() }
       val token = WebAuthTestSupport.login(email)
 

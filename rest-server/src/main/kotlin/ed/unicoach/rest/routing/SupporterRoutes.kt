@@ -196,7 +196,7 @@ class SupporterRoutes(
   private suspend fun RoutingContext.respondSupporterClosed() {
     call.respond(
       HttpStatusCode.Conflict,
-      ErrorResponse(ErrorCode.SUPPORTER_CLOSED, "This account's supporter profile was closed and cannot be reopened"),
+      ErrorResponse(ErrorCode.SUPPORTER_CLOSED, EnsureSupporterOutcome.Closed.MESSAGE),
     )
   }
 }

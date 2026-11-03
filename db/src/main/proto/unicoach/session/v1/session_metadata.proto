@@ -29,9 +29,23 @@ message SessionMetadata {
 // next submission.
 message FormDrafts {
   ChangeEmailDraft change_email = 1;
+  StudentSignupDraft student_signup = 2;
 }
 
 // The change-email form (public-web, /account/email).
 message ChangeEmailDraft {
   string new_email = 1;
+}
+
+// The student signup form (public-web, /get-started/student, RFC 268). The date
+// of birth is deliberately absent: RFC 222 keeps an under-13 child's
+// information out of the database, and a draft is written on a refused POST —
+// including one refused for another field while the date of birth is a
+// child's.
+message StudentSignupDraft {
+  string graduation_year = 1;
+  string graduation_month = 2;
+  string graduation_day = 3;
+  string residency_state = 4;
+  string income_band = 5;
 }

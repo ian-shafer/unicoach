@@ -436,6 +436,9 @@ class ReportClaimRoutingTest {
     testApplication {
       module()
       val jane = WebAuthTestSupport.seedUser(WebAuthTestSupport.uniqueEmail(), name = "Jane Parent")
+      // A parent whose request was sent holds a supporter row (the claim makes
+      // one), so /account is open to her past the onboarding wall (RFC 268).
+      runBlocking { WebAuthTestSupport.supporterService.ensure(jane.id).getOrThrow() }
       val session = WebAuthTestSupport.login(jane.email.value)
 
       for ((key, sentence) in listOf(

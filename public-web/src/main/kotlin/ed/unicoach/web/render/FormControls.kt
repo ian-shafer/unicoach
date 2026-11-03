@@ -16,8 +16,10 @@ import kotlinx.html.id
 import kotlinx.html.input
 import kotlinx.html.label
 import kotlinx.html.li
+import kotlinx.html.option
 import kotlinx.html.p
 import kotlinx.html.section
+import kotlinx.html.select
 import kotlinx.html.ul
 
 /** The class the CSS styles a form-level error with, and tests look for. */
@@ -34,6 +36,9 @@ const val AUTH_FORM_CLASS = "auth-form"
 
 /** The class one labelled control carries. */
 const val FIELD_CLASS = "field"
+
+/** The class the sentence under a control carries: what the answer is for (RFC 268). */
+const val FIELD_CAPTION_CLASS = "field-caption"
 
 /**
  * The form field names, written ONCE.
@@ -335,3 +340,59 @@ fun FlowContent.passwordField(
   labelText: String,
   autocompleteToken: String,
 ) = labelledField(name, labelText, InputType.password, autocompleteToken, value = null)
+
+/** One choice of a [selectField]: the [value] the form posts and the [label] a person reads. */
+data class SelectOption(
+  val value: String,
+  val label: String,
+)
+
+/**
+ * One labelled `<select>` (RFC 268), in [labelledField]'s markup: the explicit
+ * `for`/`id` pair inside the [FIELD_CLASS] wrapper.
+ *
+ * It always opens with a BLANK option, posting `""` and reading [blankLabel],
+ * so "nothing chosen yet" is a state the control can show and the form can
+ * receive — a select that started on its first real option would answer a
+ * question the family never did. [selected] is the posted or drafted value; a
+ * value no option carries selects the blank one.
+ *
+ * [errors] render inside the wrapper, under the control they are about, and
+ * [caption] says what the answer is for.
+ */
+fun FlowContent.selectField(
+  name: String,
+  labelText: String,
+  options: List<SelectOption>,
+  selected: String?,
+  blankLabel: String = "",
+  required: Boolean = false,
+  caption: String? = null,
+  errors: List<String> = emptyList(),
+) {
+  div(FIELD_CLASS) {
+    label {
+      htmlFor = name
+      +labelText
+    }
+    select {
+      this.name = name
+      id = name
+      this.required = required
+      option {
+        value = ""
+        this.selected = options.none { it.value == selected }
+        +blankLabel
+      }
+      for (choice in options) {
+        option {
+          value = choice.value
+          this.selected = choice.value == selected
+          +choice.label
+        }
+      }
+    }
+    if (caption != null) p(FIELD_CAPTION_CLASS) { +caption }
+    formErrors(errors)
+  }
+}

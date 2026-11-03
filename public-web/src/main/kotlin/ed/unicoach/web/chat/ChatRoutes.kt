@@ -11,14 +11,15 @@ import ed.unicoach.coaching.budget.budgetSkipMessage
 import ed.unicoach.db.models.ConvoId
 import ed.unicoach.db.models.Student
 import ed.unicoach.error.FieldError
-import ed.unicoach.family.SupporterService
-import ed.unicoach.student.StudentService
+import ed.unicoach.student.AccountRole
+import ed.unicoach.student.AccountRoleService
 import ed.unicoach.web.WebSessionConfig
-import ed.unicoach.web.auth.ACCOUNT_PATH
 import ed.unicoach.web.auth.CHAT_PATH
 import ed.unicoach.web.auth.STUDENT_SIGNUP_PATH
-import ed.unicoach.web.auth.getVerified
-import ed.unicoach.web.auth.postVerified
+import ed.unicoach.web.auth.accountRole
+import ed.unicoach.web.auth.getOnboarded
+import ed.unicoach.web.auth.homePath
+import ed.unicoach.web.auth.postOnboarded
 import ed.unicoach.web.auth.resolveWebCaller
 import ed.unicoach.web.auth.respondGateRedirect
 import ed.unicoach.web.common.http.canonicalUuidOrNull
@@ -68,23 +69,23 @@ internal fun conversationPath(convoId: ConvoId): String = "$CHAT_PATH/${convoId.
  * | `POST /chat`      | `startConvo`, answered as the stream ([respondChatStream]) |
  * | `POST /chat/{id}` | `postTurn`, answered as the stream                      |
  *
- * Every route is registered VERIFIED through [getVerified] / [postVerified],
- * which run after Ktor has resolved the route — the authority, as on every
- * gated page (RFC 224) — and the whole tree carries the [ChatStudentGate]. The same-origin guard already
- * refuses a cross-site POST before any of this runs.
+ * Every route is registered ONBOARDED through [getOnboarded] / [postOnboarded]
+ * (RFC 268), which run after Ktor has resolved the route — the authority, as on
+ * every gated page (RFC 224) — and the whole tree carries the [ChatStudentGate].
+ * The same-origin guard already refuses a cross-site POST before any of this
+ * runs.
  *
  * A send's refusals are known BEFORE the stream opens and persist nothing, so
  * each is answered as a [ChatNotice] at a real status — never as an event: a
  * spent allowance is a notice where the reply would have been, not a stream
  * that breaks mid-sentence (§5, §8).
  *
- * `/get-started`, where [ChatStudentGate] sends a caller with no student row,
- * is not a chat page: it is `web/06`'s, registered by `getStartedRoute`.
+ * `/get-started`, where [ChatStudentGate] sends a caller with no role, is not a
+ * chat page: it is onboarding's (RFC 268), registered by `getStartedRoutes`.
  */
 internal fun Route.chatRoutes(
   coachingService: CoachingService,
-  studentService: StudentService,
-  supporterService: SupporterService,
+  accountRoles: AccountRoleService,
   authService: AuthService,
   sessionConfig: WebSessionConfig,
 ) {
@@ -92,23 +93,22 @@ internal fun Route.chatRoutes(
     install(ChatStudentGate) {
       this.authService = authService
       this.sessionConfig = sessionConfig
-      this.studentService = studentService
-      this.supporterService = supporterService
+      this.accountRoles = accountRoles
     }
 
-    getVerified("", authService, sessionConfig) { caller ->
+    getOnboarded("", authService, sessionConfig, accountRoles) { caller ->
       call.respondChatPage(action = CHAT_PATH, exchanges = emptyList(), nav = caller.signedInNav)
     }
 
-    postVerified("", authService, sessionConfig) {
+    postOnboarded("", authService, sessionConfig, accountRoles) {
       startConversation(coachingService, call.chatStudent())
     }
 
-    getVerified("/{$CONVO_ID_PARAM}", authService, sessionConfig) { caller ->
+    getOnboarded("/{$CONVO_ID_PARAM}", authService, sessionConfig, accountRoles) { caller ->
       showConversation(coachingService, call.chatStudent(), caller.signedInNav)
     }
 
-    postVerified("/{$CONVO_ID_PARAM}", authService, sessionConfig) {
+    postOnboarded("/{$CONVO_ID_PARAM}", authService, sessionConfig, accountRoles) {
       continueConversation(coachingService, call.chatStudent())
     }
   }
@@ -261,8 +261,7 @@ private fun ApplicationCall.chatStudent(): Student =
 private class ChatStudentGateConfig {
   lateinit var authService: AuthService
   lateinit var sessionConfig: WebSessionConfig
-  lateinit var studentService: StudentService
-  lateinit var supporterService: SupporterService
+  lateinit var accountRoles: AccountRoleService
 }
 
 /**
@@ -276,14 +275,17 @@ private class ChatStudentGateConfig {
  * optimisation and never the authority.
  *
  * It decides only for a VERIFIED caller. A signed-out or unverified one passes
- * through untouched, and the route's own [getVerified] answers them exactly as
+ * through untouched, and the route's own [getOnboarded] answers them exactly as
  * every other gated page does — this gate never invents a second answer to
  * "who may see this".
  *
- * - a student → resolved once, stored for the handler, which reads it typed;
- * - a supporter with no student row → `/account`, where the parent note
- *   already says the parents' coach is in the iPhone app;
- * - anyone else → [STUDENT_SIGNUP_PATH].
+ * It reads the caller's [AccountRole] (RFC 268), the read the onboarding wall
+ * and `/get-started` make, so the three cannot disagree:
+ *
+ * - a student → stored for the handler, which reads it typed;
+ * - a supporter → `/account`, where the parent note already says the parents'
+ *   coach is in the iPhone app;
+ * - neither → [STUDENT_SIGNUP_PATH], onboarding.
  *
  * An account holding both rows is a student, as on iOS. A redirect is `302`
  * for a `GET` and `303` for a `POST` ([respondGateRedirect]); answering here
@@ -293,19 +295,13 @@ private val ChatStudentGate =
   createRouteScopedPlugin("ChatStudentGate", ::ChatStudentGateConfig) {
     val authService = pluginConfig.authService
     val sessionConfig = pluginConfig.sessionConfig
-    val studentService = pluginConfig.studentService
-    val supporterService = pluginConfig.supporterService
+    val accountRoles = pluginConfig.accountRoles
 
     onCall { call ->
       val caller = call.resolveWebCaller(authService, sessionConfig) ?: return@onCall
       if (caller.user.emailVerifiedAt == null) return@onCall
 
-      val student = studentService.getStudentForUser(caller.user.id).getOrThrow()
-      if (student != null) {
-        call.attributes.put(ChatStudentKey, student)
-        return@onCall
-      }
-      val isSupporter = supporterService.find(caller.user.id).getOrThrow() != null
-      call.respondGateRedirect(if (isSupporter) ACCOUNT_PATH else STUDENT_SIGNUP_PATH)
+      val role = caller.accountRole(accountRoles)
+      if (role is AccountRole.Student) call.attributes.put(ChatStudentKey, role.student) else call.respondGateRedirect(role.homePath())
     }
   }

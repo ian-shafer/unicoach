@@ -239,7 +239,7 @@ class SignInRoutingTest {
   fun `a session minted through AuthService resolves on a web page request`() =
     testApplication {
       val email = WebAuthTestSupport.uniqueEmail()
-      WebAuthTestSupport.seedUser(email)
+      WebAuthTestSupport.seedStudentUser(email)
       application { testPublicWebModule() }
 
       val token = WebAuthTestSupport.login(email)

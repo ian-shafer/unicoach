@@ -44,7 +44,7 @@ class ChangeEmailRoutingTest {
   fun `the form names the current address and warns that verification is cleared`() =
     testApplication {
       val email = WebAuthTestSupport.uniqueEmail()
-      WebAuthTestSupport.seedUser(email)
+      WebAuthTestSupport.seedStudentUser(email)
       application { testPublicWebModule() }
       val token = WebAuthTestSupport.login(email)
 
@@ -70,7 +70,7 @@ class ChangeEmailRoutingTest {
   fun `a valid change lands the family on the hold screen with the confirmation rendered`() =
     testApplication {
       val email = WebAuthTestSupport.uniqueEmail()
-      WebAuthTestSupport.seedUser(email)
+      WebAuthTestSupport.seedStudentUser(email)
       application { testPublicWebModule() }
       val token = WebAuthTestSupport.login(email)
       val newEmail = WebAuthTestSupport.uniqueEmail()
@@ -98,7 +98,7 @@ class ChangeEmailRoutingTest {
   fun `an unparseable address re-renders the form at 400 with the service's own message`() =
     testApplication {
       val email = WebAuthTestSupport.uniqueEmail()
-      WebAuthTestSupport.seedUser(email)
+      WebAuthTestSupport.seedStudentUser(email)
       application { testPublicWebModule() }
       val token = WebAuthTestSupport.login(email)
 
@@ -115,7 +115,7 @@ class ChangeEmailRoutingTest {
     testApplication {
       val email = WebAuthTestSupport.uniqueEmail()
       val taken = WebAuthTestSupport.uniqueEmail()
-      WebAuthTestSupport.seedUser(email)
+      WebAuthTestSupport.seedStudentUser(email)
       WebAuthTestSupport.seedUser(taken)
       application { testPublicWebModule() }
       val token = WebAuthTestSupport.login(email)
@@ -131,7 +131,7 @@ class ChangeEmailRoutingTest {
     testApplication {
       val email = WebAuthTestSupport.uniqueEmail()
       val taken = WebAuthTestSupport.uniqueEmail()
-      WebAuthTestSupport.seedUser(email)
+      WebAuthTestSupport.seedStudentUser(email)
       WebAuthTestSupport.seedUser(taken)
       application { testPublicWebModule() }
       val token = WebAuthTestSupport.login(email)
@@ -154,7 +154,7 @@ class ChangeEmailRoutingTest {
   fun `a refused POST is one session UPDATE and a success with no draft is none`() {
     testApplication {
       val email = WebAuthTestSupport.uniqueEmail()
-      WebAuthTestSupport.seedUser(email)
+      WebAuthTestSupport.seedStudentUser(email)
       application { testPublicWebModule() }
       val token = WebAuthTestSupport.login(email)
       val minted = sessionVersion(token)
@@ -162,7 +162,7 @@ class ChangeEmailRoutingTest {
       changeEmail(token, "not-an-address")
       assertEquals(minted + 1, sessionVersion(token), "a refused POST saves its draft in exactly one UPDATE")
 
-      val other = WebAuthTestSupport.login(WebAuthTestSupport.seedUser(WebAuthTestSupport.uniqueEmail()).email.value)
+      val other = WebAuthTestSupport.login(WebAuthTestSupport.seedStudentUser(WebAuthTestSupport.uniqueEmail()).email.value)
       val otherMinted = sessionVersion(other)
       changeEmail(other, WebAuthTestSupport.uniqueEmail())
       assertEquals(otherMinted, sessionVersion(other), "a success with no draft to clear writes nothing")
@@ -173,7 +173,7 @@ class ChangeEmailRoutingTest {
   fun `a successful change clears the draft`() {
     testApplication {
       val email = WebAuthTestSupport.uniqueEmail()
-      WebAuthTestSupport.seedUser(email)
+      WebAuthTestSupport.seedStudentUser(email)
       application { testPublicWebModule() }
       val token = WebAuthTestSupport.login(email)
       changeEmail(token, "not-an-address")
@@ -197,7 +197,7 @@ class ChangeEmailRoutingTest {
   fun `an address too long to keep renders the failed page with the address and the notice, and stores nothing`() {
     testApplication {
       val email = WebAuthTestSupport.uniqueEmail()
-      WebAuthTestSupport.seedUser(email)
+      WebAuthTestSupport.seedStudentUser(email)
       application { testPublicWebModule() }
       val token = WebAuthTestSupport.login(email)
       val huge = SessionMetadataFixtures.textPastTheCap()
@@ -222,7 +222,7 @@ class ChangeEmailRoutingTest {
   fun `an address the session cannot store renders the failed page with the not-saved notice, and stores nothing`() {
     testApplication {
       val email = WebAuthTestSupport.uniqueEmail()
-      WebAuthTestSupport.seedUser(email)
+      WebAuthTestSupport.seedStudentUser(email)
       application { testPublicWebModule() }
       val token = WebAuthTestSupport.login(email)
       val before = WebAuthTestSupport.resolveSession(token)!!.session
@@ -246,7 +246,7 @@ class ChangeEmailRoutingTest {
   fun `a draft write that faults still answers the POST with the page it earned`() {
     testApplication {
       val email = WebAuthTestSupport.uniqueEmail()
-      WebAuthTestSupport.seedUser(email)
+      WebAuthTestSupport.seedStudentUser(email)
       application { testPublicWebModule(sessionMetadataService = WebAuthTestSupport.unreachableSessionMetadataService()) }
       val token = WebAuthTestSupport.login(email)
       seedDraft(token, "kept-before@example.com")
@@ -275,7 +275,7 @@ class ChangeEmailRoutingTest {
   fun `a GET with no draft renders the ordinary empty form`() {
     testApplication {
       val email = WebAuthTestSupport.uniqueEmail()
-      WebAuthTestSupport.seedUser(email)
+      WebAuthTestSupport.seedStudentUser(email)
       application { testPublicWebModule() }
       val token = WebAuthTestSupport.login(email)
 
@@ -295,7 +295,7 @@ class ChangeEmailRoutingTest {
   fun `a body that is not this form saves nothing`() {
     testApplication {
       val email = WebAuthTestSupport.uniqueEmail()
-      WebAuthTestSupport.seedUser(email)
+      WebAuthTestSupport.seedStudentUser(email)
       application { testPublicWebModule() }
       val token = WebAuthTestSupport.login(email)
       val before = WebAuthTestSupport.resolveSession(token)!!.session

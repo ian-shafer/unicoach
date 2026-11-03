@@ -15,12 +15,15 @@ import ed.unicoach.web.render.COMPOSER_CLASS
 import ed.unicoach.web.render.ChatNotice
 import ed.unicoach.web.render.DATA_LABEL
 import ed.unicoach.web.render.DATA_TABLE_CLASS
+import ed.unicoach.web.render.DATE_GROUP_CLASS
+import ed.unicoach.web.render.FIELD_CAPTION_CLASS
 import ed.unicoach.web.render.FIELD_CLASS
 import ed.unicoach.web.render.FIELD_ERROR_CLASS
 import ed.unicoach.web.render.FORM_ERROR_CLASS
 import ed.unicoach.web.render.LINKLIKE_CLASS
 import ed.unicoach.web.render.NOTICE_CLASS
 import ed.unicoach.web.render.REPORT_CLAIM_CLASS
+import ed.unicoach.web.render.ROLE_BUTTON_CLASS
 import ed.unicoach.web.render.SIGN_OUT_FORM_CLASS
 import ed.unicoach.web.render.STUDENT_MESSAGE_CLASSES
 import ed.unicoach.web.render.ShellWidth
@@ -491,6 +494,9 @@ class ShellMechanismTest {
         LINKLIKE_CLASS,
         ACCOUNT_CLASS,
         REPORT_CLAIM_CLASS,
+        FIELD_CAPTION_CLASS,
+        DATE_GROUP_CLASS,
+        ROLE_BUTTON_CLASS,
       )) {
         assertTrue(
           Regex("""\.$stateClass\b""").containsMatchIn(css),
@@ -514,7 +520,9 @@ class ShellMechanismTest {
       val css = fetchServedStylesheet()
       for (selector in listOf(
         ".$AUTH_FORM_CLASS input",
+        ".$AUTH_FORM_CLASS select",
         ".$AUTH_FORM_CLASS button",
+        ".$ROLE_BUTTON_CLASS",
         ".$REPORT_CLAIM_CLASS button",
         ".site-header .site-nav .$LINKLIKE_CLASS",
       )) {

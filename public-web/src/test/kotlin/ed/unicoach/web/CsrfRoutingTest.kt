@@ -170,7 +170,7 @@ class CsrfRoutingTest {
   fun `change email is refused without the session's token and changes with it`() {
     testApplication {
       application { testPublicWebModule() }
-      val user = WebAuthTestSupport.seedUser(WebAuthTestSupport.uniqueEmail())
+      val user = WebAuthTestSupport.seedStudentUser(WebAuthTestSupport.uniqueEmail())
       val token = WebAuthTestSupport.login(user.email.value)
       val newEmail = WebAuthTestSupport.uniqueEmail()
       val form = parameters { append(EMAIL_FIELD, newEmail) }

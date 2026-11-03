@@ -636,7 +636,8 @@ main {
    zooms the whole page when a focused input is set below 16px and never zooms
    back out — and `1rem` moves when the 1024px block re-declares
    `--font-size-root`. */
-.auth-form input {
+.auth-form input,
+.auth-form select {
   width: 100%;
   min-height: var(--tap-target);
   padding: 0.5rem 0.75rem;
@@ -648,7 +649,8 @@ main {
   border-radius: 0.25rem;
 }
 
-.auth-form input:focus {
+.auth-form input:focus,
+.auth-form select:focus {
   outline: 2px solid var(--accent);
   outline-offset: 1px;
 }
@@ -659,6 +661,76 @@ main {
   min-height: var(--tap-target);
   padding: 0.5rem 1.25rem;
   font: inherit;
+  color: var(--bg);
+  background: var(--accent);
+  border: 0;
+  border-radius: 0.25rem;
+  cursor: pointer;
+}
+
+/* RFC 268 — onboarding. A group of answers (a date in three selects, the
+   optional money answers) is a fieldset, so its legend names the question for a
+   screen reader as well as on screen; the browser's frame around one is
+   removed, because the legend already says where a group starts. `min-width:
+   0` undoes a fieldset's default `min-content` floor, which would otherwise
+   push three selects past a phone's column. */
+.auth-form fieldset {
+  min-width: 0;
+  margin: 0 0 1rem;
+  padding: 0;
+  border: 0;
+}
+
+.auth-form legend {
+  padding: 0;
+  margin-bottom: 0.5rem;
+  font-weight: 600;
+}
+
+/* What an answer is for: under its control, quieter than the control. */
+.field-caption {
+  margin: 0.25rem 0 0.5rem;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+/* A date's year, month and day in one row. Each part has a basis, not a width,
+   so the row WRAPS rather than overflowing: three parts and their gaps need
+   about 336px, which is a 375px phone's column and not a 360px one's. */
+.date-group-parts {
+  display: flex;
+  flex-wrap: wrap;
+  column-gap: 0.75rem;
+}
+
+.date-group-parts .field {
+  flex: 1 1 6.5rem;
+}
+
+/* "Who are you here for?" — two equal paths (RFC 241), side by side, at one
+   size and one weight, so neither reads as the default. One is a link and one is
+   a form's button, so the shared class sets everything either would otherwise
+   take from the browser. */
+.role-choice-paths {
+  display: flex;
+  gap: 1rem;
+}
+
+.role-choice-paths form {
+  display: flex;
+  flex: 1 1 0;
+}
+
+.role-button {
+  display: flex;
+  flex: 1 1 0;
+  align-items: center;
+  justify-content: center;
+  min-height: var(--tap-target);
+  padding: 0.75rem 1.25rem;
+  font: inherit;
+  text-align: center;
+  text-decoration: none;
   color: var(--bg);
   background: var(--accent);
   border: 0;
@@ -992,6 +1064,12 @@ main {
   .data-table .md-center,
   .data-table .md-trailing {
     text-align: left;
+  }
+
+  /* The two role paths (RFC 268) stack, full width, so neither label wraps
+     inside a half-width button. */
+  .role-choice-paths {
+    flex-direction: column;
   }
 }
 

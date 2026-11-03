@@ -1,6 +1,8 @@
 package ed.unicoach.web.auth
 
 import ed.unicoach.auth.AuthService
+import ed.unicoach.student.AccountRole
+import ed.unicoach.student.AccountRoleService
 import ed.unicoach.web.WebSessionConfig
 import ed.unicoach.web.common.logging.SecretQueryParamsKey
 import ed.unicoach.web.render.SIGNUP_DOOR_SECRET_PARAMS
@@ -42,11 +44,17 @@ const val CHANGE_EMAIL_PATH = "/account/email"
 const val CHAT_PATH = "/chat"
 
 /**
- * The student signup page (RFC 262 D-B): where the chat sends a verified user
- * with no `students` row. `web/06` builds the form at this path; until then it
- * renders a placeholder, so the redirect never has to move.
+ * Onboarding (RFC 268): "Who are you here for?" — where every check sends a
+ * verified account that is neither a student nor a supporter. The name is
+ * RFC 262's, from when the page was the student form alone.
  */
 const val STUDENT_SIGNUP_PATH = "/get-started"
+
+/** Onboarding's student form (RFC 268): date of birth, graduation date, and the two optional money answers. */
+const val STUDENT_FORM_PATH = "$STUDENT_SIGNUP_PATH/student"
+
+/** Onboarding's supporter answer (RFC 268): a `POST` that makes the caller's supporter row. */
+const val SUPPORTER_CHOICE_PATH = "$STUDENT_SIGNUP_PATH/supporter"
 
 /** The marketing home. Named like every other path so a rule about it cannot drift from the route. */
 const val HOME_PATH = "/"
@@ -54,10 +62,11 @@ const val HOME_PATH = "/"
 /**
  * What a path requires of its caller.
  *
- * Three states rather than a boolean, because "signed in" and "signed in AND
- * verified" fail DIFFERENTLY and a family must be sent to a different screen by
- * each: an unauthenticated caller needs the sign-in form, and an unverified one
- * needs the hold screen that names the address the mail went to.
+ * Four states rather than a boolean, because each one fails DIFFERENTLY and a
+ * family must be sent to a different screen by each: an unauthenticated caller
+ * needs the sign-in form, an unverified one needs the hold screen that names
+ * the address the mail went to, and one who has not said who they are here for
+ * needs onboarding (RFC 268).
  */
 internal enum class WebAccess {
   /** No session needed. Most of public-web: the marketing site, the legal pages, the tokenized report. */
@@ -68,6 +77,13 @@ internal enum class WebAccess {
 
   /** A live session whose user has a verified email. */
   VERIFIED,
+
+  /**
+   * [VERIFIED], and the account is a student or a supporter (RFC 268, D-E):
+   * the chat and every account page. Onboarding itself is [VERIFIED], or no one
+   * could reach it.
+   */
+  ONBOARDED,
 }
 
 /**
@@ -98,9 +114,9 @@ internal enum class WebAccess {
  */
 internal fun mapPathToAccess(path: String): WebAccess =
   when {
-    path == ACCOUNT_PATH || path.startsWith("$ACCOUNT_PATH/") -> WebAccess.VERIFIED
-    path == CHAT_PATH || path.startsWith("$CHAT_PATH/") -> WebAccess.VERIFIED
-    path == STUDENT_SIGNUP_PATH -> WebAccess.VERIFIED
+    path == ACCOUNT_PATH || path.startsWith("$ACCOUNT_PATH/") -> WebAccess.ONBOARDED
+    path == CHAT_PATH || path.startsWith("$CHAT_PATH/") -> WebAccess.ONBOARDED
+    path == STUDENT_SIGNUP_PATH || path.startsWith("$STUDENT_SIGNUP_PATH/") -> WebAccess.VERIFIED
     path == SIGN_OUT_PATH || path == RESEND_VERIFICATION_PATH -> WebAccess.SIGNED_IN
     else -> WebAccess.OPEN
   }
@@ -138,6 +154,7 @@ private val SIGNED_IN_REDIRECTS = setOf(HOME_PATH, SIGN_IN_PATH, REGISTER_PATH)
 fun Application.installWebAuthGate(
   authService: AuthService,
   config: WebSessionConfig,
+  accountRoles: AccountRoleService,
 ) {
   intercept(ApplicationCallPipeline.Plugins) {
     val access = mapPathToAccess(call.request.path())
@@ -149,12 +166,35 @@ fun Application.installWebAuthGate(
       return@intercept finish()
     }
 
-    if (access == WebAccess.VERIFIED && caller.user.emailVerifiedAt == null) {
-      call.respondGateRedirect(VERIFY_EMAIL_PATH)
-      return@intercept finish()
+    val refusal = caller.gateRefusal(access, accountRoles)
+    if (refusal != null) {
+      call.respondGateRedirect(refusal)
+      finish()
     }
   }
 }
+
+/** Where the gate sends [this] caller instead of a page that requires [access], or `null` when the caller may pass. */
+private suspend fun WebCaller.gateRefusal(
+  access: WebAccess,
+  accountRoles: AccountRoleService,
+): String? =
+  when (access) {
+    WebAccess.OPEN, WebAccess.SIGNED_IN -> {
+      null
+    }
+
+    WebAccess.VERIFIED -> {
+      unverifiedRefusal()
+    }
+
+    WebAccess.ONBOARDED -> {
+      unverifiedRefusal() ?: accountRole(accountRoles).let { role -> role.homePath().takeIf { role == AccountRole.None } }
+    }
+  }
+
+/** The hold screen, for a caller whose email is not yet verified. */
+private fun WebCaller.unverifiedRefusal(): String? = VERIFY_EMAIL_PATH.takeIf { user.emailVerifiedAt == null }
 
 /**
  * Sends a signed-in caller past the pages that only make sense signed out.

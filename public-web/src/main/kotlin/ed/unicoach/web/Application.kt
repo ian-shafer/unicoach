@@ -25,6 +25,7 @@ import ed.unicoach.coaching.budget.BudgetService
 import ed.unicoach.coaching.costs.CollegeCostService
 import ed.unicoach.coaching.extraction.ExtractionConfig
 import ed.unicoach.coaching.extraction.ExtractionScheduler
+import ed.unicoach.coaching.moneyprofile.MoneyProfileService
 import ed.unicoach.coaching.report.CostReportConfig
 import ed.unicoach.coaching.report.CostReportShareService
 import ed.unicoach.coaching.report.ShareTokenDeriver
@@ -40,10 +41,12 @@ import ed.unicoach.family.SupporterInviteService
 import ed.unicoach.family.SupporterLinkRequestService
 import ed.unicoach.family.SupporterService
 import ed.unicoach.queue.QueueService
+import ed.unicoach.student.AccountRoleService
 import ed.unicoach.student.StudentService
 import ed.unicoach.subscriptions.SubscriptionPlans
 import ed.unicoach.util.Argon2Hasher
 import ed.unicoach.util.TokenGenerator
+import ed.unicoach.vocabulary.VocabularyService
 import ed.unicoach.web.assets.WebAssets
 import ed.unicoach.web.auth.installSignedInLanding
 import ed.unicoach.web.auth.installWebAuthGate
@@ -175,6 +178,11 @@ fun startServer(wait: Boolean = true): EmbeddedServer<*, *> {
         studentService = StudentService(database),
         // The one writer of a session's metadata (RFC 265): the draft rail's.
         sessionMetadataService = SessionMetadataService(database),
+        // Onboarding (RFC 268): the one read of who an account is here for,
+        // and the student form's optional money answers and their options.
+        accountRoleService = AccountRoleService(database),
+        moneyProfileService = MoneyProfileService(database),
+        vocabularyService = VocabularyService(database),
       )
     }
 
@@ -371,6 +379,9 @@ fun Application.publicWebModule(
   coachingService: CoachingService,
   studentService: StudentService,
   sessionMetadataService: SessionMetadataService,
+  accountRoleService: AccountRoleService,
+  moneyProfileService: MoneyProfileService,
+  vocabularyService: VocabularyService,
 ) {
   // READ the bundle name while the module installs (RFC 225). WebAssets is an
   // `object`, so its manifest refusals run at class-init — and nothing touched
@@ -403,7 +414,7 @@ fun Application.publicWebModule(
     respondForbiddenPage(shellNavOrSignedOut(authService, publicWebConfig.session))
   }
   installSignedInLanding(authService, publicWebConfig.session)
-  installWebAuthGate(authService, publicWebConfig.session)
+  installWebAuthGate(authService, publicWebConfig.session, accountRoleService)
 
   installPublicWebRouting(
     emailVerifier,
@@ -419,5 +430,8 @@ fun Application.publicWebModule(
     coachingService,
     studentService,
     sessionMetadataService,
+    accountRoleService,
+    moneyProfileService,
+    vocabularyService,
   )
 }

@@ -96,7 +96,13 @@ sealed interface EnsureSupporterOutcome {
   ) : Present
 
   /** The caller's supporter row was CLOSED, and there is no re-opening path. */
-  data object Closed : EnsureSupporterOutcome
+  data object Closed : EnsureSupporterOutcome {
+    /**
+     * What the caller is told: the one wording every door says it in — the
+     * REST `409` and the web's role choice (RFC 268).
+     */
+    const val MESSAGE = "This account's supporter profile was closed and cannot be reopened"
+  }
 }
 
 /**

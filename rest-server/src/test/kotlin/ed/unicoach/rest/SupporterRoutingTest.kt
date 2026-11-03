@@ -387,7 +387,10 @@ class SupporterRoutingTest {
       val again = createSupporter(cookie)
 
       assertEquals(HttpStatusCode.Conflict, again.status, "a closed row is refused, and refused on its own terms")
-      assertEquals("supporter_closed", mapper.readTree(again.bodyAsText()).get("code").asText())
+      val refusal = mapper.readTree(again.bodyAsText())
+      assertEquals("supporter_closed", refusal.get("code").asText())
+      // Word for word as it was before the sentence moved to :service (RFC 268).
+      assertEquals("This account's supporter profile was closed and cannot be reopened", refusal.get("message").asText())
       assertEquals(HttpStatusCode.NotFound, getSupporterHome(cookie).status, "and there is still no home to read")
     }
 

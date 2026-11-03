@@ -1,6 +1,8 @@
 package ed.unicoach.web.auth
 
 import ed.unicoach.auth.AuthService
+import ed.unicoach.student.AccountRole
+import ed.unicoach.student.AccountRoleService
 import ed.unicoach.web.WebSessionConfig
 import ed.unicoach.web.common.http.SAFE_METHODS
 import ed.unicoach.web.render.respondForbiddenPage
@@ -39,7 +41,7 @@ internal fun Route.getSignedIn(
   authService: AuthService,
   sessionConfig: WebSessionConfig,
   handler: suspend RoutingContext.(WebCaller) -> Unit,
-) = get(path) { handleAccess(WebAccess.SIGNED_IN, authService, sessionConfig, handler) }
+) = get(path) { handleAccess(HandledAccess.SIGNED_IN, authService, sessionConfig, handler) }
 
 /** The `POST` half of [getSignedIn]; same contract, same reasoning. */
 internal fun Route.postSignedIn(
@@ -47,7 +49,7 @@ internal fun Route.postSignedIn(
   authService: AuthService,
   sessionConfig: WebSessionConfig,
   handler: suspend RoutingContext.(WebCaller) -> Unit,
-) = post(path) { handleAccess(WebAccess.SIGNED_IN, authService, sessionConfig, handler) }
+) = post(path) { handleAccess(HandledAccess.SIGNED_IN, authService, sessionConfig, handler) }
 
 /**
  * [getSignedIn] for a route that also needs a VERIFIED address.
@@ -71,7 +73,7 @@ internal fun Route.getVerified(
   authService: AuthService,
   sessionConfig: WebSessionConfig,
   handler: suspend RoutingContext.(WebCaller) -> Unit,
-) = get(path) { handleAccess(WebAccess.VERIFIED, authService, sessionConfig, handler) }
+) = get(path) { handleAccess(HandledAccess.VERIFIED, authService, sessionConfig, handler) }
 
 /** The `POST` half of [getVerified]; same contract, same reasoning. */
 internal fun Route.postVerified(
@@ -79,10 +81,89 @@ internal fun Route.postVerified(
   authService: AuthService,
   sessionConfig: WebSessionConfig,
   handler: suspend RoutingContext.(WebCaller) -> Unit,
-) = post(path) { handleAccess(WebAccess.VERIFIED, authService, sessionConfig, handler) }
+) = post(path) { handleAccess(HandledAccess.VERIFIED, authService, sessionConfig, handler) }
 
 /**
- * The one admission check the four wrappers share: resolve, refuse or hand the
+ * [getVerified] for a route that also needs an ONBOARDED account (RFC 268,
+ * D-E): one with a student or a supporter row. A verified caller with neither
+ * is sent to [STUDENT_SIGNUP_PATH], where they answer "Who are you here for?".
+ *
+ * Declared where the route is registered and enforced after routing, for
+ * [getVerified]'s reason: the pre-routing gate's path match is an
+ * optimisation, and no spelling of `/account` may reach a handler around it.
+ * The role is read through [accountRole], the same read the gate and the
+ * chat's student gate make.
+ */
+internal fun Route.getOnboarded(
+  path: String,
+  authService: AuthService,
+  sessionConfig: WebSessionConfig,
+  accountRoles: AccountRoleService,
+  handler: suspend RoutingContext.(WebCaller) -> Unit,
+) = get(path) { handleOnboarded(authService, sessionConfig, accountRoles, handler) }
+
+/** The `POST` half of [getOnboarded]; same contract, same reasoning. */
+internal fun Route.postOnboarded(
+  path: String,
+  authService: AuthService,
+  sessionConfig: WebSessionConfig,
+  accountRoles: AccountRoleService,
+  handler: suspend RoutingContext.(WebCaller) -> Unit,
+) = post(path) { handleOnboarded(authService, sessionConfig, accountRoles, handler) }
+
+/**
+ * [handleAccess] at [HandledAccess.VERIFIED], then the role check: every refusal
+ * the verified class gives — sign-in, the CSRF 403, the hold screen — comes
+ * first and reads exactly as it does on a verified route, and only a caller who
+ * passes all of them is asked whether they have onboarded.
+ */
+private suspend fun RoutingContext.handleOnboarded(
+  authService: AuthService,
+  sessionConfig: WebSessionConfig,
+  accountRoles: AccountRoleService,
+  handler: suspend RoutingContext.(WebCaller) -> Unit,
+) = handleAccess(HandledAccess.VERIFIED, authService, sessionConfig) { caller ->
+  val role = caller.accountRole(accountRoles)
+  if (role == AccountRole.None) call.respondGateRedirect(role.homePath()) else handler(caller)
+}
+
+/**
+ * This caller's [AccountRole]: the pre-routing gate, the chat's student gate,
+ * the onboarding wall and `/get-started` all ask through [AccountRoleService],
+ * the one reader, so they cannot disagree about who has onboarded.
+ */
+internal suspend fun WebCaller.accountRole(accountRoles: AccountRoleService): AccountRole = accountRoles.roleOf(user.id).getOrThrow()
+
+/**
+ * Where an account with this role belongs: a student in the chat, a supporter
+ * on `/account`, and an account that has not said who it is here for in
+ * onboarding. Every redirect that sends an account "home" reads it here, so a
+ * new role or a moved home is one edit.
+ */
+internal fun AccountRole.homePath(): String =
+  when (this) {
+    is AccountRole.Student -> CHAT_PATH
+    is AccountRole.Supporter -> ACCOUNT_PATH
+    AccountRole.None -> STUDENT_SIGNUP_PATH
+  }
+
+/**
+ * The access classes [handleAccess] can enforce on its own. [WebAccess.ONBOARDED]
+ * is not one: its role check needs an [AccountRoleService], so it is admitted
+ * only through [getOnboarded]/[postOnboarded], and leaving it out of this type
+ * means a route cannot name it here and skip the wall. [WebAccess.OPEN] needs no
+ * wrapper at all.
+ */
+internal enum class HandledAccess {
+  /** A live session. No claim about the email. */
+  SIGNED_IN,
+
+  /** A live session whose user has a verified email. */
+  VERIFIED,
+}
+
+/**
+ * The one admission check every wrapper shares: resolve, refuse or hand the
  * handler its caller.
  *
  * Each refusal is the DOMAIN answer the gate gives for the same state — the
@@ -104,7 +185,7 @@ internal fun Route.postVerified(
  * caller back off `call.attributes`.
  */
 internal suspend fun RoutingContext.handleAccess(
-  access: WebAccess,
+  access: HandledAccess,
   authService: AuthService,
   sessionConfig: WebSessionConfig,
   handler: suspend RoutingContext.(WebCaller) -> Unit,
@@ -128,8 +209,14 @@ internal suspend fun RoutingContext.handleAccess(
       return call.respondForbiddenPage(caller.signedInNav)
     }
   }
-  if (access == WebAccess.VERIFIED && caller.user.emailVerifiedAt == null) {
-    return call.respondGateRedirect(VERIFY_EMAIL_PATH)
+  when (access) {
+    HandledAccess.SIGNED_IN -> {
+      Unit
+    }
+
+    HandledAccess.VERIFIED -> {
+      if (caller.user.emailVerifiedAt == null) return call.respondGateRedirect(VERIFY_EMAIL_PATH)
+    }
   }
   handler(caller)
 }

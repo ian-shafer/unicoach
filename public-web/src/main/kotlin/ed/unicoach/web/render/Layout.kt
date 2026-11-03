@@ -114,10 +114,23 @@ sealed interface ShellNav {
   data class SignedIn(
     val csrf: CsrfToken,
   ) : ShellNav
+
+  /**
+   * A live session that has not onboarded (RFC 268): the nav carries the
+   * sign-out control and nothing else. "Chat" and "Account" would each send
+   * the family straight back to onboarding, so they are not offered. Every
+   * page under `/get-started` renders with it.
+   */
+  data class Onboarding(
+    val csrf: CsrfToken,
+  ) : ShellNav
 }
 
 /** The header [this] caller's pages render: signed in, with the session's CSRF token. */
 val WebCaller.signedInNav: ShellNav.SignedIn get() = ShellNav.SignedIn(csrfToken)
+
+/** The header [this] caller's onboarding pages render (RFC 268): sign-out only. */
+val WebCaller.onboardingNav: ShellNav.Onboarding get() = ShellNav.Onboarding(csrfToken)
 
 /**
  * The shared HTML skeleton for every public-web page. Links the chrome-less
@@ -219,12 +232,21 @@ fun FlowContent.siteHeader(shellNav: ShellNav = ShellNav.SignedOut) {
           // The signed-in root (RFC 262), reachable from every signed-in page.
           a(href = CHAT_PATH) { +CHAT_TITLE }
           a(href = ACCOUNT_PATH) { +"Account" }
-          signedInForm(action = SIGN_OUT_PATH, csrf = shellNav.csrf, classes = SIGN_OUT_FORM_CLASS) {
-            button(type = ButtonType.submit, classes = LINKLIKE_CLASS) { +"Sign out" }
-          }
+          signOutControl(shellNav.csrf)
+        }
+
+        is ShellNav.Onboarding -> {
+          signOutControl(shellNav.csrf)
         }
       }
     }
+  }
+}
+
+/** The sign-out control: a `POST` form echoing the session's [csrf] token, its button styled as a nav link. */
+private fun FlowContent.signOutControl(csrf: CsrfToken) {
+  signedInForm(action = SIGN_OUT_PATH, csrf = csrf, classes = SIGN_OUT_FORM_CLASS) {
+    button(type = ButtonType.submit, classes = LINKLIKE_CLASS) { +"Sign out" }
   }
 }
 

@@ -19,6 +19,7 @@ import ed.unicoach.coaching.budget.BudgetConfig
 import ed.unicoach.coaching.budget.BudgetService
 import ed.unicoach.coaching.extraction.ExtractionConfig
 import ed.unicoach.coaching.extraction.ExtractionScheduler
+import ed.unicoach.coaching.moneyprofile.MoneyProfileService
 import ed.unicoach.common.config.AppConfig
 import ed.unicoach.common.models.EmailAddress
 import ed.unicoach.common.models.ValidationResult
@@ -40,10 +41,12 @@ import ed.unicoach.family.SupporterInviteService
 import ed.unicoach.family.SupporterLinkRequestService
 import ed.unicoach.family.SupporterService
 import ed.unicoach.queue.QueueService
+import ed.unicoach.student.AccountRoleService
 import ed.unicoach.student.StudentService
 import ed.unicoach.subscriptions.SubscriptionPlans
 import ed.unicoach.util.Argon2Hasher
 import ed.unicoach.util.TokenGenerator
+import ed.unicoach.vocabulary.VocabularyService
 import ed.unicoach.web.auth.CsrfToken
 import ed.unicoach.web.render.CSRF_FIELD
 import io.ktor.client.HttpClient
@@ -141,8 +144,17 @@ object WebAuthTestSupport {
    */
   fun unreachableSessionMetadataService(): SessionMetadataService = SessionMetadataService(Database(dbConfig).also(Database::close))
 
-  /** The production student lookup the chat's student gate reads (RFC 262). */
+  /** The production student service onboarding creates students through (RFC 268). */
   val studentService = StudentService(database)
+
+  /** The production role read the onboarding wall and the chat's student gate share (RFC 268). */
+  val accountRoleService = AccountRoleService(database)
+
+  /** The production money-profile writer the student form's optional answers go through (RFC 268). */
+  val moneyProfileService = MoneyProfileService(database)
+
+  /** The production vocabularies the student form's state and income options come from (RFC 268). */
+  val vocabularyService = VocabularyService(database)
 
   /**
    * The student's coach (RFC 262), wired as `Application.kt` wires it — the
@@ -200,6 +212,13 @@ object WebAuthTestSupport {
     }
     return StudentId(studentId)
   }
+
+  /**
+   * A verified user who has onboarded as a student (RFC 268): what a suite
+   * about a page behind the onboarding wall — `/account`, `/chat` — signs in
+   * as, when the role is not what it is about.
+   */
+  fun seedStudentUser(email: String): User = seedUser(email).also(::seedStudent)
 
   /**
    * Seeds a user directly through the DAO.
@@ -329,6 +348,16 @@ object WebAuthTestSupport {
    * so a suite about a route does not depend on another route rendering.
    */
   fun csrfTokenFor(token: String): String? = resolveSession(token)?.let { CsrfToken.of(it.session.metadata)?.value }
+
+  /**
+   * The stored `sessions.metadata` of every session [userId] holds, as the JSON
+   * text in the column — what a "nothing about the attempt was kept" claim is
+   * about (RFC 268), read from the row rather than through the proto.
+   */
+  fun storedSessionMetadata(userId: UUID): List<String> =
+    withConnection { connection ->
+      RawSql.list(connection, "SELECT coalesce(metadata::text, '') FROM sessions WHERE user_id = ?", userId) { it.getString(1) }
+    }
 
   /** How many `sessions` rows exist at all — the D12 honesty test's whole assertion. */
   fun sessionRowCount(): Int = count("SELECT count(*) FROM sessions")

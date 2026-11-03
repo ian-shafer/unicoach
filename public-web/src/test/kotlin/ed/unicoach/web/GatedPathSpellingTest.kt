@@ -62,6 +62,21 @@ class GatedPathSpellingTest {
     }
 
   /**
+   * The onboarding wall (RFC 268) by the same rule: a verified account with no
+   * student or supporter row reaches no spelling of an account page, and each
+   * one that resolves sends it to onboarding.
+   */
+  @Test
+  fun `no spelling of a gated path renders it to a verified caller who has not onboarded`() =
+    testApplication {
+      val email = WebAuthTestSupport.uniqueEmail()
+      WebAuthTestSupport.seedUser(email)
+      application { testPublicWebModule() }
+
+      assertEverySpellingRefused(WebAuthTestSupport.login(email), GET_STARTED)
+    }
+
+  /**
    * Walks EVERY spelling and reports EVERY one that got through, rather than
    * stopping at the first.
    *
@@ -163,6 +178,7 @@ class GatedPathSpellingTest {
   private companion object {
     const val SIGN_IN = "/sign-in"
     const val VERIFY_EMAIL = "/verify-email"
+    const val GET_STARTED = "/get-started"
 
     /** Text that appears only on the two gated pages. */
     val ACCOUNT_MARKERS = listOf("Your account", "Change your email")

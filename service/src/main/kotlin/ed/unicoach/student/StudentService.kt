@@ -29,11 +29,21 @@ class StudentService(
   private val clock: Clock = Clock.systemUTC(),
 ) {
   companion object {
-    private const val GRADUATION_DATE_FIELD = "expectedHighSchoolGraduationDate"
+    const val GRADUATION_DATE_FIELD = "expectedHighSchoolGraduationDate"
     const val DATE_OF_BIRTH_FIELD = "dateOfBirth"
 
     /** COPPA's line: a general-audience service that never collects from an under-13 stays outside it. */
     const val MINIMUM_AGE_YEARS = 13L
+
+    /**
+     * What a refused signup is told when the date of birth is below the floor
+     * (RFC 222): the one wording every door says it in — the REST `403` and the
+     * web's signup form (RFC 268) — written beside the floor it states, so
+     * raising the floor changes the sentence with it.
+     */
+    val UNDER_MINIMUM_AGE_MESSAGE: String =
+      "unicoach is for students who are $MINIMUM_AGE_YEARS or older. " +
+        "Ask a parent to get in touch if you think this is wrong."
 
     /**
      * A sanity ceiling, not a compliance rule: past it the date is a typo, not a

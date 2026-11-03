@@ -50,9 +50,9 @@ private suspend fun RoutingContext.respondUnderMinimumAge() {
     HttpStatusCode.Forbidden,
     ErrorResponse(
       ErrorCode.AGE_REQUIREMENT_NOT_MET,
-      // The floor is stated once, by its owner: raising it there must change this sentence too.
-      "unicoach is for students who are ${StudentService.MINIMUM_AGE_YEARS} or older. " +
-        "Ask a parent to get in touch if you think this is wrong.",
+      // The sentence is its owner's, beside the floor it states (RFC 268): the
+      // web's signup form says the same words.
+      StudentService.UNDER_MINIMUM_AGE_MESSAGE,
     ),
   )
 }

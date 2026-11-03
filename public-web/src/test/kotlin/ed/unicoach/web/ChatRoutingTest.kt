@@ -9,9 +9,8 @@ import ed.unicoach.web.ChatTestSupport.sendMessage
 import ed.unicoach.web.ChatTestSupport.signedInStudent
 import ed.unicoach.web.ChatTestSupport.textReplay
 import ed.unicoach.web.render.CHAT_EMPTY_PROMPT
-import ed.unicoach.web.render.GET_STARTED_DETAIL
-import ed.unicoach.web.render.GET_STARTED_HEADING
 import ed.unicoach.web.render.NOSCRIPT_LINE
+import ed.unicoach.web.render.ROLE_CHOICE_QUESTION
 import io.ktor.client.request.forms.FormDataContent
 import io.ktor.client.request.get
 import io.ktor.client.request.header
@@ -160,7 +159,7 @@ class ChatRoutingTest {
     }
   }
 
-  /** Test 14: the student gate — no `students` row is sent to sign up, a parent to their account. */
+  /** Test 14: the student gate — no role is sent to onboarding, a parent to their account. */
   @Test
   fun `a verified user with no student row is sent to get-started, before any chat handler runs`() {
     testApplication {
@@ -179,9 +178,9 @@ class ChatRoutingTest {
       assertEquals("/get-started", post.headers[HttpHeaders.Location])
       assertEquals(0, WebAuthTestSupport.count("SELECT count(*) FROM convos"), "no turn may run for a caller with no student")
 
-      val placeholder = Jsoup.parse(getAs("/get-started", token).bodyAsText())
-      assertEquals(GET_STARTED_HEADING, placeholder.selectFirst("h1")?.text())
-      assertTrue(placeholder.text().contains(GET_STARTED_DETAIL))
+      // Where they are sent is onboarding's role choice (RFC 268).
+      val onboarding = Jsoup.parse(getAs("/get-started", token).bodyAsText())
+      assertEquals(ROLE_CHOICE_QUESTION, onboarding.selectFirst("h2")?.text())
     }
   }
 

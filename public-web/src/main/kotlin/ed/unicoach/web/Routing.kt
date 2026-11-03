@@ -9,6 +9,7 @@ import ed.unicoach.auth.RegisterResult
 import ed.unicoach.auth.SessionMetadataService
 import ed.unicoach.auth.VerifyEmailResult
 import ed.unicoach.coaching.CoachingService
+import ed.unicoach.coaching.moneyprofile.MoneyProfileService
 import ed.unicoach.common.config.TOKEN_QUERY_PARAM
 import ed.unicoach.db.models.User
 import ed.unicoach.db.models.UserId
@@ -21,25 +22,27 @@ import ed.unicoach.family.InvitePreviewOutcome
 import ed.unicoach.family.SupporterInviteService
 import ed.unicoach.family.SupporterLinkRequestService
 import ed.unicoach.family.SupporterService
+import ed.unicoach.student.AccountRoleService
 import ed.unicoach.student.StudentService
+import ed.unicoach.vocabulary.VocabularyService
 import ed.unicoach.web.assets.WebAssets
 import ed.unicoach.web.auth.ACCOUNT_PATH
 import ed.unicoach.web.auth.CHANGE_EMAIL_PATH
 import ed.unicoach.web.auth.CHAT_PATH
 import ed.unicoach.web.auth.HOME_PATH
+import ed.unicoach.web.auth.HandledAccess
 import ed.unicoach.web.auth.REGISTER_PATH
 import ed.unicoach.web.auth.RESEND_VERIFICATION_PATH
 import ed.unicoach.web.auth.SIGN_IN_PATH
 import ed.unicoach.web.auth.SIGN_OUT_PATH
 import ed.unicoach.web.auth.VERIFY_EMAIL_PATH
-import ed.unicoach.web.auth.WebAccess
 import ed.unicoach.web.auth.WebCaller
 import ed.unicoach.web.auth.clearWebSessionCookie
+import ed.unicoach.web.auth.getOnboarded
 import ed.unicoach.web.auth.getSignedIn
-import ed.unicoach.web.auth.getVerified
 import ed.unicoach.web.auth.handleAccess
+import ed.unicoach.web.auth.postOnboarded
 import ed.unicoach.web.auth.postSignedIn
-import ed.unicoach.web.auth.postVerified
 import ed.unicoach.web.auth.resolveWebCaller
 import ed.unicoach.web.auth.respondGateRedirect
 import ed.unicoach.web.auth.sessionCookieToken
@@ -87,7 +90,8 @@ import ed.unicoach.web.render.signedInNav
 import ed.unicoach.web.report.CostReportOutcome
 import ed.unicoach.web.report.CostReportSource
 import ed.unicoach.web.report.MissReason
-import ed.unicoach.web.signup.getStartedRoute
+import ed.unicoach.web.signup.OnboardingServices
+import ed.unicoach.web.signup.getStartedRoutes
 import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.Parameters
@@ -289,6 +293,9 @@ fun Application.installPublicWebRouting(
   coachingService: CoachingService,
   studentService: StudentService,
   sessionMetadataService: SessionMetadataService,
+  accountRoleService: AccountRoleService,
+  moneyProfileService: MoneyProfileService,
+  vocabularyService: VocabularyService,
 ) {
   install(StatusPages) {
     status(HttpStatusCode.NotFound) { call, _ ->
@@ -390,15 +397,21 @@ fun Application.installPublicWebRouting(
       supporterService,
       linkRequestService,
       sessionMetadataService,
+      accountRoleService,
     )
 
     reportRoute(costReportSource, authService, sessionConfig, linkRequestService)
 
     inviteRoute(supporterInviteService, authService, sessionConfig)
 
-    chatRoutes(coachingService, studentService, supporterService, authService, sessionConfig)
+    chatRoutes(coachingService, accountRoleService, authService, sessionConfig)
 
-    getStartedRoute(studentService, authService, sessionConfig)
+    getStartedRoutes(
+      OnboardingServices(accountRoleService, studentService, supporterService, moneyProfileService, vocabularyService),
+      sessionMetadataService,
+      authService,
+      sessionConfig,
+    )
 
     // ONE name for the classpath package this mount serves, read from
     // [WebAssets] — the same constant [WebAssets] resolves the packaged bundle
@@ -641,6 +654,7 @@ private fun Route.authRoutes(
   supporterService: SupporterService,
   linkRequestService: SupporterLinkRequestService,
   sessionMetadata: SessionMetadataService,
+  accountRoles: AccountRoleService,
 ) {
   // `/invite` sends a signed-out recipient to these two doors with the RAW
   // invite token in the query string, so both scope it secret exactly as
@@ -847,12 +861,12 @@ private fun Route.authRoutes(
     call.respondSeeOther(noticeUrl(VERIFY_EMAIL_PATH, WebNotice.RESENT))
   }
 
-  getVerified(ACCOUNT_PATH, authService, sessionConfig) { caller ->
+  getOnboarded(ACCOUNT_PATH, authService, sessionConfig, accountRoles) { caller ->
     val isSupporter = supporterService.find(caller.user.id).getOrThrow() != null
     call.respondAccountPage(caller.user, isSupporter, caller.signedInNav, notice = call.requestedNotice())
   }
 
-  getVerified(CHANGE_EMAIL_PATH, authService, sessionConfig) { caller ->
+  getOnboarded(CHANGE_EMAIL_PATH, authService, sessionConfig, accountRoles) { caller ->
     // The draft a refused submission left, values only: its error belonged to
     // that attempt (RFC 265).
     val draft = caller.draftFor(CHANGE_EMAIL_DRAFT)
@@ -863,7 +877,7 @@ private fun Route.authRoutes(
     )
   }
 
-  postVerified(CHANGE_EMAIL_PATH, authService, sessionConfig) { caller ->
+  postOnboarded(CHANGE_EMAIL_PATH, authService, sessionConfig, accountRoles) { caller ->
     // A body that is not a form, or that carries zero or two `email` fields, is
     // not this form's submission: re-render at 400 without inventing a rule the
     // web tier does not own. The empty message says no `:service` rule fired
@@ -871,7 +885,7 @@ private fun Route.authRoutes(
     // typing of the family's here to keep.
     val newEmail =
       call.formParametersOrNull()?.formField(EMAIL_FIELD)
-        ?: return@postVerified call.respondChangeEmailPage(caller.user, caller.signedInNav, ChangeEmailFormState.Invalid("", ""))
+        ?: return@postOnboarded call.respondChangeEmailPage(caller.user, caller.signedInNav, ChangeEmailFormState.Invalid("", ""))
 
     when (val result = authService.changeEmail(caller.user, newEmail).getOrThrow()) {
       is ChangeEmailResult.Success -> {
@@ -1120,7 +1134,7 @@ private fun Route.reportRoute(
   route(REPORT_CONNECT_PATH) {
     secretQueryParams(REPORT_FIELD)
     post {
-      handleAccess(WebAccess.SIGNED_IN, authService, sessionConfig) { caller ->
+      handleAccess(HandledAccess.SIGNED_IN, authService, sessionConfig) { caller ->
         val presented = presentedToken(call.formParametersOrNull()?.getAll(REPORT_FIELD))
         val notice =
           claimPresentedReport(linkRequestService, presented, caller.user.id, REPORT_CONNECT_PATH)
@@ -1238,7 +1252,7 @@ private fun Route.inviteRoute(
       // SIGNED_IN but NOT VERIFIED (correction X8), through the same wrapper the
       // auth routes use so the access class is stated once rather than resolved
       // by hand.
-      handleAccess(WebAccess.SIGNED_IN, authService, sessionConfig) { caller ->
+      handleAccess(HandledAccess.SIGNED_IN, authService, sessionConfig) { caller ->
         val token =
           when (val presented = presentedToken(call.formParametersOrNull()?.getAll(TOKEN_FIELD))) {
             // Every other miss on this door logs WHY before rendering the

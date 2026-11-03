@@ -116,10 +116,10 @@ class WebAuthGateTest {
     }
 
   @Test
-  fun `a signed-in and verified caller reaches the account page`() =
+  fun `a signed-in, verified and onboarded caller reaches the account page`() =
     testApplication {
       val email = WebAuthTestSupport.uniqueEmail()
-      WebAuthTestSupport.seedUser(email, verified = true)
+      WebAuthTestSupport.seedStudentUser(email)
       application { testPublicWebModule() }
       val token = WebAuthTestSupport.login(email)
 

@@ -1,6 +1,7 @@
 package ed.unicoach.web
 
 import ed.unicoach.web.auth.CHAT_PATH
+import ed.unicoach.web.auth.STUDENT_FORM_PATH
 import ed.unicoach.web.auth.STUDENT_SIGNUP_PATH
 import ed.unicoach.web.common.http.CONTENT_SECURITY_POLICY
 import ed.unicoach.web.common.http.CONTENT_SECURITY_POLICY_HEADER
@@ -401,14 +402,18 @@ class CspConformanceTest {
       },
     )
 
-    // The signed-in pages (RFC 262): the chat, fetched as a student, and its
-    // precondition page, fetched as a verified user with no student row. Both
-    // are pages a browser renders under the same policy, so they are walked like
-    // every public one.
+    // The signed-in pages (RFC 262): the chat, fetched as a student, and the
+    // two onboarding pages (RFC 268), fetched as a verified user with no role.
+    // All are pages a browser renders under the same policy, so they are walked
+    // like every public one.
     val (_, studentToken) = ChatTestSupport.signedInStudent()
     val nonStudent = WebAuthTestSupport.seedUser(WebAuthTestSupport.uniqueEmail())
     val nonStudentToken = WebAuthTestSupport.login(nonStudent.email.value)
-    for ((path, token) in listOf(CHAT_PATH to studentToken, STUDENT_SIGNUP_PATH to nonStudentToken)) {
+    for ((path, token) in listOf(
+      CHAT_PATH to studentToken,
+      STUDENT_SIGNUP_PATH to nonStudentToken,
+      STUDENT_FORM_PATH to nonStudentToken,
+    )) {
       action(path, HttpStatusCode.OK, client.get(path) { header(HttpHeaders.Cookie, WebAuthTestSupport.cookieHeader(token)) })
     }
   }
@@ -574,7 +579,8 @@ class CspConformanceTest {
      * Declared ABOVE [EVALUATED_GET_ROUTES], which reads it: companion
      * properties initialise in order.
      */
-    val SIGNED_IN_GET_ROUTES = listOf(HttpMethod.Get to CHAT_PATH, HttpMethod.Get to STUDENT_SIGNUP_PATH)
+    val SIGNED_IN_GET_ROUTES =
+      listOf(HttpMethod.Get to CHAT_PATH, HttpMethod.Get to STUDENT_SIGNUP_PATH, HttpMethod.Get to STUDENT_FORM_PATH)
 
     /** Never a live token: the confirm step makes no backend call, and the fake verifier refuses this one. */
     const val NOT_A_REAL_TOKEN = "not-a-real-token"

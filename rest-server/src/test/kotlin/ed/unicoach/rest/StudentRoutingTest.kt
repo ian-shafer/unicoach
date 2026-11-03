@@ -186,6 +186,13 @@ class StudentRoutingTest {
       assertEquals(HttpStatusCode.Forbidden, response.status)
       val body = response.bodyAsText()
       assertTrue(body.contains("age_requirement_not_met"), "Expected the age code, got: $body")
+      // The sentence the iOS banner shows, word for word as it was before it
+      // moved to :service (RFC 268) — a literal, so a change to it is a change
+      // this test is told about.
+      assertEquals(
+        "unicoach is for students who are 13 or older. Ask a parent to get in touch if you think this is wrong.",
+        mapper.readTree(body).get("message").asText(),
+      )
       // The refusal stores nothing -- that is the whole point of the gate.
       assertEquals(0, studentRowCount(underThirteen.toString()), "A refused creation must write no students row")
     }
