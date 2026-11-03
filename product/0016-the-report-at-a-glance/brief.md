@@ -5,9 +5,9 @@
 ## Status
 
 - **Phase:** EXECUTE — gates 1 and 2 passed 2026-10-26; five slices in
-  `spec.md`; `glance/01` (RFC 260) and `glance/02` (no RFC, spec 2) LANDED;
-  `glance/03`, `glance/04` and `glance/05` are unblocked (D12). /slice appends
-  the ledger below after each land.
+  `spec.md`; `glance/01` (RFC 260), `glance/02` and `glance/03` (no RFC, spec 2)
+  LANDED; `glance/04` and `glance/05` are unblocked (D12). /slice appends the
+  ledger below after each land.
 - **Gate 1 (prioritisation):** **PASSED 2026-10-26 — Ian approved all eight
   defaults, verbatim: "approve all"**, after two questions and one amendment
   recorded under D3 below. D1-D8 stand as written. D8 is `standing` for the
@@ -62,6 +62,28 @@
     tables, 67.4% prose) to 1,241 (469 in tables, 62.2% prose). 36 lenses, 2
     should-fix findings fixed (one a plan-wording drift); 4,708 tests green;
     module-source hook passed.
+  - `glance/03/scholarships-in-rows` LANDED without an RFC (/work
+    `ship-scholarships-in-rows`, spec 2, `main@9af847df`, 2026-11-02) — each
+    published automatic-scholarship grid is one table (Scholarship, Test score,
+    GPA, then "Pays a year" when every band is a dollar figure or "Pays" when
+    any band is the school's own words, so the header never calls those words
+    per-year; a column only when some band fills it, an unfilled cell "none
+    published"), captioned with the publisher and read date, the no-score-effect
+    sentence where it applies, the score requirement or its silence, and the
+    score deadline. Each National Merit row is a `<dl>`: Scholarship (when
+    named), For, Paid or considered, A year, In total (years beside the total;
+    on the yearly figure only when there is no total), The school's words, First
+    choice, Apply by; a words-only row has no money pair. K4 is said once in the
+    kinds section: "A National Merit scholarship marked paid is paid to every
+    student holding that standing who meets the school's terms; one marked
+    considered is not promised." The per-row guarantee sentences go.
+    `UNCONVERTED_BLOCKS` is now `report-program-return` alone; `glance/04`
+    empties it and deletes the mechanism. The coach is untouched. Measured on
+    the every-block render: 1,673 visible words (499 in tables, 70.2% prose) to
+    1,695 (539 in tables, 68.2%); the three-school render has neither block and
+    is unchanged at 1,241. 36 lenses, 2 should-fix fixed (a CSS override that
+    won only by source order; money formatting inlined in the row assembler);
+    4,963 tests green; module-source hook passed.
 
 ## The question
 
