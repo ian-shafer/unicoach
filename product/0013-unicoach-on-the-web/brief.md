@@ -411,6 +411,31 @@ THIS file, so the line lives here and the spec points at it):
   gate green at scope `full`. Open: two interim notices to confirm; web/06–08
   each add their own draft message under D11.
 
+- `web/06/onboarding` LANDED as RFC 268 (main@ee85b406, 2026-11-03) — onboarding
+  on the web, and it is REQUIRED: a verified account that is neither a student
+  nor a supporter answers "Who are you here for?" at `/get-started` (the iOS RFC
+  241 shape) before it can reach the chat or any account page — `/chat*` and
+  `/account*` are a new route-declared `ONBOARDED` access class, and one
+  `AccountRoleService` in `:service` answers student / supporter / neither for
+  every check. "I'm supporting a student" makes the supporter row and lands on
+  `/account`; "I'm the student" opens one form (date of birth, graduation date
+  as year, year+month or full date in selects — never a bare date input — and
+  state and income, optional, blank meaning unanswered), whose success creates
+  the student and lands in the chat. The form is on the RFC 265 draft rail
+  (`StudentSignupDraft`, approved under D11); the date of birth is NEVER in the
+  draft and an under-13 refusal clears it (RFC 222). Copy is the iOS app's
+  verbatim. **Ian at approval (2026-11-02), D-E: "We should force the student
+  (or supporter) through the onboarding steps. It makes no sense for them to be
+  able to "use" the app without onboarding"** — this overrides, for the web, the
+  slice's value-before-ask framing (brief 0001 D12), its "every field can be
+  skipped" criterion and its menu door; D-A made date of birth and graduation
+  date required (the age floor and the schema already did). Living plan and
+  dependency are left to `web/07`. Full gate green at scope `full-gated`. Open:
+  **the D19 device matrix was NOT run**; interim copy to confirm (month
+  abbreviations `Jan`…`Dec`, required by RFC 227's one-date-seam rule; "Not
+  answered"; "(optional)"; "Choose a month to give a day."; the role choice
+  omits iOS's two button captions).
+
 ## Research
 
 - research/ios-feature-inventory.md — every iOS screen/flow, endpoints, 23-row
