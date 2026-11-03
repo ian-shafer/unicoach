@@ -7,6 +7,7 @@
 package ed.unicoach.rest
 
 import com.typesafe.config.Config
+import ed.unicoach.account.AccountErasureConfig
 import ed.unicoach.appstore.AppStoreServerApi
 import ed.unicoach.appstore.AppStoreTestFixtures
 import ed.unicoach.appstore.AppleJwsVerifier
@@ -57,6 +58,8 @@ fun supporterInviteConfigFrom(config: Config): SupporterInviteConfig = Supporter
 
 /** The supporter coach's config block (RFC 258), the same mechanical `appModule` ripple. */
 fun supporterCoachingConfigFrom(config: Config): SupporterCoachingConfig = SupporterCoachingConfig.from(config).getOrThrow()
+
+fun accountErasureConfigFrom(config: Config): AccountErasureConfig = AccountErasureConfig.from(config).getOrThrow()
 
 /**
  * A minted root nothing in the suite holds the signing key for — the anchor a

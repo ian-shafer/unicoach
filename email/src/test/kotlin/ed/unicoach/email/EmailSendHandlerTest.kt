@@ -5,6 +5,7 @@ import ed.unicoach.common.json.asJson
 import ed.unicoach.db.Database
 import ed.unicoach.db.DatabaseConfig
 import ed.unicoach.db.dao.RawSql
+import ed.unicoach.db.models.UserId
 import ed.unicoach.queue.JobResult
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.runBlocking
@@ -104,7 +105,7 @@ class EmailSendHandlerTest {
       to = to,
       template = EmailTemplate.EMAIL_VERIFICATION,
       context = JsonObject(mapOf("verifyToken" to JsonPrimitive(token))),
-      userId = null,
+      account = null,
     ).asJson()
 
   private fun countRows(): Int =
@@ -179,11 +180,91 @@ class EmailSendHandlerTest {
           to = "user@example.com",
           template = EmailTemplate.EMAIL_VERIFICATION,
           context = JsonObject(mapOf("verifyToken" to JsonPrimitive("tok"))),
-          userId = recipient.toString(),
+          account = EmailAccountKey.Live(UserId(recipient)),
         ).asJson()
 
       assertEquals(JobResult.Success, handler(FakeEmailProvider(ProviderResult.Sent("pm-1"))).execute(payload))
       assertEquals(listOf<java.util.UUID?>(recipient), loggedUserIds())
+    }
+  }
+
+  /** An erased account's row in deleted_users, which `email_sends.deleted_user_id` references. */
+  private fun erasedAccount(): java.util.UUID {
+    val id = account()
+    DriverManager.getConnection(jdbcUrl, dbUser, dbPassword ?: "").use { c ->
+      c.prepareStatement("INSERT INTO deleted_users (id, created_at, closed_at) VALUES (?, NOW(), NOW())").use { stmt ->
+        stmt.setObject(1, id)
+        stmt.executeUpdate()
+      }
+    }
+    return id
+  }
+
+  /** Each row's (user_id, deleted_user_id). */
+  private fun loggedKeys(): List<Pair<java.util.UUID?, java.util.UUID?>> {
+    DriverManager.getConnection(jdbcUrl, dbUser, dbPassword ?: "").use { c ->
+      c.prepareStatement("SELECT user_id, deleted_user_id FROM email_sends").use { stmt ->
+        stmt.executeQuery().use { rs ->
+          return buildList {
+            while (rs.next()) {
+              add(rs.getObject("user_id", java.util.UUID::class.java) to rs.getObject("deleted_user_id", java.util.UUID::class.java))
+            }
+          }
+        }
+      }
+    }
+  }
+
+  private fun keyedPayload(account: EmailAccountKey): JsonObject =
+    EmailJobPayload(
+      to = "user@example.com",
+      template = EmailTemplate.EMAIL_VERIFICATION,
+      context = JsonObject(mapOf("verifyToken" to JsonPrimitive("tok"))),
+      account = account,
+    ).asJson()
+
+  /** A payload as the wire can carry it, account keys and all: one no producer can build. */
+  private fun wirePayload(accountKeys: String): JsonObject =
+    Json.decodeFromString<JsonObject>(
+      """{"to":"user@example.com","template":"EMAIL_VERIFICATION","context":{"verifyToken":"tok"},$accountKeys}""",
+    )
+
+  /** RFC 267: the deletion receipt is recorded against the erased account, and only it. */
+  @Test
+  fun `a job naming an erased account records its deleted_user_id, and one naming a live account its user_id`() {
+    runBlocking {
+      val erased = erasedAccount()
+      val live = account()
+
+      assertEquals(
+        JobResult.Success,
+        handler(FakeEmailProvider(ProviderResult.Sent("pm-1"))).execute(keyedPayload(EmailAccountKey.Deleted(UserId(erased)))),
+      )
+      assertEquals(listOf<Pair<java.util.UUID?, java.util.UUID?>>(null to erased), loggedKeys())
+
+      assertEquals(
+        JobResult.Success,
+        handler(FakeEmailProvider(ProviderResult.Sent("pm-2"))).execute(keyedPayload(EmailAccountKey.Live(UserId(live)))),
+      )
+      assertEquals(listOf<Pair<java.util.UUID?, java.util.UUID?>>(null to erased, live to null), loggedKeys())
+    }
+  }
+
+  /** A send is recorded against one account or none: a payload naming two is a poison message. */
+  @Test
+  fun `a job naming both a live and an erased account returns PermanentFailure and sends nothing`() {
+    runBlocking {
+      val provider = FakeEmailProvider(ProviderResult.Sent("pm-1"))
+      val live = account()
+      val erased = erasedAccount()
+
+      val failure =
+        assertIs<JobResult.PermanentFailure>(
+          handler(provider).execute(wirePayload(""""userId":"$live","deletedUserId":"$erased"""")),
+        )
+      assertTrue(failure.message.contains(erased.toString()), "Message must name both ids, got: ${failure.message}")
+      assertNull(provider.captured, "No send may be attempted for a payload naming two accounts")
+      assertEquals(0, countRows())
     }
   }
 
@@ -209,15 +290,7 @@ class EmailSendHandlerTest {
   fun `a job naming a malformed account id returns PermanentFailure and sends nothing`() {
     runBlocking {
       val provider = FakeEmailProvider(ProviderResult.Sent("pm-1"))
-      val payload =
-        EmailJobPayload(
-          to = "user@example.com",
-          template = EmailTemplate.EMAIL_VERIFICATION,
-          context = JsonObject(mapOf("verifyToken" to JsonPrimitive("tok"))),
-          userId = "not-a-uuid",
-        ).asJson()
-
-      val failure = assertIs<JobResult.PermanentFailure>(handler(provider).execute(payload))
+      val failure = assertIs<JobResult.PermanentFailure>(handler(provider).execute(wirePayload(""""userId":"not-a-uuid"""")))
       assertTrue(failure.message.contains("not-a-uuid"), "Message must carry the bad id, got: ${failure.message}")
       assertNull(provider.captured, "No send may be attempted for a malformed account id")
       assertEquals(0, countRows())
@@ -327,7 +400,7 @@ class EmailSendHandlerTest {
           to = "user@example.com",
           template = EmailTemplate.EMAIL_VERIFICATION,
           context = JsonObject(mapOf("unexpectedField" to JsonPrimitive("sentinel-value"))),
-          userId = null,
+          account = null,
         ).asJson()
       val result = handler(provider, renderers = listOf(failingRenderer)).execute(payload)
 

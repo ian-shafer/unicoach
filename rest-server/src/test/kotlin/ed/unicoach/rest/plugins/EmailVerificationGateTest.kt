@@ -6,6 +6,7 @@ import ed.unicoach.common.config.AppConfig
 import ed.unicoach.db.Database
 import ed.unicoach.db.DatabaseConfig
 import ed.unicoach.db.dao.RawSql
+import ed.unicoach.rest.accountErasureConfigFrom
 import ed.unicoach.rest.appModule
 import ed.unicoach.rest.auth.SessionConfig
 import ed.unicoach.rest.config.ClientKeyGateConfig
@@ -440,5 +441,6 @@ private fun io.ktor.server.application.Application.moduleWith(
     costReportConfigFrom(config),
     supporterInviteConfigFrom(config),
     supporterCoachingConfigFrom(config),
+    accountErasureConfigFrom(config),
   )
 }

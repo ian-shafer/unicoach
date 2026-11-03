@@ -349,7 +349,7 @@ class QueueWorkerTest {
 
         // Reaper sweeps completed jobs older than 1 minute, checking every 50ms
         val worker =
-          QueueWorker(database, jobsDao, emptyList(), completedJobRetention = 1.minutes, completedJobReapInterval = 50.milliseconds)
+          QueueWorker(database, jobsDao, emptyList(), finishedJobRetention = 1.minutes, finishedJobReapInterval = 50.milliseconds)
         val scope = kotlinx.coroutines.CoroutineScope(Dispatchers.IO)
         worker.start(scope)
 
@@ -366,6 +366,103 @@ class QueueWorkerTest {
         assertTrue(res is JobFindResult.NotFound)
       }
     }
+
+  /** Sets [jobId]'s status and finish time, past the trigger that would stamp `updated_at` with NOW(). */
+  private fun finish(
+    jobId: UUID,
+    status: JobStatus,
+    daysAgo: Int,
+  ) {
+    database.createRawConnection().use { conn ->
+      conn.createStatement().use { stmt ->
+        stmt.execute("ALTER TABLE jobs DISABLE TRIGGER trigger_03_enforce_jobs_updated_at")
+        try {
+          stmt.execute(
+            "UPDATE jobs SET status = '${status.value}', updated_at = NOW() - INTERVAL '$daysAgo days' WHERE id = '$jobId'",
+          )
+        } finally {
+          stmt.execute("ALTER TABLE jobs ENABLE TRIGGER trigger_03_enforce_jobs_updated_at")
+        }
+        stmt.execute(
+          "INSERT INTO job_attempts (job_id, attempt_number, started_at, status) " +
+            "VALUES ('$jobId', 1, NOW() - INTERVAL '$daysAgo days', 'RETRIABLE_FAILURE')",
+        )
+      }
+    }
+  }
+
+  private fun attemptCount(jobId: UUID): Long =
+    database.createRawConnection().use { conn ->
+      conn.prepareStatement("SELECT count(*) FROM job_attempts WHERE job_id = ?").use { stmt ->
+        stmt.setObject(1, jobId)
+        stmt.executeQuery().use { rs ->
+          rs.next()
+          rs.getLong(1)
+        }
+      }
+    }
+
+  /** Brief 0002 D13: every finished job is reaped 30 days after it finished; an unfinished one never is. */
+  @Test
+  fun `the reaper deletes completed and dead-lettered jobs past retention and keeps the rest`() {
+    runBlocking {
+      withTimeout(15.seconds) {
+        val reaped = listOf(JobStatus.COMPLETED, JobStatus.DEAD_LETTERED).map { status -> enqueue().also { finish(it, status, 31) } }
+        val keptRecent = listOf(JobStatus.COMPLETED, JobStatus.DEAD_LETTERED).map { status -> enqueue().also { finish(it, status, 29) } }
+        val keptUnfinished = listOf(JobStatus.SCHEDULED, JobStatus.RUNNING).map { status -> enqueue().also { finish(it, status, 400) } }
+
+        // The default retention (30 days) and stuck-job interval; only the reap interval is short.
+        val worker = QueueWorker(database, jobsDao, emptyList(), finishedJobReapInterval = 50.milliseconds)
+        worker.start(kotlinx.coroutines.CoroutineScope(Dispatchers.IO))
+        try {
+          while (reaped.any { jobsDao.findById(session, it) !is JobFindResult.NotFound }) delay(50)
+          // A few more passes, so a reaper that took the kept rows too would have done so.
+          delay(300)
+        } finally {
+          worker.stop(5.seconds)
+        }
+
+        reaped.forEach { assertEquals(0L, attemptCount(it), "a reaped job's attempts go with it") }
+        assertEquals(
+          listOf(JobStatus.COMPLETED, JobStatus.DEAD_LETTERED, JobStatus.SCHEDULED, JobStatus.RUNNING),
+          (keptRecent + keptUnfinished).map { (jobsDao.findById(session, it) as JobFindResult.Success).job.status },
+          "a job finished 29 days ago, and an unfinished one of any age, is kept",
+        )
+        (keptRecent + keptUnfinished).forEach { assertEquals(1L, attemptCount(it)) }
+      }
+    }
+  }
+
+  /** RFC 267 D-C: a dead-letter is an operator alert, so it is one ERROR line, for every job type. */
+  @Test
+  fun `a dead-lettered job logs one ERROR line naming its type and id`() {
+    runBlocking {
+      withTimeout(15.seconds) {
+        val logger = org.slf4j.LoggerFactory.getLogger(QueueWorker::class.java) as ch.qos.logback.classic.Logger
+        val appender =
+          ch.qos.logback.core.read
+            .ListAppender<ch.qos.logback.classic.spi.ILoggingEvent>()
+            .apply { start() }
+        logger.addAppender(appender)
+        val jobId = enqueue()
+        val handler = TestHandler { JobResult.PermanentFailure("the payload names nobody") }
+        val worker = QueueWorker(database, jobsDao, listOf(handler))
+        worker.start(kotlinx.coroutines.CoroutineScope(Dispatchers.IO))
+        try {
+          awaitStatus(jobId, JobStatus.DEAD_LETTERED)
+        } finally {
+          worker.stop(5.seconds)
+          logger.detachAppender(appender)
+        }
+
+        val errors = appender.list.filter { it.level == ch.qos.logback.classic.Level.ERROR }.map { it.formattedMessage }
+        assertEquals(1, errors.size, "one ERROR line per dead-letter; got $errors")
+        assertTrue(errors.single().contains(jobId.toString()), "the line names the job: ${errors.single()}")
+        assertTrue(errors.single().contains(JobType.TEST_JOB.value), "and its type: ${errors.single()}")
+        assertTrue(errors.single().contains("the payload names nobody"), "and its last error: ${errors.single()}")
+      }
+    }
+  }
 
   @Test
   fun `worker respects per-job-type concurrency`() =

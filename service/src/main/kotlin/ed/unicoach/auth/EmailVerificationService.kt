@@ -9,6 +9,7 @@ import ed.unicoach.db.models.NewVerificationToken
 import ed.unicoach.db.models.TokenHash
 import ed.unicoach.db.models.User
 import ed.unicoach.db.models.UserId
+import ed.unicoach.email.EmailAccountKey
 import ed.unicoach.email.EmailJobPayload
 import ed.unicoach.email.EmailTemplate
 import ed.unicoach.queue.EnqueueResult
@@ -77,7 +78,7 @@ class EmailVerificationService(
         to = to.value,
         template = EmailTemplate.EMAIL_VERIFICATION,
         context = VerificationEmailContext(verifyToken = rawToken).asJson(),
-        userId = userId.asString,
+        account = EmailAccountKey.Live(userId),
       )
     return when (val result = queueService.enqueue(session, JobType.SEND_EMAIL, payload.asJson())) {
       is EnqueueResult.Success -> Result.success(Unit)

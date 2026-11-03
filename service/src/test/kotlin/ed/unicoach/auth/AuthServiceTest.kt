@@ -15,6 +15,7 @@ import ed.unicoach.db.models.NewUser
 import ed.unicoach.db.models.PasswordHash
 import ed.unicoach.db.models.PersonName
 import ed.unicoach.db.models.TokenHash
+import ed.unicoach.email.EmailAccountKey
 import ed.unicoach.util.Argon2Hasher
 import ed.unicoach.util.TokenGenerator
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -433,11 +434,17 @@ class AuthServiceTest {
       val email = "verify_account@example.com"
       val reg = authService.register(email, "Verify Account", "Password123", null, Duration.ofDays(1), null, null)
       val user = (reg.getOrThrow() as RegisterResult.Success).user
-      assertEquals(listOf(user.id.asString), SendEmailJobQueries.payloads(connection).filter { it.to == email }.map { it.userId })
+      assertEquals(
+        listOf(EmailAccountKey.Live(user.id)),
+        SendEmailJobQueries.payloads(connection).filter { it.to == email }.map { it.account },
+      )
 
       val newEmail = "verify_account_new@example.com"
       assertIs<ChangeEmailResult.Success>(authService.changeEmail(user, newEmail).getOrThrow())
-      assertEquals(listOf(user.id.asString), SendEmailJobQueries.payloads(connection).filter { it.to == newEmail }.map { it.userId })
+      assertEquals(
+        listOf(EmailAccountKey.Live(user.id)),
+        SendEmailJobQueries.payloads(connection).filter { it.to == newEmail }.map { it.account },
+      )
     }
   }
 

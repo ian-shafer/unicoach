@@ -114,6 +114,12 @@ object AdminTestSupport {
       .from(config)
       .getOrThrow()
 
+  /** service.conf's grace, as `Application.kt` reads it; admin Delete schedules on it (RFC 267). */
+  val accountErasureConfig =
+    ed.unicoach.account.AccountErasureConfig
+      .from(config)
+      .getOrThrow()
+
   val database = Database(dbConfig)
   val argon2Hasher = Argon2Hasher()
   private val queueService = ed.unicoach.queue.QueueService(database)
@@ -155,6 +161,7 @@ object AdminTestSupport {
       queueService,
       adminConfig,
       requestLoggingConfig,
+      accountErasureConfig,
       afterVerified,
     )
   }

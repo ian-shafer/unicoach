@@ -216,3 +216,5 @@ erasure-edge.sql
 erasure-functions.sql
 erasure-guard-arm.sql
 spend-views-account-indexes.sql
+erasure-walk-leaves-jobs.sql
+schedule-erasure-of-closed-accounts.sql

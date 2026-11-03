@@ -35,17 +35,6 @@ class InvalidRecipientException(
 ) : RuntimeException("Invalid recipient [$recipient] for template [$template]: [$validationError]"),
   PermanentError
 
-// A SEND_EMAIL job's payload named a recipient account id that is not a UUID.
-// Permanent (poison message): the id will never parse on retry, and sending
-// without it would log the mail where account erasure cannot reach it.
-class InvalidRecipientAccountException(
-  val recipient: String,
-  val template: EmailTemplate,
-  val userId: String,
-  override val cause: Throwable,
-) : RuntimeException("Invalid recipient account id [$userId] for [$recipient] and template [$template]", cause),
-  PermanentError
-
 // A SEND_EMAIL job named a template with no registered renderer. Permanent: the
 // renderer set is fixed at worker construction, so a retry resolves nothing.
 class UnresolvableTemplateException(

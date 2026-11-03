@@ -1,5 +1,7 @@
 package ed.unicoach.worker
 
+import ed.unicoach.account.AccountErasureHandler
+import ed.unicoach.account.AccountErasureService
 import ed.unicoach.appstore.AppStoreConfig
 import ed.unicoach.appstore.AppStoreServerApiFactory
 import ed.unicoach.auth.EmailVerificationConfig
@@ -128,6 +130,12 @@ fun main() {
           // below. Without it a REFRESH_SUBSCRIPTION the webhook enqueued would sit
           // unhandled and every paying subscriber's row would go stale on renewal.
           add(SubscriptionRefreshHandler(SubscriptionService(database, appStore.api, subscriptionPlans)))
+
+          // Registered unconditionally too (RFC 267): every account close
+          // schedules an ERASE_ACCOUNT, and an unhandled one would leave a closed
+          // account un-erased past the promise the close made. Its confirmation
+          // email is a SEND_EMAIL, handled above.
+          add(AccountErasureHandler(AccountErasureService(database, QueueService(database, jobsDao))))
 
           // The worker is the only place a ChatProvider is built for the LLM job
           // handlers; build it once when extraction (RFC 66), synthesis (RFC 93), or

@@ -397,14 +397,8 @@ class AccountErasureTest {
       val expected =
         when {
           table in accountD10 -> before - accountD10.getValue(table)
-
           table in DELETED_TABLES -> before + 1
-
-          table in setOf("jobs", "job_attempts") -> after
-
-          // judged by test 5
           table.endsWith("_versions") -> before + (versionGain[table.removeSuffix("_versions")] ?: 0L)
-
           else -> before
         }
       if (after != expected) unexpected += "$table: $before -> $after (expected $expected)"
@@ -438,39 +432,36 @@ class AccountErasureTest {
       .associateWith { long("SELECT coalesce(sum(version), 0) FROM \"$it\"") }
 
   // ---------------------------------------------------------------------------
-  // 5: the jobs naming the account are deleted, in every status
+  // 5: the jobs naming the account survive, in every status (RFC 267 D13)
   // ---------------------------------------------------------------------------
 
   @Test
-  fun `the jobs naming the account are deleted, in every status`() {
+  fun `the jobs naming the account survive the walk unchanged, in every status`() {
     val (account, _) = buildAccount()
     val caseBlind =
       listOf(account.userId.value, account.studentId.value, account.supporterId.value, account.studentConvoId.value)
         .map { it.toString() } + listOf(account.email.lowercase(), account.previousEmail.lowercase())
-    val jobs =
-      query("SELECT id, status, payload::text FROM jobs") { Triple(it.getObject(1, UUID::class.java), it.getString(2), it.getString(3)) }
     val naming =
-      jobs.filter { (_, _, payload) -> caseBlind.any { it in payload.lowercase() } || account.sessionTokenHash in payload }
-    assertEquals(setOf("SCHEDULED", "RUNNING", "COMPLETED", "DEAD_LETTERED"), naming.map { it.second }.toSet())
+      allRows("jobs").filterValues { json -> caseBlind.any { it in json.lowercase() } || account.sessionTokenHash in json }
+    assertEquals(
+      setOf("SCHEDULED", "RUNNING", "COMPLETED", "DEAD_LETTERED"),
+      naming.values
+        .map {
+          Json
+            .parseToJsonElement(it)
+            .jsonObject
+            .getValue("status")
+            .jsonPrimitive.content
+        }.toSet(),
+    )
     assertTrue(naming.size >= 28, "the fixture must write a job per identifier per status; it wrote ${naming.size}")
-    val survivors =
-      jobs.filter { (_, _, payload) ->
-        account.other.studentId.value
-          .toString() in payload || account.originalTransactionId in payload
-      }
-    assertEquals(2, survivors.size)
+    val attemptsBefore = allRows("job_attempts")
 
     closeAndErase(account)
 
-    val ids = connection.createArrayOf("uuid", naming.map { it.first }.toTypedArray())
-    assertEquals(0L, long("SELECT count(*) FROM jobs WHERE id = ANY (?)", ids), "every job naming the account must be gone")
-    assertEquals(0L, long("SELECT count(*) FROM job_attempts WHERE job_id = ANY (?)", ids), "with its attempts")
-    val kept = connection.createArrayOf("uuid", survivors.map { it.first }.toTypedArray())
-    assertEquals(
-      2L,
-      long("SELECT count(*) FROM jobs WHERE id = ANY (?)", kept),
-      "the other account's job and the subscription refresh survive",
-    )
+    val after = allRows("jobs")
+    assertEquals(naming, naming.mapValues { (key, _) -> after[key] }, "every job naming the account is left as it was")
+    assertEquals(attemptsBefore, allRows("job_attempts"), "with its attempts")
   }
 
   // ---------------------------------------------------------------------------
@@ -487,6 +478,28 @@ class AccountErasureTest {
     assertEquals(emptyList(), erase(account.userId), "a second erasure must report nothing")
     assertEquals(countsBefore, counts(), "a second erasure must add or remove no row")
     assertEquals(versionsBefore, versions(), "a second erasure must bump no version")
+  }
+
+  /**
+   * RFC 267 §2: a row written against the erased account on purpose -- the
+   * deletion receipt, keyed on `deleted_user_id` -- is not a second walk's to
+   * erase.
+   */
+  @Test
+  fun `a second erasure leaves a receipt written after the first unchanged`() {
+    val (account, _) = buildAccount()
+    assertTrue(closeAndErase(account).isNotEmpty(), "the first erasure must touch rows")
+    val receipt =
+      query(
+        "INSERT INTO email_sends (recipient_email, sender_email, subject, body, status, provider, deleted_user_id) " +
+          "VALUES (?, 'coach@unicoach.test', 'Your unicoach account has been deleted', 'Erased', 'SENT', 'ses', ?) RETURNING id",
+        account.email.lowercase(),
+        account.userId.value,
+      ) { it.getObject(1, UUID::class.java) }.single()
+    val before = allRows("email_sends").getValue("($receipt)")
+
+    assertEquals(emptyList(), erase(account.userId), "a second erasure must report nothing")
+    assertEquals(before, allRows("email_sends").getValue("($receipt)"), "the receipt is unchanged, its address and body intact")
   }
 
   // ---------------------------------------------------------------------------

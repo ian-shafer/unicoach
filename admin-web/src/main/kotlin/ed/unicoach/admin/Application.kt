@@ -1,5 +1,7 @@
 package ed.unicoach.admin
 
+import ed.unicoach.account.AccountErasureConfig
+import ed.unicoach.account.AccountErasureScheduler
 import ed.unicoach.account.AccountErasureService
 import ed.unicoach.admin.auth.adminAuthRoutes
 import ed.unicoach.admin.auth.installAdminGate
@@ -74,6 +76,12 @@ fun startServer(wait: Boolean = true): EmbeddedServer<*, *> {
       .from(config)
       .getOrThrow()
 
+  // Delete closes an account, so it schedules the erasure on the app's grace (RFC 267).
+  val accountErasureConfig =
+    AccountErasureConfig
+      .from(config)
+      .getOrThrow()
+
   val database = Database(dbConfig)
   val argon2Hasher = Argon2Hasher()
   val tokenGenerator = TokenGenerator()
@@ -120,6 +128,7 @@ fun startServer(wait: Boolean = true): EmbeddedServer<*, *> {
         queueService,
         adminConfig,
         requestLoggingConfig,
+        accountErasureConfig,
         linkRequestService::releaseOnVerified,
       )
     }
@@ -147,6 +156,7 @@ fun Application.adminModule(
   queueService: QueueService,
   adminConfig: AdminConfig,
   requestLoggingConfig: RequestLoggingConfig,
+  accountErasureConfig: AccountErasureConfig,
   afterVerified: (SqlSession, UserId) -> Unit,
 ) {
   // Must stay first so the request-logging interceptor wraps the whole pipeline.
@@ -160,7 +170,14 @@ fun Application.adminModule(
   val registry =
     AdminRegistry(
       listOf(
-        UsersResource(argon2Hasher, emailVerificationService, studentsResource, afterVerified, AccountErasureService(database)),
+        UsersResource(
+          argon2Hasher,
+          emailVerificationService,
+          studentsResource,
+          afterVerified,
+          AccountErasureService(database, queueService),
+          AccountErasureScheduler(queueService, accountErasureConfig),
+        ),
         studentsResource,
         SessionsResource,
         SystemPromptsResource,

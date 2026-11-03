@@ -120,6 +120,7 @@ class ConvoStreamErrorRoutingTest {
             costReportConfigFrom(config),
             supporterInviteConfigFrom(config),
             supporterCoachingConfigFrom(config),
+            accountErasureConfigFrom(config),
           )
         }
       testServer.start(wait = false)

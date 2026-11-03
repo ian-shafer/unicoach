@@ -34,6 +34,7 @@ import ed.unicoach.db.models.SupporterLinkRequestId
 import ed.unicoach.db.models.SupporterRelationship
 import ed.unicoach.db.models.TokenHash
 import ed.unicoach.db.models.UserId
+import ed.unicoach.email.EmailAccountKey
 import ed.unicoach.email.EmailTemplate
 import ed.unicoach.queue.QueueService
 import ed.unicoach.util.Argon2Hasher
@@ -208,8 +209,8 @@ class SupporterLinkRequestServiceTest {
     claim(user("Sam Stranger"), ava.token)
 
     assertEquals(
-      listOf(ava.user.asString),
-      SendEmailJobQueries.payloads(connection).filter { it.template == EmailTemplate.LINK_REQUESTED }.map { it.userId },
+      listOf(EmailAccountKey.Live(ava.user)),
+      SendEmailJobQueries.payloads(connection).filter { it.template == EmailTemplate.LINK_REQUESTED }.map { it.account },
     )
   }
 

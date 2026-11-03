@@ -170,6 +170,7 @@ class OfflineCoachingE2eTest {
             costReportConfigFrom(config),
             supporterInviteConfigFrom(config),
             supporterCoachingConfigFrom(config),
+            accountErasureConfigFrom(config),
           )
         }
       server.start(wait = false)

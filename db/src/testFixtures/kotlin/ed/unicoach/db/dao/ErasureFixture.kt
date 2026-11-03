@@ -98,8 +98,9 @@ import kotlin.random.Random
  * where none does (`email_sends`, `jobs`, `job_attempts`), so every row is the
  * shape production writes. It also writes, for the account: a session, a
  * verification token, an auth identity, an invite (D10's tables), a second
- * address in its history, and `jobs` rows naming each of its identifiers (§4)
- * in every status, at more than one depth, beside jobs that must survive.
+ * address in its history, and `jobs` rows naming each of its identifiers in
+ * every status, at more than one depth, which the walk must leave as they are
+ * (RFC 267 D13: finished jobs age out through the queue's reaper instead).
  *
  * The fixture is hand-built and ASSERTED AGAINST THE CATALOG: the erasure tests
  * fail naming any table in `erasure_edge`'s reach with no fixture row, so a
@@ -126,7 +127,7 @@ object ErasureFixture {
     val studentConvoId: ConvoId,
     /** The supporter's conversation about [other]'s student. */
     val supporterConvoId: ConvoId,
-    /** The address the account holds now, as written: mixed case, so the jobs match is case-blind. */
+    /** The address the account holds now, as written: mixed case. */
     val email: String,
     /** The address it held before, found only in `users_versions`. */
     val previousEmail: String,
@@ -413,7 +414,7 @@ object ErasureFixture {
   }
 
   // ---------------------------------------------------------------------------
-  // The jobs naming the account (§4), in every status, beside two that survive.
+  // The jobs naming the account, in every status, beside two naming only others.
   // ---------------------------------------------------------------------------
 
   /** Every status `jobs.status` admits. */

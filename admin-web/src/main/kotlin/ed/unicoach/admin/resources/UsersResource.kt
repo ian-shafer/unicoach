@@ -1,5 +1,6 @@
 package ed.unicoach.admin.resources
 
+import ed.unicoach.account.AccountErasureScheduler
 import ed.unicoach.account.AccountErasureService
 import ed.unicoach.account.ErasureOutcome
 import ed.unicoach.admin.engine.AdminEdge
@@ -9,6 +10,7 @@ import ed.unicoach.admin.engine.AdminResource
 import ed.unicoach.admin.engine.CustomAction
 import ed.unicoach.admin.engine.EdgePanel
 import ed.unicoach.admin.engine.FieldType
+import ed.unicoach.admin.render.ErasureNote
 import ed.unicoach.admin.render.adminPage
 import ed.unicoach.admin.render.renderErasure
 import ed.unicoach.admin.render.respondDaoError
@@ -32,12 +34,14 @@ import ed.unicoach.db.models.PasswordHash
 import ed.unicoach.db.models.PersonName
 import ed.unicoach.db.models.SoftDeleteScope
 import ed.unicoach.db.models.StudentEdit
+import ed.unicoach.db.models.TableErasure
 import ed.unicoach.db.models.User
 import ed.unicoach.db.models.UserEdit
 import ed.unicoach.db.models.UserId
 import ed.unicoach.student.StudentService
 import ed.unicoach.util.Argon2Hasher
 import io.ktor.http.HttpStatusCode
+import io.ktor.server.application.ApplicationCall
 import io.ktor.server.application.call
 import io.ktor.server.html.respondHtml
 import io.ktor.server.request.receiveParameters
@@ -54,8 +58,10 @@ import java.util.UUID
  * The `users` ENTITY: the rich spine that exercises every engine pattern. Create
  * hashes the submitted plaintext password and builds the auth method directly
  * (no `AuthService.register`, which also mints sessions). Update is an OCC write
- * carrying the form's version. Delete is soft; undelete restores. Edges weave the
- * embedded student profile, the user's sessions, and the version history.
+ * carrying the form's version. Delete is soft, and schedules the account's
+ * erasure as the app's close does (RFC 267); undelete restores, and the
+ * scheduled job then erases nothing. Edges weave the embedded student profile,
+ * the user's sessions, and the version history.
  */
 class UsersResource(
   private val argon2Hasher: Argon2Hasher,
@@ -65,6 +71,8 @@ class UsersResource(
   private val afterVerified: (SqlSession, UserId) -> Unit,
   /** The operator's door to erasure (RFC 266 §10). */
   private val accountErasureService: AccountErasureService,
+  /** Schedules the erasure of every close Delete makes (RFC 267 §3). */
+  private val erasureScheduler: AccountErasureScheduler,
 ) : AdminResource<User, UserId> {
   private val logger = LoggerFactory.getLogger(UsersResource::class.java)
 
@@ -139,8 +147,7 @@ class UsersResource(
 
   override val update: (suspend (Database, UserId, Map<String, String>) -> Result<Unit>) = ::updateUser
 
-  override val delete: (suspend (Database, UserId) -> Result<Unit>) =
-    { db, id -> db.occSoftDelete(UsersDao, id, deleted = true) }
+  override val delete: (suspend (Database, UserId) -> Result<Unit>) = ::closeUser
 
   override val undelete: (suspend (Database, UserId) -> Result<Unit>) =
     { db, id -> db.occSoftDelete(UsersDao, id, deleted = false) }
@@ -262,6 +269,27 @@ class UsersResource(
   }
 
   /**
+   * A close, in ONE transaction with the erasure it schedules: a close that
+   * cannot schedule its erasure does not close. Only the `users` row is
+   * soft-deleted, as before; the app's close (`AccountClosureService`) is the
+   * one that also severs links and ends sign-in.
+   *
+   * Only a live account closes: the row is read [SoftDeleteScope.ACTIVE], so
+   * an account already closed (or erased) is not found, as the verification
+   * routes answer a forged POST. A second Delete re-stamping `deleted_at` would
+   * schedule a second erasure and push the first one's back a grace period.
+   */
+  private suspend fun closeUser(
+    db: Database,
+    id: UserId,
+  ): Result<Unit> =
+    db.withConnectionCatching { session ->
+      val row = UsersDao.findById(session, id, SoftDeleteScope.ACTIVE).getOrThrow()
+      val closed = UsersDao.delete(session, id, row.version).getOrThrow()
+      erasureScheduler.schedule(session, closed)
+    }
+
+  /**
    * The operator's typed date of birth, or null when it is blank, mistyped, or
    * outside the window a birthdate can plausibly fall in. Shape and sanity only:
    * RFC 222 section 4a exempts this operator path from the 13+ FLOOR, not from
@@ -374,27 +402,14 @@ class UsersResource(
       call.respondRedirect("/$slug/${userId.value}")
     }
 
-    // The operator's door to erasure (RFC 266 §10). An already-erased account
-    // answers Erased with nothing left to do: a re-run is how a dead-lettered
-    // erase job is finished (deletion/04), and it is harmless.
+    // The operator's door to erasure (RFC 266 §10). It sends the same
+    // confirmation the erase job does (RFC 267 D-G), so it is also how a
+    // dead-lettered erase job is finished. An already-erased account is the
+    // same page with nothing in it, and no second email.
     scope.post("/$slug/{id}/erase") {
       val userId = parseId(call.parameters["id"].orEmpty()) ?: return@post call.respondNotFound()
       accountErasureService.erase(userId).fold(
-        onSuccess = { outcome ->
-          when (outcome) {
-            is ErasureOutcome.Erased -> {
-              call.respondHtml { adminPage("Erased user ${userId.asString}") { renderErasure(userId, outcome.tables) } }
-            }
-
-            ErasureOutcome.NotClosed -> {
-              call.respondErrorPage(HttpStatusCode.Conflict, "409 Conflict", "Close the account before erasing it.")
-            }
-
-            ErasureOutcome.NotFound -> {
-              call.respondNotFound()
-            }
-          }
-        },
+        onSuccess = { outcome -> call.respondErasure(userId, outcome) },
         onFailure = { call.respondDaoError(it) },
       )
     }
@@ -423,6 +438,28 @@ class UsersResource(
           onFailure = { call.respondDaoError(it) },
         )
     }
+  }
+
+  /** The erase route's answer, one per [ErasureOutcome]. */
+  private suspend fun ApplicationCall.respondErasure(
+    userId: UserId,
+    outcome: ErasureOutcome,
+  ) {
+    when (outcome) {
+      is ErasureOutcome.Erased -> respondErased(userId, outcome.tables, ErasureNote.of(outcome.confirmation))
+      ErasureOutcome.AlreadyErased -> respondErased(userId, emptyList(), ErasureNote.ALREADY_ERASED)
+      ErasureOutcome.NotClosed -> respondErrorPage(HttpStatusCode.Conflict, "409 Conflict", "Close the account before erasing it.")
+      ErasureOutcome.NotFound -> respondNotFound()
+    }
+  }
+
+  /** The erasure page: what the walk did per table, and the confirmation note. */
+  private suspend fun ApplicationCall.respondErased(
+    userId: UserId,
+    tables: List<TableErasure>,
+    note: ErasureNote,
+  ) {
+    respondHtml { adminPage("Erased user ${userId.asString}") { renderErasure(userId, tables, note) } }
   }
 
   override suspend fun resolveEdges(

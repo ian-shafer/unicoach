@@ -8,6 +8,7 @@ import ed.unicoach.db.dao.SupportersDao
 import ed.unicoach.db.dao.UsersDao
 import ed.unicoach.db.models.SoftDeleteScope
 import ed.unicoach.db.models.SupporterLinkRequest
+import ed.unicoach.email.EmailAccountKey
 import ed.unicoach.email.EmailJobPayload
 import ed.unicoach.email.EmailTemplate
 import ed.unicoach.email.EmailTemplateRenderer
@@ -78,7 +79,7 @@ class LinkRequestedNotice(
         to = recipient.email.value,
         template = EmailTemplate.LINK_REQUESTED,
         context = LinkRequestedContext(claimantName = claimant.name.value, claimantEmail = claimant.email.value).asJson(),
-        userId = recipient.id.asString,
+        account = EmailAccountKey.Live(recipient.id),
       )
     when (val result = queueService.enqueue(session, JobType.SEND_EMAIL, payload.asJson())) {
       is EnqueueResult.Success -> Unit

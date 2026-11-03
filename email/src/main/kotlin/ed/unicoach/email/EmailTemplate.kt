@@ -16,4 +16,7 @@ enum class EmailTemplate {
 
   /** Somebody asked to connect with a student from their report link (RFC 254). */
   LINK_REQUESTED,
+
+  /** The account was erased (RFC 267); its `email_sends` row is the deletion receipt. */
+  ACCOUNT_ERASED,
 }

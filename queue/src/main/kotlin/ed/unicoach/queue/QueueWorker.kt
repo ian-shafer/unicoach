@@ -1,7 +1,9 @@
 package ed.unicoach.queue
 
 import ed.unicoach.db.Database
+import ed.unicoach.db.dao.SqlSession
 import ed.unicoach.queue.dao.AttemptCountResult
+import ed.unicoach.queue.dao.JobDeleteResult
 import ed.unicoach.queue.dao.JobFindResult
 import ed.unicoach.queue.dao.JobUpdateResult
 import ed.unicoach.queue.dao.JobsDao
@@ -21,6 +23,7 @@ import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.yield
 import org.slf4j.LoggerFactory
+import java.util.UUID
 import java.util.concurrent.atomic.AtomicReference
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.days
@@ -32,8 +35,8 @@ class QueueWorker(
   private val jobsDao: JobsDao,
   private val handlers: List<JobHandler>,
   private val stuckJobCheckInterval: Duration = 1.minutes,
-  private val completedJobRetention: Duration = 30.days,
-  private val completedJobReapInterval: Duration = 1.hours,
+  private val finishedJobRetention: Duration = 30.days,
+  private val finishedJobReapInterval: Duration = 1.hours,
 ) {
   private val logger = LoggerFactory.getLogger(QueueWorker::class.java)
 
@@ -78,7 +81,7 @@ class QueueWorker(
       listOf(
         scope.launch(Dispatchers.IO) { listenLoop() },
         scope.launch(Dispatchers.IO) { stuckJobReaperLoop() },
-        scope.launch(Dispatchers.IO) { completedJobReaperLoop() },
+        scope.launch(Dispatchers.IO) { finishedJobReaperLoop() },
       )
   }
 
@@ -239,15 +242,13 @@ class QueueWorker(
             }
 
             is JobResult.PermanentFailure -> {
-              val res = jobsDao.deadLetterJob(session, claimedJob.id)
-              check(res is JobUpdateResult.Success) { "Failed to dead-letter job: $res" }
+              deadLetter(session, handler.jobType, claimedJob.id, attemptNumber, errorMsg)
             }
 
             is JobResult.RetriableFailure -> {
               val maxAttempts = claimedJob.maxAttempts ?: config.maxAttempts
               if (attemptNumber >= maxAttempts) {
-                val res = jobsDao.deadLetterJob(session, claimedJob.id)
-                check(res is JobUpdateResult.Success) { "Failed to dead-letter job: $res" }
+                deadLetter(session, handler.jobType, claimedJob.id, attemptNumber, errorMsg)
               } else {
                 val delayDuration = config.backoffStrategy.delayFor(attemptNumber)
                 val res = jobsDao.reschedule(session, claimedJob.id, delayDuration)
@@ -284,29 +285,62 @@ class QueueWorker(
   }
 
   /**
-   * Deletes successfully completed jobs from the database that have exceeded the
-   * configured retention period to maintain long-term query performance and storage constraints.
+   * Dead-letters [jobId] and logs one ERROR line for it: a dead-lettered job is
+   * work that will not happen without an operator, so the line is the alert
+   * (RFC 267 D-C). It names the job and its last error, never the payload,
+   * which may carry personal values.
    */
-  private suspend fun completedJobReaperLoop() {
+  private fun deadLetter(
+    session: SqlSession,
+    jobType: JobType,
+    jobId: UUID,
+    attemptNumber: Int,
+    errorMessage: String?,
+  ) {
+    val res = jobsDao.deadLetterJob(session, jobId)
+    check(res is JobUpdateResult.Success) { "Failed to dead-letter job: $res" }
+    logger.error(
+      "Dead-lettered job [{}] of type [{}] after attempt [{}]: {}",
+      jobId,
+      jobType.value,
+      attemptNumber,
+      errorMessage,
+    )
+  }
+
+  /**
+   * Deletes every finished job -- completed or dead-lettered -- once it has been
+   * finished longer than the retention period (brief 0002 D13): this is how a
+   * payload naming a person leaves the database, whatever its job type.
+   * `updated_at` is the finish time, since the status change writes it. A
+   * SCHEDULED or RUNNING job is never reaped, however old.
+   */
+  private suspend fun finishedJobReaperLoop() {
     while (isRunning) {
-      delay(completedJobReapInterval)
+      delay(finishedJobReapInterval)
       if (!isRunning) break
       try {
         database.withConnection { session ->
           val result =
             jobsDao.deleteBefore(
               session,
-              setOf(JobStatus.COMPLETED),
-              completedJobRetention,
+              setOf(JobStatus.COMPLETED, JobStatus.DEAD_LETTERED),
+              finishedJobRetention,
             )
-          if (result is ed.unicoach.queue.dao.JobDeleteResult.Success && result.count > 0) {
-            logger.info("Reaped [{}] completed jobs", result.count)
+          when (result) {
+            is JobDeleteResult.Success -> {
+              if (result.count > 0) logger.info("Reaped [{}] finished jobs", result.count)
+            }
+
+            is JobDeleteResult.DatabaseFailure -> {
+              logger.error("Failed to reap finished jobs", result.error)
+            }
           }
         }
       } catch (e: java.sql.SQLException) {
         if (!e.isTransientConnectionError()) throw e
 
-        logger.error("Database connection error in [completedJobReaperLoop]", e)
+        logger.error("Database connection error in [finishedJobReaperLoop]", e)
       }
     }
   }

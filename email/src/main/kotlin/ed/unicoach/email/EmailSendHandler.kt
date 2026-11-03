@@ -2,7 +2,6 @@ package ed.unicoach.email
 
 import ed.unicoach.common.models.EmailAddress
 import ed.unicoach.common.models.ValidationResult
-import ed.unicoach.db.models.UserId
 import ed.unicoach.error.PermanentError
 import ed.unicoach.error.TransientError
 import ed.unicoach.queue.JobHandler
@@ -13,7 +12,6 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.decodeFromJsonElement
 import org.slf4j.LoggerFactory
-import java.util.UUID
 import kotlin.time.Duration.Companion.minutes
 import kotlin.time.Duration.Companion.seconds
 
@@ -49,8 +47,10 @@ class EmailSendHandler(
   // Decodes a job as it sits in the queue. A job queued before RFC 263 deployed
   // has no `userId` key; explicitNulls = false reads a missing nullable property
   // as null, so it is still sent, logged with a NULL key. Local to this handler:
-  // EmailJobPayload.userId has no default, so producers must state it, and the
-  // shared Json configuration is left as every other caller relies on it.
+  // the wire `userId` has no default, so producers always write it, and the
+  // shared Json configuration is left as every other caller relies on it. A
+  // payload naming two accounts, or an account id that is not a UUID, does not
+  // decode (EmailJobPayloadSerializer), so it is a malformed payload below.
   private val payloadJson = Json { explicitNulls = false }
 
   override val jobType = JobType.SEND_EMAIL
@@ -91,11 +91,6 @@ class EmailSendHandler(
         }
       }
 
-    val userId =
-      parseRecipientAccount(job).getOrElse { error ->
-        return foldSendFailure(error, job.to, job.template)
-      }
-
     val renderer =
       renderersByTemplate[job.template]
         ?: return foldSendFailure(UnresolvableTemplateException(job.to, job.template), job.to, job.template)
@@ -107,20 +102,11 @@ class EmailSendHandler(
 
     // Step 5-6: send, then fold the Result against the exception's marker.
     return emailService
-      .send(to, rendered.subject, rendered.body, userId)
+      .send(to, rendered.subject, rendered.body, job.account)
       .fold(
         onSuccess = { JobResult.Success },
         onFailure = { error -> foldSendFailure(error, job.to, job.template) },
       )
-  }
-
-  // The account the mail is sent to, or null when the job names none (a
-  // non-account recipient, or a job queued before RFC 263). An id that is not a
-  // UUID fails with InvalidRecipientAccountException, a PermanentError.
-  private fun parseRecipientAccount(job: EmailJobPayload): Result<UserId?> {
-    val raw = job.userId ?: return Result.success(null)
-    return runCatching { UserId(UUID.fromString(raw)) }
-      .recoverCatching { error -> throw InvalidRecipientAccountException(job.to, job.template, raw, error) }
   }
 
   // [to] and [template] are threaded in so a provider-side EmailRejectedException /

@@ -31,7 +31,8 @@ sealed interface CloseAccountOutcome {
  * Closes an account of any shape — student, supporter, both, or neither (RFC
  * 252). Access ends at once, every connection is cut and each other party is
  * told, and nothing of the closer's stays reachable. Rows are soft-deleted,
- * not erased: erasure is a later slice.
+ * not erased: the close schedules the erasure through [AccountErasureScheduler]
+ * (RFC 267), which erases the account a grace period later.
  *
  * Every write below names the closer's own keys in its WHERE, and a table
  * holding keys from both parties (today `supporter_student_links`,
@@ -46,10 +47,12 @@ sealed interface CloseAccountOutcome {
 class AccountClosureService(
   private val database: Database,
   private val linkEndedNotice: LinkEndedNotice,
+  private val erasureScheduler: AccountErasureScheduler,
 ) {
   /**
-   * ONE transaction: a failure anywhere — the link-ended enqueue included
-   * (ASYNC_WORK.md rule 2) — rolls the whole close back.
+   * ONE transaction: a failure anywhere — the link-ended and erase enqueues
+   * included (ASYNC_WORK.md rule 2) — rolls the whole close back, so a close
+   * that cannot schedule its erasure does not close.
    */
   suspend fun close(userId: UserId): Result<CloseAccountOutcome> =
     runCatching {
@@ -60,8 +63,9 @@ class AccountClosureService(
 
         severLinksAndTellOthers(session, student, supporter)
         revokeOutstandingLinks(session, userId, student)
-        closeRows(session, user, student, supporter)
+        val closed = closeRows(session, user, student, supporter)
         endSignIn(session, userId)
+        erasureScheduler.schedule(session, closed)
         CloseAccountOutcome.Closed
       }
     }
@@ -107,15 +111,16 @@ class AccountClosureService(
     if (student != null) CostReportSharesDao.revokeLive(session, student.id).getOrThrow()
   }
 
+  /** Returns the closed `users` row: its `deletedAt` is the close the erasure is scheduled for. */
   private fun closeRows(
     session: SqlSession,
     user: User,
     student: Student?,
     supporter: Supporter?,
-  ) {
+  ): User {
     if (student != null) StudentsDao.delete(session, student.id, student.version).getOrThrow()
     if (supporter != null) SupportersDao.delete(session, supporter.id, supporter.version).getOrThrow()
-    UsersDao.delete(session, user.id, user.version).getOrThrow()
+    return UsersDao.delete(session, user.id, user.version).getOrThrow()
   }
 
   /** Runs after [closeRows]: the identity delete guard admits only a closed owner. */

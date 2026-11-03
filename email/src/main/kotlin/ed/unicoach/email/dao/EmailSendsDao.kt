@@ -3,6 +3,7 @@ package ed.unicoach.email.dao
 import ed.unicoach.db.dao.DatabaseException
 import ed.unicoach.db.dao.SqlSession
 import ed.unicoach.db.dao.mapDatabaseError
+import ed.unicoach.email.EmailAccountKey
 import ed.unicoach.email.SentEmail
 import java.sql.ResultSet
 import java.util.UUID
@@ -17,9 +18,9 @@ object EmailSendsDao {
         """
         INSERT INTO email_sends (
           recipient_email, sender_email, subject, body, status, provider, provider_message_id, error_message,
-          user_id
+          user_id, deleted_user_id
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         RETURNING *
         """.trimIndent()
       session.prepareStatement(sql).use { stmt ->
@@ -31,7 +32,15 @@ object EmailSendsDao {
         stmt.setString(6, newSend.provider)
         stmt.setString(7, newSend.providerMessageId)
         stmt.setString(8, newSend.errorMessage)
-        stmt.setObject(9, newSend.userId?.value)
+        // The one column the key names; the other stays NULL (the pair CHECK).
+        val (liveUserId, deletedUserId) =
+          when (val account = newSend.account) {
+            is EmailAccountKey.Live -> account.userId.value to null
+            is EmailAccountKey.Deleted -> null to account.userId.value
+            null -> null to null
+          }
+        stmt.setObject(9, liveUserId)
+        stmt.setObject(10, deletedUserId)
 
         stmt.executeQuery().use { rs ->
           if (rs.next()) {

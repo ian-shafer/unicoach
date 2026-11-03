@@ -1,5 +1,6 @@
 package ed.unicoach.admin.resources
 
+import ed.unicoach.account.AccountErasurePayload
 import ed.unicoach.admin.AdminTestSupport
 import ed.unicoach.db.dao.CostReportSharesDao
 import ed.unicoach.db.dao.ErasureFixture
@@ -22,14 +23,18 @@ import io.ktor.http.parameters
 import io.ktor.server.testing.ApplicationTestBuilder
 import io.ktor.server.testing.testApplication
 import kotlinx.coroutines.runBlocking
+import kotlinx.serialization.json.Json
 import java.security.SecureRandom
+import java.time.OffsetDateTime
 import java.util.Base64
 import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import kotlin.time.toJavaDuration
 
 class UsersResourceTest {
   @BeforeTest
@@ -272,6 +277,75 @@ class UsersResourceTest {
       val afterUndelete = client().get("/user/${target.id.value}") { header(HttpHeaders.Cookie, cookie) }.bodyAsText()
       assertFalse(afterUndelete.contains("Undelete"), "Restored row no longer offers undelete")
     }
+
+  /** RFC 267 §3: Delete is a close, so it schedules the same erasure the app's close does. */
+  @Test
+  fun `delete schedules one erasure of the account, graceDays after its close`() {
+    testApplication {
+      application { with(AdminTestSupport) { installTestAdminModule() } }
+      val cookie = adminCookie()
+      val target = AdminTestSupport.seedUser(AdminTestSupport.uniqueEmail(), name = "Deletable")
+
+      val deleted =
+        client().submitForm(url = "/user/${target.id.value}/delete", formParameters = parameters {}) {
+          header(HttpHeaders.Cookie, cookie)
+        }
+      assertEquals(HttpStatusCode.Found, deleted.status)
+
+      val closedAt = assertNotNull(findUser(target.id).deletedAt)
+      val (payload, scheduledAt) =
+        runBlocking {
+          AdminTestSupport.database.withConnection { session ->
+            RawSql.list(session, "SELECT payload::text, scheduled_at FROM jobs WHERE job_type = ?", JobType.ERASE_ACCOUNT.value) {
+              Json.decodeFromString<AccountErasurePayload>(it.getString(1)) to it.getTimestamp(2).toInstant()
+            }
+          }
+        }.single()
+      assertEquals(target.id.asString, payload.userId)
+      assertEquals(closedAt, OffsetDateTime.parse(payload.closedAt).toInstant(), "the job names this close")
+      assertEquals(
+        closedAt.plus(AdminTestSupport.accountErasureConfig.grace.toJavaDuration()),
+        scheduledAt,
+        "scheduled_at = deleted_at + graceDays",
+      )
+    }
+  }
+
+  /** Only a live account closes: a second Delete neither re-stamps the close nor schedules a second erasure. */
+  @Test
+  fun `delete of an already-closed account is not found and changes nothing`() {
+    testApplication {
+      application { with(AdminTestSupport) { installTestAdminModule() } }
+      val cookie = adminCookie()
+      val target = AdminTestSupport.seedUser(AdminTestSupport.uniqueEmail(), name = "Deleted Twice")
+      val delete =
+        suspend {
+          client().submitForm(url = "/user/${target.id.value}/delete", formParameters = parameters {}) {
+            header(HttpHeaders.Cookie, cookie)
+          }
+        }
+      assertEquals(HttpStatusCode.Found, delete().status)
+      val closed = findUser(target.id)
+
+      assertEquals(HttpStatusCode.NotFound, delete().status)
+
+      val after = findUser(target.id)
+      assertEquals(closed.deletedAt, after.deletedAt, "the close is not re-stamped")
+      assertEquals(closed.version, after.version, "the row is not written")
+      val erasureJobs =
+        runBlocking {
+          AdminTestSupport.database.withConnection { session ->
+            RawSql.count(
+              session,
+              "SELECT count(*) FROM jobs WHERE job_type = ? AND payload->>'userId' = ?",
+              JobType.ERASE_ACCOUNT.value,
+              target.id.asString,
+            )
+          }
+        }
+      assertEquals(1, erasureJobs, "one close, one erasure")
+    }
+  }
 
   @Test
   fun `user detail page surfaces the embedded student's coaching-memory panels`() =
@@ -666,13 +740,67 @@ class UsersResourceTest {
   // The operator's door to erasure (RFC 266 §10)
   // ---------------------------------------------------------------------------
 
-  /** [ErasureFixture]'s account, built in one transaction, closed when [closed]. */
-  private fun erasableAccount(closed: Boolean): ErasureFixture.Account =
+  /** [ErasureFixture]'s account, built in one transaction, its address verified when [verified], closed when [closed]. */
+  private fun erasableAccount(
+    closed: Boolean,
+    verified: Boolean = false,
+  ): ErasureFixture.Account =
     runBlocking {
       AdminTestSupport.database.withConnection { session ->
-        ErasureFixture.build(session).also { if (closed) ErasureFixture.close(session, it.userId) }
+        ErasureFixture.build(session).also {
+          if (verified) UsersDao.markEmailVerified(session, it.userId).getOrThrow()
+          if (closed) ErasureFixture.close(session, it.userId)
+        }
       }
     }
+
+  private fun erasureEmails(): Long =
+    runBlocking {
+      AdminTestSupport.database.withConnection { session ->
+        session
+          .prepareStatement(
+            "SELECT count(*) FROM jobs WHERE job_type = 'SEND_EMAIL' AND payload->>'template' = 'ACCOUNT_ERASED'",
+          ).use {
+            it.executeQuery().use { rs ->
+              rs.next()
+              rs.getLong(1)
+            }
+          }
+      }
+    }
+
+  /** RFC 267 §4: the page says, for each outcome, whether the person is told. */
+  @Test
+  fun `the erase page says whether the confirmation email was queued`() {
+    testApplication {
+      application { with(AdminTestSupport) { installTestAdminModule() } }
+      val cookie = adminCookie()
+      val verified = erasableAccount(closed = true, verified = true)
+      val unverified = erasableAccount(closed = true)
+
+      suspend fun erase(account: ErasureFixture.Account) =
+        client().submitForm(url = "/user/${account.userId.value}/erase", formParameters = parameters {}) {
+          header(HttpHeaders.Cookie, cookie)
+        }
+
+      val queued = erase(verified)
+      assertEquals(HttpStatusCode.OK, queued.status)
+      assertTrue(queued.bodyAsText().contains("Confirmation email queued."))
+      assertEquals(1L, erasureEmails())
+
+      val unaddressed = erase(unverified)
+      assertEquals(HttpStatusCode.OK, unaddressed.status)
+      assertTrue(unaddressed.bodyAsText().contains("No verified address; no email sent."))
+      assertEquals(1L, erasureEmails(), "an unverified address is never written to")
+
+      val rerun = erase(verified)
+      assertEquals(HttpStatusCode.OK, rerun.status, "a re-run on an erased account is harmless")
+      val rerunPage = rerun.bodyAsText()
+      assertTrue(rerunPage.contains("Already erased; no email sent."))
+      assertFalse(rerunPage.contains("<td>users</td>"), "an erasure that did nothing lists no table")
+      assertEquals(1L, erasureEmails(), "and sends no second email")
+    }
+  }
 
   @Test
   fun `erase renders the counts page for a closed user, 409 for a live one, 404 for an unknown id`() =
@@ -724,7 +852,7 @@ class UsersResourceTest {
             },
         ) { header(HttpHeaders.Cookie, cookie) }
       assertEquals(HttpStatusCode.OK, rerun.status, "a re-run on an erased account is harmless")
-      assertTrue(rerun.bodyAsText().contains("Nothing was left to erase"))
+      assertTrue(rerun.bodyAsText().contains("Already erased; no email sent."))
     }
 
   @Test

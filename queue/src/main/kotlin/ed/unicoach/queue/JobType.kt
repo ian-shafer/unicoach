@@ -26,6 +26,10 @@ enum class JobType(
   // Notifications V2 webhook enqueues one of these per delivery, and the handler
   // re-reads authoritative state from Apple rather than believing the notification.
   REFRESH_SUBSCRIPTION("REFRESH_SUBSCRIPTION"),
+
+  // One per closed account (RFC 267): enqueued by the close, delayed by D2's N;
+  // its handler runs the walk and enqueues the confirmation email.
+  ERASE_ACCOUNT("ERASE_ACCOUNT"),
   ;
 
   companion object {

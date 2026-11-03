@@ -15,6 +15,7 @@ import ed.unicoach.db.models.PasswordHash
 import ed.unicoach.db.models.PersonName
 import ed.unicoach.db.models.TokenHash
 import ed.unicoach.db.models.User
+import ed.unicoach.email.EmailAccountKey
 import ed.unicoach.email.EmailJobPayload
 import ed.unicoach.email.EmailTemplate
 import ed.unicoach.queue.QueueService
@@ -198,7 +199,7 @@ class EmailVerificationServiceTest {
     runBlocking {
       val user = createUser()
       assertIs<ResendResult.Sent>(service().resend(user).getOrThrow())
-      assertEquals(listOf(user.id.asString), sendEmailJobs().map { it.userId })
+      assertEquals(listOf(EmailAccountKey.Live(user.id)), sendEmailJobs().map { it.account })
     }
   }
 }

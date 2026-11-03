@@ -14,6 +14,8 @@ dependencies {
   testImplementation(testFixtures(project(":db")))
   testImplementation(libs.kotlinx.coroutines.test)
   testImplementation(libs.hikaricp)
+  // The dead-letter alert is a log line (RFC 267 D-C); QueueWorkerTest reads it through a ListAppender.
+  testImplementation(libs.logback.classic)
 }
 
 tasks.withType<Test> {

@@ -9,12 +9,12 @@ import ed.unicoach.db.dao.UsersDao
 import ed.unicoach.db.models.SoftDeleteScope
 import ed.unicoach.db.models.SupporterStudentLink
 import ed.unicoach.db.models.User
+import ed.unicoach.email.EmailAccountKey
 import ed.unicoach.email.EmailJobPayload
 import ed.unicoach.email.EmailTemplate
 import ed.unicoach.email.EmailTemplateRenderer
 import ed.unicoach.email.RenderedEmail
 import ed.unicoach.email.renderedEmail
-import ed.unicoach.queue.EnqueueResult
 import ed.unicoach.queue.JobType
 import ed.unicoach.queue.QueueService
 import kotlinx.serialization.Serializable
@@ -84,12 +84,9 @@ class LinkEndedNotice(
         to = recipient.email.value,
         template = EmailTemplate.LINK_ENDED,
         context = LinkEndedContext(recipientName = recipient.name.value, otherName = other.name.value).asJson(),
-        userId = recipient.id.asString,
+        account = EmailAccountKey.Live(recipient.id),
       )
-    when (val result = queueService.enqueue(session, JobType.SEND_EMAIL, payload.asJson())) {
-      is EnqueueResult.Success -> Unit
-      is EnqueueResult.DatabaseFailure -> throw result.error
-    }
+    queueService.enqueueOrThrow(session, JobType.SEND_EMAIL, payload.asJson())
   }
 
   // ALL scopes: the severing transaction may already have closed this party's

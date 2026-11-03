@@ -2,6 +2,7 @@ package ed.unicoach.queue
 
 import ed.unicoach.db.Database
 import ed.unicoach.db.dao.SqlSession
+import ed.unicoach.db.dao.mapDatabaseError
 import ed.unicoach.queue.dao.JobInsertResult
 import ed.unicoach.queue.dao.JobsDao
 import kotlinx.serialization.json.JsonObject
@@ -57,5 +58,26 @@ class QueueService(
     when (val result = jobsDao.insert(session, NewJob(jobType, payload, maxAttempts, delay))) {
       is JobInsertResult.Success -> EnqueueResult.Success(result.job)
       is JobInsertResult.DatabaseFailure -> EnqueueResult.DatabaseFailure(result.error)
+    }
+
+  /**
+   * The REQUIRED enqueue (ASYNC_WORK.md rule 2): the session-threaded [enqueue],
+   * whose failure is thrown, so the caller's transaction rolls back with it. It
+   * is thrown mapped as every DAO maps one ([mapDatabaseError]): a classified
+   * `DaoException` with a fixed message, the driver's own exception -- whose
+   * text can quote the failing row, payload included -- kept only as its cause.
+   * The one home of that rule; a caller that wants to name its own context on
+   * the failure catches and wraps it.
+   */
+  fun enqueueOrThrow(
+    session: SqlSession,
+    jobType: JobType,
+    payload: JsonObject,
+    maxAttempts: Int? = null,
+    delay: kotlin.time.Duration? = null,
+  ): Job =
+    when (val result = enqueue(session, jobType, payload, maxAttempts, delay)) {
+      is EnqueueResult.Success -> result.job
+      is EnqueueResult.DatabaseFailure -> throw mapDatabaseError(result.error)
     }
 }

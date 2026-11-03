@@ -3,7 +3,6 @@ package ed.unicoach.email
 import ed.unicoach.common.models.EmailAddress
 import ed.unicoach.common.models.ValidationResult
 import ed.unicoach.db.Database
-import ed.unicoach.db.models.UserId
 import ed.unicoach.email.dao.EmailSendsDao
 import ed.unicoach.email.dao.NewEmailSend
 
@@ -19,15 +18,17 @@ class EmailService(
   private val resolvedFrom: ValidationResult<EmailAddress> by lazy { EmailAddress.create(config.defaultFrom) }
 
   /**
-   * Sends one mail and records its terminal outcome. [userId] is the account
+   * Sends one mail and records its terminal outcome. [account] is the account
    * [to] belongs to, recorded on the `email_sends` row so account erasure can
-   * reach it (RFC 263); null for a recipient who has no account.
+   * reach it (RFC 263) -- or, for the deletion confirmation, the erased account
+   * the row is the receipt of (RFC 267); null for a recipient who has no
+   * account.
    */
   suspend fun send(
     to: EmailAddress,
     subject: EmailSubject,
     body: EmailBody,
-    userId: UserId?,
+    account: EmailAccountKey?,
   ): Result<SentEmail> {
     val from =
       when (val resolved = resolvedFrom) {
@@ -38,21 +39,21 @@ class EmailService(
     val outbound = OutboundEmail(from = from, to = to, subject = subject, body = body)
 
     return when (val outcome = provider.send(outbound)) {
-      is ProviderResult.Sent -> recordSent(outbound, userId, outcome)
-      is ProviderResult.Rejected -> recordRejected(outbound, userId, outcome)
+      is ProviderResult.Sent -> recordSent(outbound, account, outcome)
+      is ProviderResult.Rejected -> recordRejected(outbound, account, outcome)
       is ProviderResult.TransientFailure -> Result.failure(EmailDeliveryException(outcome.reason))
     }
   }
 
   private suspend fun recordSent(
     outbound: OutboundEmail,
-    userId: UserId?,
+    account: EmailAccountKey?,
     outcome: ProviderResult.Sent,
   ): Result<SentEmail> =
     insert(
       NewEmailSend(
         recipient = outbound.to,
-        userId = userId,
+        account = account,
         sender = outbound.from,
         subject = outbound.subject,
         body = outbound.body,
@@ -65,14 +66,14 @@ class EmailService(
 
   private suspend fun recordRejected(
     outbound: OutboundEmail,
-    userId: UserId?,
+    account: EmailAccountKey?,
     outcome: ProviderResult.Rejected,
   ): Result<SentEmail> {
     val recorded =
       insert(
         NewEmailSend(
           recipient = outbound.to,
-          userId = userId,
+          account = account,
           sender = outbound.from,
           subject = outbound.subject,
           body = outbound.body,

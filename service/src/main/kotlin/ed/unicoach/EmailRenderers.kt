@@ -1,5 +1,6 @@
 package ed.unicoach
 
+import ed.unicoach.account.AccountErasedEmailRenderer
 import ed.unicoach.auth.VerificationEmailRenderer
 import ed.unicoach.email.EmailTemplateRenderer
 import ed.unicoach.family.LinkEndedEmailRenderer
@@ -12,4 +13,4 @@ import ed.unicoach.family.LinkRequestedEmailRenderer
  * instead of dead-lettering every job of it at runtime.
  */
 fun emailRenderers(verifyUrlBase: String): List<EmailTemplateRenderer> =
-  listOf(VerificationEmailRenderer(verifyUrlBase), LinkEndedEmailRenderer(), LinkRequestedEmailRenderer())
+  listOf(VerificationEmailRenderer(verifyUrlBase), LinkEndedEmailRenderer(), LinkRequestedEmailRenderer(), AccountErasedEmailRenderer())

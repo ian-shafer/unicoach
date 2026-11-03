@@ -1,5 +1,6 @@
 package ed.unicoach.account
 
+import com.typesafe.config.ConfigFactory
 import ed.unicoach.auth.FailingJobsDao
 import ed.unicoach.auth.SendEmailJobQueries
 import ed.unicoach.coaching.CoachingTestDb
@@ -67,7 +68,8 @@ class AccountClosureServiceTest {
   private val connection = CoachingTestDb.connection
   private val sqlSession = CoachingTestDb.sqlSession
   private val notice = LinkEndedNotice(QueueService(database))
-  private val service = AccountClosureService(database, notice)
+  private val erasureConfig = AccountErasureConfig.from(ConfigFactory.parseString("accountErasure.graceDays = 7")).getOrThrow()
+  private val service = AccountClosureService(database, notice, AccountErasureScheduler(QueueService(database), erasureConfig))
 
   @BeforeEach
   fun reset() {
@@ -353,7 +355,12 @@ class AccountClosureServiceTest {
     val avaJane = link(supporterOf(jane), avaStudent)
     val avasInvite = invite(ava, student = avaStudent)
     val avasShare = share(avaStudent)
-    val failing = AccountClosureService(database, LinkEndedNotice(QueueService(database, FailingJobsDao())))
+    val failing =
+      AccountClosureService(
+        database,
+        LinkEndedNotice(QueueService(database, FailingJobsDao())),
+        AccountErasureScheduler(QueueService(database), erasureConfig),
+      )
 
     assertTrue(runBlocking { failing.close(ava.userId) }.isFailure)
 
@@ -364,6 +371,87 @@ class AccountClosureServiceTest {
     assertTrue(isLive("students", avaStudent.value))
     assertTrue(isLive("users", ava.userId.value))
     assertEquals(0, SendEmailJobQueries.count(connection))
+  }
+
+  // --- the erasure it schedules (RFC 267) -------------------------------------------
+
+  /** Every ERASE_ACCOUNT job, as (payload, scheduled_at). */
+  private fun erasureJobs(): List<Pair<AccountErasurePayload, Instant>> =
+    connection
+      .prepareStatement("SELECT payload::text, scheduled_at FROM jobs WHERE job_type = 'ERASE_ACCOUNT'")
+      .use { stmt ->
+        stmt.executeQuery().use { rs ->
+          buildList {
+            while (rs.next()) {
+              add(
+                kotlinx.serialization.json.Json
+                  .decodeFromString<AccountErasurePayload>(rs.getString(1)) to rs.getTimestamp(2).toInstant(),
+              )
+            }
+          }
+        }
+      }
+
+  private fun deletedAt(account: Account): Instant =
+    connection.prepareStatement("SELECT deleted_at FROM users WHERE id = ?").use { stmt ->
+      stmt.setObject(1, account.userId.value)
+      stmt.executeQuery().use { rs ->
+        rs.next()
+        rs.getTimestamp(1).toInstant()
+      }
+    }
+
+  // 1
+  @Test
+  fun `a close schedules exactly one erasure of the account, graceDays after its close`() {
+    val ava = account("Ava Okafor")
+    studentOf(ava)
+
+    assertEquals(CloseAccountOutcome.Closed, close(ava))
+
+    val (payload, scheduledAt) = erasureJobs().single()
+    val closedAt = deletedAt(ava)
+    assertEquals(ava.userId.asString, payload.userId)
+    assertEquals(
+      closedAt,
+      java.time.OffsetDateTime
+        .parse(payload.closedAt)
+        .toInstant(),
+      "the job names this close",
+    )
+    assertEquals(closedAt.plus(Duration.ofDays(7)), scheduledAt, "scheduled_at = deleted_at + graceDays")
+  }
+
+  // 2
+  @Test
+  fun `a close whose erasure cannot be scheduled rolls back`() {
+    val ava = account("Ava Okafor")
+    val avaStudent = studentOf(ava)
+    connection.createStatement().use { stmt ->
+      stmt.execute(
+        """
+        CREATE FUNCTION erase_account_job_test_bomb() RETURNS trigger AS
+        'BEGIN RAISE EXCEPTION ''ERASE_ACCOUNT insert refused by test''; END;' LANGUAGE plpgsql;
+        """.trimIndent(),
+      )
+      stmt.execute(
+        "CREATE TRIGGER trigger_zz_erase_account_job_test_bomb BEFORE INSERT ON jobs " +
+          "FOR EACH ROW WHEN (NEW.job_type = 'ERASE_ACCOUNT') EXECUTE PROCEDURE erase_account_job_test_bomb()",
+      )
+    }
+    try {
+      assertTrue(runBlocking { service.close(ava.userId) }.isFailure, "a close that cannot schedule its erasure does not close")
+    } finally {
+      connection.createStatement().use { stmt ->
+        stmt.execute("DROP TRIGGER trigger_zz_erase_account_job_test_bomb ON jobs")
+        stmt.execute("DROP FUNCTION erase_account_job_test_bomb()")
+      }
+    }
+
+    assertTrue(isLive("users", ava.userId.value), "the account is live")
+    assertTrue(isLive("students", avaStudent.value))
+    assertTrue(sessionIsLive(ava))
+    assertEquals(emptyList(), erasureJobs())
   }
 
   /**

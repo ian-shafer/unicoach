@@ -8,6 +8,7 @@ import ed.unicoach.db.dao.DaoException
 import ed.unicoach.db.dao.RawSql
 import ed.unicoach.db.dao.SqlSession
 import ed.unicoach.db.models.UserId
+import ed.unicoach.email.EmailAccountKey
 import ed.unicoach.email.EmailBody
 import ed.unicoach.email.EmailSendStatus
 import ed.unicoach.email.EmailSubject
@@ -70,7 +71,7 @@ class EmailSendsDaoTest {
   private fun sentSend() =
     NewEmailSend(
       recipient = address("to@example.com"),
-      userId = null,
+      account = null,
       sender = address("noreply@uni.coach"),
       subject = subject("Welcome"),
       body = body("Hello there"),
@@ -83,7 +84,7 @@ class EmailSendsDaoTest {
   private fun rejectedSend() =
     NewEmailSend(
       recipient = address("to@example.com"),
-      userId = null,
+      account = null,
       sender = address("noreply@uni.coach"),
       subject = subject("Welcome"),
       body = body("Hello there"),
@@ -193,17 +194,38 @@ class EmailSendsDaoTest {
     return UserId(id)
   }
 
-  private fun userIdOf(sent: SentEmail): UUID? =
-    RawSql.single(connection, "SELECT user_id FROM email_sends WHERE id = ?", sent.id) { it.getObject("user_id", UUID::class.java) }
+  private fun userIdOf(sent: SentEmail): UUID? = keyOf(sent, "user_id")
+
+  private fun deletedUserIdOf(sent: SentEmail): UUID? = keyOf(sent, "deleted_user_id")
+
+  private fun keyOf(
+    sent: SentEmail,
+    column: String,
+  ): UUID? = RawSql.single(connection, "SELECT $column FROM email_sends WHERE id = ?", sent.id) { it.getObject(column, UUID::class.java) }
+
+  /** RFC 267: a receipt is recorded against the erased account, in deleted_user_id alone. */
+  @Test
+  fun `a send recorded for an erased account carries its deleted user id only`() {
+    val erased = account()
+    connection.prepareStatement("INSERT INTO deleted_users (id, created_at, closed_at) VALUES (?, NOW(), NOW())").use { stmt ->
+      stmt.setObject(1, erased.value)
+      stmt.executeUpdate()
+    }
+    val receipt = EmailSendsDao.insert(session, sentSend().copy(account = EmailAccountKey.Deleted(erased))).getOrThrow()
+
+    assertEquals(erased.value, deletedUserIdOf(receipt))
+    assertNull(userIdOf(receipt), "the live key stays NULL")
+  }
 
   /** RFC 263: a logged send carries the account it went to, so account erasure can reach it. */
   @Test
   fun `a send recorded for an account carries its user id`() {
     val recipient = account()
-    val forAccount = EmailSendsDao.insert(session, sentSend().copy(userId = recipient)).getOrThrow()
+    val forAccount = EmailSendsDao.insert(session, sentSend().copy(account = EmailAccountKey.Live(recipient))).getOrThrow()
     val forNoAccount = EmailSendsDao.insert(session, sentSend()).getOrThrow()
 
     assertEquals(recipient.value, userIdOf(forAccount))
+    assertNull(deletedUserIdOf(forAccount))
     assertNull(userIdOf(forNoAccount), "a send to no account stores a NULL key")
   }
 

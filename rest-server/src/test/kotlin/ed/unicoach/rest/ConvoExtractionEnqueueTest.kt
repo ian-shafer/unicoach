@@ -163,6 +163,7 @@ class ConvoExtractionEnqueueTest {
             costReportConfigFrom(config),
             supporterInviteConfigFrom(config),
             supporterCoachingConfigFrom(config),
+            accountErasureConfigFrom(config),
           )
         }
       enabledServer.start(wait = false)
@@ -197,6 +198,7 @@ class ConvoExtractionEnqueueTest {
             costReportConfigFrom(config),
             supporterInviteConfigFrom(config),
             supporterCoachingConfigFrom(config),
+            accountErasureConfigFrom(config),
           )
         }
       disabledServer.start(wait = false)

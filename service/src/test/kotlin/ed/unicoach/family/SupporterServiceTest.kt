@@ -18,6 +18,7 @@ import ed.unicoach.db.models.SupporterStudentLink
 import ed.unicoach.db.models.TokenHash
 import ed.unicoach.db.models.UnlinkOutcome
 import ed.unicoach.db.models.UserId
+import ed.unicoach.email.EmailAccountKey
 import ed.unicoach.queue.QueueService
 import ed.unicoach.util.TokenGenerator
 import kotlinx.coroutines.runBlocking
@@ -384,7 +385,7 @@ class SupporterServiceTest {
       val janes = link(supporterOf(janeUser), studentId)
 
       assertIs<UnlinkOutcome.Unlinked>(service.disconnectAsStudent(studentId, janes.id).getOrThrow())
-      assertEquals(listOf(janeUser.asString), SendEmailJobQueries.payloads(connection).map { it.userId })
+      assertEquals(listOf(EmailAccountKey.Live(janeUser)), SendEmailJobQueries.payloads(connection).map { it.account })
     }
   }
 

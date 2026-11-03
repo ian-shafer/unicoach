@@ -1,6 +1,8 @@
 package ed.unicoach.rest
 
 import ed.unicoach.account.AccountClosureService
+import ed.unicoach.account.AccountErasureConfig
+import ed.unicoach.account.AccountErasureScheduler
 import ed.unicoach.appstore.AppStoreConfig
 import ed.unicoach.appstore.AppStoreServerApi
 import ed.unicoach.appstore.AppStoreServerApiFactory
@@ -163,6 +165,12 @@ fun startServer(
       .from(config)
       .getOrThrow()
 
+  // RFC 267: the close schedules the erasure, delayed by this grace.
+  val accountErasureConfig =
+    AccountErasureConfig
+      .from(config)
+      .getOrThrow()
+
   val googleTokenVerifier =
     IdTokenVerifierFactory
       .googleFromConfig(SsoProviderConfig.from(config, "auth.google").getOrThrow())
@@ -276,6 +284,7 @@ fun startServer(
             costReportConfig,
             supporterInviteConfig,
             supporterCoachingConfig,
+            accountErasureConfig,
           )
 
           install(SessionExpiryPlugin) {
@@ -324,6 +333,7 @@ fun Application.appModule(
   costReportConfig: CostReportConfig,
   supporterInviteConfig: SupporterInviteConfig,
   supporterCoachingConfig: SupporterCoachingConfig,
+  accountErasureConfig: AccountErasureConfig,
 ) {
   // Must stay first so the request-logging interceptor wraps the whole pipeline.
   configureRequestLogging(requestLoggingConfig)
@@ -341,7 +351,7 @@ fun Application.appModule(
   // account close tell the other party through the same enqueue and text.
   val linkEndedNotice = LinkEndedNotice(queueService)
   val supporterService = SupporterService(database, linkEndedNotice)
-  val accountClosureService = AccountClosureService(database, linkEndedNotice)
+  val accountClosureService = AccountClosureService(database, linkEndedNotice, AccountErasureScheduler(queueService, accountErasureConfig))
   // The one writer of a parent's request to connect (RFC 254). rest-server serves
   // the student's approve and decline, and releases a waiting request when its
   // claimant verifies their address here.
