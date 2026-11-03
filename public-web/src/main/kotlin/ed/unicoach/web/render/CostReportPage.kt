@@ -80,7 +80,10 @@ import kotlinx.html.a
 import kotlinx.html.aside
 import kotlinx.html.button
 import kotlinx.html.caption
+import kotlinx.html.dd
 import kotlinx.html.div
+import kotlinx.html.dl
+import kotlinx.html.dt
 import kotlinx.html.h1
 import kotlinx.html.h2
 import kotlinx.html.h3
@@ -170,6 +173,33 @@ private const val NO_SCORE_EFFECT_LINE = "A test score does not change what this
 private const val NO_SCORE_ROW_LABEL = "no test score"
 
 /**
+ * The column headers of a published grid (glance/03), each chosen under the
+ * page's "award" ban ([AWARD_KIND_SENTENCE]): the school's own band names and
+ * words are quoted in the cells, and none of OUR words above them says it.
+ *
+ * "Scholarship" is also the term over a National Merit row's own name
+ * ([meritFactsOf]): both label the school's name for its scholarship.
+ */
+private const val SCHOLARSHIP_LABEL = "Scholarship"
+private const val TEST_SCORE_COLUMN = "Test score"
+private const val GPA_COLUMN = "GPA"
+
+/**
+ * The pays header, decided with its cells by [paysColumnOf]: "a year" is in the
+ * header only when every cell under it is a dollar figure, so the unit never
+ * claims a school's own words ("tuition and fees") are an amount per year.
+ */
+private const val PAYS_A_YEAR_COLUMN = "Pays a year"
+private const val PAYS_COLUMN = "Pays"
+
+/**
+ * A grid cell in a column some other band of the same grid fills: this band's
+ * school printed nothing there. Said, never left empty or dashed, so a phone
+ * card never reads "GPA:" with nothing after it and the row never mis-aligns.
+ */
+private const val NONE_PUBLISHED = "none published"
+
+/**
  * The heading over one school's published National Merit scholarships (RFC
  * 247). "Scholarships" and not "awards", for [AWARD_GRID_HEADING]'s reason.
  */
@@ -185,12 +215,32 @@ private const val NATIONAL_MERIT_KIND_SENTENCE =
   "A National Merit scholarship a school publishes is the school's own money, paid only to students who reach " +
     "the standing it names, and is not a financial aid offer."
 
-/** An `automatic` row (RFC 247 D5): the school pays everyone who holds the standing and meets its terms. */
-private const val AUTOMATIC_MERIT_LINE = "The school pays this to every student holding this standing who meets its terms."
+/**
+ * K4 (glance/03, brief 0016): what "paid" and "considered" MEAN, said ONCE for
+ * the page beside [NATIONAL_MERIT_KIND_SENTENCE], so each row can say which it
+ * is in one word. Each row used to carry its own 14- or 15-word sentence for
+ * this (RFC 247 D5), the same sentence at every school.
+ *
+ * It keeps D5's distinction whole: an `automatic` row is paid to everyone
+ * holding the standing who meets the terms; a `competitive` one is CONSIDERED,
+ * and is never said as promised.
+ */
+private const val NATIONAL_MERIT_GUARANTEE_KIND_SENTENCE =
+  "A National Merit scholarship marked paid is paid to every student holding that standing who meets the school's " +
+    "terms; one marked considered is not promised."
 
-/** A `competitive` row (RFC 247 D5): CONSIDERED, and never said as paid. */
-private const val COMPETITIVE_MERIT_LINE =
-  "The school considers students holding this standing for this scholarship. It does not promise it."
+/**
+ * The terms of a National Merit row's definition list (glance/03), each over
+ * one fact, in the order a parent reads a row. The school's own name for its
+ * scholarship, where it has one, is under [SCHOLARSHIP_LABEL].
+ */
+private const val MERIT_FOR_TERM = "For"
+private const val MERIT_GUARANTEE_TERM = "Paid or considered"
+private const val MERIT_PER_YEAR_TERM = "A year"
+private const val MERIT_TOTAL_TERM = "In total"
+private const val MERIT_WORDS_TERM = "The school's words"
+private const val MERIT_FIRST_CHOICE_TERM = "First choice"
+private const val MERIT_APPLY_TERM = "Apply by"
 
 /** A row whose page says nothing about first choice: the silence stated, never resolved into a yes or a no. */
 private const val FIRST_CHOICE_UNSAID = "This school's page does not say whether it must be named first choice."
@@ -1945,13 +1995,16 @@ private fun gridHeadingOf(residency: PublishedResidency): String =
     ?: AWARD_GRID_HEADING
 
 /**
- * One school's published grid: who it is for, who published it and when we read
- * it, what it asks a student to submit, the day scores must be there by, and the
- * cells themselves.
+ * One school's published grid as ONE TABLE (glance/03, brief 0016 D5): who it
+ * is for in the heading, who published it, when we read it, what it asks a
+ * student to submit and the day scores must be there by in the caption, and
+ * one row per published band beneath.
  *
  * ATTRIBUTED ONCE, ABOVE THE CELLS (RFC 190), exactly as [meritBlock] and
- * [borrowingParagraphs] are: the claimant and the day we read the page, then
- * everything that came off it. Never once per band.
+ * [borrowingBlock] are: the caption is the claimant and the day we read the
+ * page, then everything that came off it. Never once per band. The school's
+ * requirement and deadline ride in the same caption because they are about
+ * the whole table, not about any one row of it.
  *
  * NOT A LINK, unlike [sourceLink]. That helper renders a [CdsCitation], whose
  * `linkTargetOrNull` asserts the scheme before anything reaches an `href` --
@@ -1959,11 +2012,12 @@ private fun gridHeadingOf(residency: PublishedResidency): String =
  * `source_url` has no such door yet, so the publisher is named and no anchor is
  * opened; naming the publisher is what the citation owes a family.
  *
- * The block is ABSENT only where the school published NO cell at all -- a
+ * The block is ABSENT only where the school published NO band at all -- a
  * heading and a citation with nothing under them is a section claiming the
  * school published something while showing nothing it published ([meritBlock]'s
- * rule). Every cell the school did publish is printed: [bandLine] can no longer
- * drop one, so a shorter grid than the school's is not a state this page has.
+ * rule). Every band the school did publish is a row: no cell function answers
+ * "drop this band", so a shorter grid than the school's is not a state this
+ * page has.
  */
 private fun FlowContent.awardGridBlock(grid: PrintableGrid) {
   val award = grid.award
@@ -1971,90 +2025,160 @@ private fun FlowContent.awardGridBlock(grid: PrintableGrid) {
   // by the bottom of the band, then by the grade point average floor -- the
   // order a school prints its own grid in), so this page never re-sorts a
   // school's table into an order it did not publish.
-  val cells = award.bands.map { bandLine(it, grid.scoreIsMoney) }
-  if (cells.isEmpty()) return
+  val bands = award.bands
+  if (bands.isEmpty()) return
+  val columns = gridColumnsOf(bands, grid.scoreIsMoney)
   section("report-award-grid") {
     h3 { +grid.heading }
-    p("report-source") { +readOnCitationOf(award.publisher, award.checkedOn) }
-    if (!grid.scoreIsMoney) p { +NO_SCORE_EFFECT_LINE }
-    // The school's OWN sentence about submitting a score where it published one.
-    // Where it published none, the silence is stated as the silence it is --
-    // never resolved into a "yes" or a "no" the page would be inventing.
-    p("report-award-requirement") {
-      +(award.scoreRequirementAsPublished ?: "This school does not say whether a test score must be submitted.")
+    table("$DATA_TABLE_CLASS report-table report-award-table") {
+      caption { gridCaption(grid) }
+      thead {
+        tr {
+          th(scope = ThScope.col) { +SCHOLARSHIP_LABEL }
+          columns.forEach { column -> th(scope = ThScope.col) { +column.header } }
+        }
+      }
+      tbody {
+        bands.forEach { band ->
+          tr {
+            // The school's own name for the band, quoted -- the row's header.
+            rowHeader(band.awardName)
+            columns.forEach { column ->
+              textValueCell(column.header, column.cellOf(band)?.let { TextCell.Figure(it) } ?: TextCell.Blank(NONE_PUBLISHED))
+            }
+          }
+        }
+      }
     }
-    // THROUGH THE ONE DATE SEAM. [UsDate] is the only thing in this repo that
-    // gives a date a human shape, and it returns a date and nothing else -- the
-    // sentence around it is this caller's.
-    award.scoreDeadline?.let { deadline -> p("report-award-deadline") { +"Scores must be with this school by ${UsDate.of(deadline)}." } }
-    ul { cells.forEach { cell -> li { +cell } } }
   }
 }
 
 /**
- * One published cell, as a family reads it: what the school calls it, what it
- * asks for, and what it pays.
+ * The grid's caption: four sentences, each in its own span so a reader -- and a
+ * test -- can find each fact by name, said in the order the page always said
+ * them above the old list.
+ */
+private fun FlowContent.gridCaption(grid: PrintableGrid) {
+  val award = grid.award
+  span("report-source") { +readOnCitationOf(award.publisher, award.checkedOn) }
+  if (!grid.scoreIsMoney) {
+    +" "
+    span("report-award-no-score-effect") { +NO_SCORE_EFFECT_LINE }
+  }
+  // The school's OWN sentence about submitting a score where it published one.
+  // Where it published none, the silence is stated as the silence it is --
+  // never resolved into a "yes" or a "no" the page would be inventing.
+  +" "
+  span("report-award-requirement") {
+    +(award.scoreRequirementAsPublished ?: "This school does not say whether a test score must be submitted.")
+  }
+  // THROUGH THE ONE DATE SEAM. [UsDate] is the only thing in this repo that
+  // gives a date a human shape, and it returns a date and nothing else -- the
+  // sentence around it is this caller's.
+  award.scoreDeadline?.let { deadline ->
+    +" "
+    span("report-award-deadline") { +"Scores must be with this school by ${UsDate.of(deadline)}." }
+  }
+}
+
+/**
+ * One column of a printed grid after the band names: its header, and the cell a
+ * band has under it, or null where the school printed nothing for that band
+ * there (rendered [NONE_PUBLISHED]).
+ */
+private class GridColumn(
+  val header: String,
+  val cellOf: (AutomaticAwardBand) -> String?,
+)
+
+/**
+ * The columns this grid prints, in reading order: what it asks (a score, a
+ * grade point average), then what it pays.
+ *
+ * A COLUMN NO BAND FILLS IS NOT PRINTED. A school that publishes no grade
+ * point average axis gets no GPA column, and one whose table a score does not
+ * move gets no test score column -- a header over a column of "none published"
+ * would say the school left out something it never asked. A column at least
+ * one band fills IS printed, and the bands that leave it empty say so.
+ */
+private fun gridColumnsOf(
+  bands: List<AutomaticAwardBand>,
+  scoreIsMoney: Boolean,
+): List<GridColumn> =
+  listOfNotNull(
+    GridColumn(TEST_SCORE_COLUMN) { scoreCellOf(it, scoreIsMoney) }.takeIf { column -> bands.any { column.cellOf(it) != null } },
+    GridColumn(GPA_COLUMN, ::gpaRangeOf).takeIf { column -> bands.any { column.cellOf(it) != null } },
+    paysColumnOf(bands),
+  )
+
+/**
+ * What a band asks on the test axis: its range on the test's own scale, or the
+ * published no-score row's label.
+ *
+ * A band on [BandScoreAxis.NoScore] names no test: that is the published
+ * NO-SCORE row -- the tier a student who submits nothing lands in -- and it is
+ * what makes "a score is worth more than no score" visible without inventing a
+ * zero band. It is a MEMBER of the axis, so this reads it rather than inferring
+ * it from a test it did not find.
+ *
+ * [NO_SCORE_ROW_LABEL] ONLY WHERE A SCORE IS MONEY. At a school whose grid a
+ * score moves, a band on the no-score row IS the published no-score tier and
+ * saying so is the point. At a school whose table a score does not move, EVERY
+ * band is on that row, and labelling them all "no test score" would invent a
+ * test-optional tier out of a school that has no test axis at all -- so there
+ * the cell is null, and [gridColumnsOf] drops the column.
+ */
+private fun scoreCellOf(
+  band: AutomaticAwardBand,
+  scoreIsMoney: Boolean,
+): String? =
+  when (val axis = band.score) {
+    is BandScoreAxis.NoScore -> NO_SCORE_ROW_LABEL.takeIf { scoreIsMoney }
+    is BandScoreAxis.Range -> "${axis.test.displayName} ${axis.low}–${axis.high}"
+  }
+
+/**
+ * The pays column, its header and its cells decided TOGETHER, from the whole
+ * grid, so the header can never claim a unit one of its cells does not have.
+ *
+ * Every band a dollar figure: "Pays a year" over bare amounts. Any band in the
+ * school's own words: "Pays" over amounts that each say "a year" themselves and
+ * words quoted verbatim -- "tuition and fees" is not a sum per year, and "The
+ * award amount varies from $8,000- $12,000 annually" is the school's sentence,
+ * which no header of ours re-labels.
  *
  * THE SCHOOL'S OWN WORDS WHERE IT PUBLISHES NO FIGURE. Nineteen of the 571
  * committed cells pay "tuition and fees" rather than a number, and they are the
  * TOP bands -- rendering a blank or a zero there would show a school's best
- * award as its worst.
- *
- * NO CELL IS EVER DROPPED. This used to answer null for a cell it could not
- * price, and the caller's `mapNotNull` then printed the surviving cells as the
- * school's grid -- a family reading an incomplete money table that looks
- * complete, with nothing saying so. [AutomaticAwardBand] refuses at construction
- * to carry neither an amount nor the school's words, so [paysOf] reads that
- * guarantee instead of adding a null arm whose only effect is a silent drop.
- *
- * A cell on [BandScoreAxis.NoScore] names no test: that is the published
- * NO-SCORE row -- the tier a student who submits nothing lands in -- and it is
- * what makes "a score is worth more than no score" visible without inventing a
- * zero band. It is a MEMBER of the axis, so this renderer reads it rather than
- * inferring it from a test it did not find.
+ * scholarship as its worst.
  */
-private fun bandLine(
-  band: AutomaticAwardBand,
-  scoreIsMoney: Boolean,
-): String {
-  val pays = paysOf(band)
-  // [NO_SCORE_ROW_LABEL] ONLY WHERE A SCORE IS MONEY. At a school whose grid a
-  // score moves, a cell on the no-score row IS the published no-score tier and
-  // saying so is the point. At a school whose table a score does not move,
-  // EVERY cell is on that row, and labelling them all "no test score" would
-  // invent a test-optional tier out of a school that has no test axis at all.
-  val noScoreRow = band.score is BandScoreAxis.NoScore
-  val asks = listOfNotNull(scoreRangeOf(band) ?: NO_SCORE_ROW_LABEL.takeIf { noScoreRow && scoreIsMoney }, gpaRangeOf(band))
-  // A cell with no condition on it at all states none: the school published a
-  // name and an amount, and the page invents no qualification it did not print.
-  if (asks.isEmpty()) return "${band.awardName} — $pays"
-  return "${band.awardName} — ${asks.joinToString(", ")} — $pays"
+private fun paysColumnOf(bands: List<AutomaticAwardBand>): GridColumn {
+  val unitInHeader = bands.all { it.awardPerYearUsd != null }
+  return GridColumn(if (unitInHeader) PAYS_A_YEAR_COLUMN else PAYS_COLUMN) { paysOf(it, unitInHeader) }
 }
 
 /**
- * What this cell pays, in the school's own terms.
+ * What this band pays, in the school's own terms, with "a year" said here
+ * unless [unitInHeader] -- the one decision [paysColumnOf] made for the column.
  *
  * NEVER ABSENT. `college_automatic_award_bands_award_has_value_check` and
- * [AutomaticAwardBand]'s own `require` both refuse a cell carrying neither an
+ * [AutomaticAwardBand]'s own `require` both refuse a band carrying neither an
  * amount nor the school's words, so this states that guarantee rather than
- * dropping a published cell out of a money table in silence.
+ * dropping a published band out of a money table in silence.
  */
-private fun paysOf(band: AutomaticAwardBand): String =
-  band.awardPerYearUsd?.let { "${WholeDollars.spoken(it)} a year" }
+private fun paysOf(
+  band: AutomaticAwardBand,
+  unitInHeader: Boolean,
+): String =
+  band.awardPerYearUsd?.let { if (unitInHeader) WholeDollars.spoken(it) else "${WholeDollars.spoken(it)} a year" }
     ?: checkNotNull(band.awardAsPublished) {
       "band [${band.id.value}] of award [${band.awardId.value}] states neither an amount nor the school's own " +
         "words (college_automatic_award_bands_award_has_value_check)"
     }
 
-/** The band on the test's own published scale, or null for the published no-score row, which [bandLine] labels instead. */
-private fun scoreRangeOf(band: AutomaticAwardBand): String? =
-  when (val axis = band.score) {
-    is BandScoreAxis.NoScore -> null
-    is BandScoreAxis.Range -> "${axis.test.displayName} ${axis.low}–${axis.high}"
-  }
-
 /**
- * The grade point average cell, at whichever end the school published one.
+ * The grade point average cell, at whichever end the school published one,
+ * under the [GPA_COLUMN] header that names the measure.
  *
  * Either bound may be absent, because a school may publish "3.50 and above" or
  * no grade point average axis at all, and a missing bound is never filled in
@@ -2067,9 +2191,9 @@ private fun gpaRangeOf(band: AutomaticAwardBand): String? {
   val low = band.gpaLow?.let { PublishedGpa.of(it) }
   val high = band.gpaHigh?.let { PublishedGpa.of(it) }
   return when {
-    low != null && high != null -> "GPA $low–$high"
-    low != null -> "GPA $low and above"
-    high != null -> "GPA up to $high"
+    low != null && high != null -> "$low–$high"
+    low != null -> "$low and above"
+    high != null -> "up to $high"
     else -> null
   }
 }
@@ -2115,7 +2239,8 @@ private data class PrintableMeritRow(
 
 /**
  * Which National Merit rows this page prints, decided ONCE so the block and the
- * two sentences in [tierKindsSection] can never disagree (D3, D8).
+ * sentences in [tierKindsSection] about it (the kind, the base rate, K4) can
+ * never disagree (D3, D8).
  *
  * Exhaustive with no `else`, the [printableGridOf] shape. Three refusals (D4):
  *
@@ -2160,7 +2285,18 @@ private fun printableMeritRowOf(answer: NationalMeritPublishedAnswer): Printable
 
 /**
  * One publisher's rows for one school: the heading, the attribution once, then
- * one item per row in the order the read served them.
+ * one definition list per row, in the order the read served them.
+ *
+ * A DEFINITION LIST AND NOT A TABLE (glance/03, brief 0016 D5): a row is a
+ * handful of facts, two of them the school's own sentences, and a table of them
+ * is six columns wide on a laptop with an empty money cell for every school
+ * that publishes words alone. A `<dl>` reads the same on a phone and a laptop:
+ * each fact under its own term, each term in the markup rather than in a
+ * sentence around the figure.
+ *
+ * THE ATTRIBUTION STAYS A LINE UNDER THE HEADING, because a `<dl>` has no
+ * caption, and one line per (publisher, read date) section is still said once
+ * above every row it covers (RFC 190).
  *
  * NOTHING IS SUMMED, RANKED OR CALLED BEST (D6). A school may publish words
  * and no figure, so there is no order by money to compute, and none is.
@@ -2177,71 +2313,107 @@ private fun FlowContent.nationalMeritBlock(
   section("report-national-merit") {
     h3 { +NATIONAL_MERIT_HEADING }
     p("report-source") { +readOnCitationOf(publisher, readOn) }
-    ul { rows.forEach { row -> li { meritRowLines(row) } } }
+    rows.forEach { row ->
+      dl("report-merit-facts") {
+        meritFactsOf(row).forEach { fact ->
+          dt { +fact.term }
+          dd(fact.valueClass) { +fact.value }
+        }
+      }
+    }
   }
 }
 
-/** One printed row, in the order a parent reads it: whose scholarship, who it is for, whether it is paid, what, and when. */
-private fun FlowContent.meritRowLines(row: PrintableMeritRow) {
-  // The school's own name for its scholarship, quoted where it names one.
-  row.claim.awardName?.let { name -> p("report-merit-name") { +name } }
-  p("report-merit-standing") { +meritStandingLineOf(row) }
-  p("report-merit-guarantee") { +guaranteeLineOf(row.claim.guarantee) }
-  meritFigureOf(row.priced)?.let { figure -> p("report-merit-figure") { +figure } }
-  p("report-merit-words") { +row.priced.asPublished }
-  p("report-merit-first-choice") { +firstChoiceLineOf(row.claim.firstChoice) }
-  row.claim.applyDeadline?.let { deadline -> p("report-merit-apply") { +applyLineOf(deadline) } }
-}
+/** One fact of a printed National Merit row: its term, and its value under the class a reader -- and a test -- finds it by. */
+private data class MeritFact(
+  val term: String,
+  val valueClass: String,
+  val value: String,
+)
 
-/** The school's application deadline: its day through the date seam, then its own words. */
-private fun applyLineOf(deadline: ApplyDeadline): String = "Apply by ${UsDate.of(deadline.on)}. ${deadline.asPublished}"
+/**
+ * One printed row's facts, in the order a parent reads them: whose
+ * scholarship, who it is for, whether it is paid, what, and when. A fact the
+ * row does not carry is not a pair at all -- no term over nothing.
+ *
+ * THE MONEY IS THE SCHOOL'S OWN FIGURES, where it publishes any, and no pair
+ * where it publishes words alone -- never a `$0` (D6). A count of years with no
+ * amount is words alone too: the school's sentence carries it, and "Over 4
+ * years" with no figure says nothing. Read off the [PublishedPackage.Priced], so
+ * no figure reaches this page except inside the value that carries the base
+ * rate.
+ */
+private fun meritFactsOf(row: PrintableMeritRow): List<MeritFact> =
+  listOfNotNull(
+    // The school's own name for its scholarship, quoted where it names one.
+    row.claim.awardName?.let { MeritFact(SCHOLARSHIP_LABEL, "report-merit-name", it) },
+    MeritFact(MERIT_FOR_TERM, "report-merit-standing", meritStandingOf(row)),
+    MeritFact(MERIT_GUARANTEE_TERM, "report-merit-guarantee", guaranteeOf(row.claim.guarantee)),
+    perYearFactOf(row.priced),
+    totalFactOf(row.priced),
+    MeritFact(MERIT_WORDS_TERM, "report-merit-words", row.priced.asPublished),
+    MeritFact(MERIT_FIRST_CHOICE_TERM, "report-merit-first-choice", firstChoiceLineOf(row.claim.firstChoice)),
+    row.claim.applyDeadline?.let { MeritFact(MERIT_APPLY_TERM, "report-merit-apply", applyDateOf(it)) },
+  )
+
+/**
+ * The yearly figure, where the school publishes one. THE YEARS QUALIFY THE
+ * TOTAL ([totalFactOf]), so they ride here ("$17,500 for 4 years") only on a
+ * row with no total -- the count is never lost and never said twice.
+ */
+private fun perYearFactOf(priced: PublishedPackage.Priced): MeritFact? =
+  priced.perYearUsd?.let { perYear ->
+    val spoken = WholeDollars.spoken(perYear)
+    val years = yearsOf(priced)
+    val value = if (years != null && priced.totalUsd == null) "$spoken for $years" else spoken
+    MeritFact(MERIT_PER_YEAR_TERM, "report-merit-per-year", value)
+  }
+
+/** The total, where the school publishes one, with the years beside it ("$70,000 over 4 years"). */
+private fun totalFactOf(priced: PublishedPackage.Priced): MeritFact? =
+  priced.totalUsd?.let { total ->
+    val spoken = WholeDollars.spoken(total)
+    MeritFact(MERIT_TOTAL_TERM, "report-merit-total", yearsOf(priced)?.let { "$spoken over $it" } ?: spoken)
+  }
+
+/** The count of years a package runs, said as a reader says it, or null where the school publishes none. */
+private fun yearsOf(priced: PublishedPackage.Priced): String? = priced.years?.let { if (it == 1) "1 year" else "$it years" }
+
+/** The school's application deadline, under the "Apply by" term: its day through the date seam, then its own words. */
+private fun applyDateOf(deadline: ApplyDeadline): String = "${UsDate.of(deadline.on)}. ${deadline.asPublished}"
 
 /**
  * Who the row is for: the standing, the entering class it was published for
  * (D7 -- a school's headline figure can be for a different entering class than
  * the one a reader assumes), and the school's audience where it publishes one.
+ * Under the "For" term, so the value is the rest of the old sentence.
  */
-private fun meritStandingLineOf(row: PrintableMeritRow): String {
+private fun meritStandingOf(row: PrintableMeritRow): String {
   val audience =
     publishedAudienceOf(row.award.residencyBasis) { throw CorruptAwardResidencyBasisException(row.award) }
       ?.let { ", $it" }
       .orEmpty()
-  return "For ${meritStandingOf(row.claim.standing)} entering in ${row.award.entryYear.label}$audience."
+  return "${standingOf(row.claim.standing)} entering in ${row.award.entryYear.label}$audience"
 }
 
-/** D5: an `automatic` row is paid; a `competitive` one is considered and never said as paid. */
-private fun guaranteeLineOf(guarantee: AwardGuarantee): String =
+/**
+ * D5 in one word: an `automatic` row is paid; a `competitive` one is considered
+ * and never said as paid. What each word promises is
+ * [NATIONAL_MERIT_GUARANTEE_KIND_SENTENCE]'s, once for the page.
+ */
+private fun guaranteeOf(guarantee: AwardGuarantee): String =
   when (guarantee) {
-    AwardGuarantee.AUTOMATIC -> AUTOMATIC_MERIT_LINE
-    AwardGuarantee.COMPETITIVE -> COMPETITIVE_MERIT_LINE
+    AwardGuarantee.AUTOMATIC -> "Paid"
+    AwardGuarantee.COMPETITIVE -> "Considered"
   }
 
 /** The standing, in this page's own words (the chat tool's labels are the coach's, and say "her"). */
-private fun meritStandingOf(standing: QualifyingStanding): String =
+private fun standingOf(standing: QualifyingStanding): String =
   when (standing) {
     QualifyingStanding.FINALIST -> "National Merit Finalists"
     QualifyingStanding.SEMIFINALIST -> "National Merit Semifinalists"
     QualifyingStanding.COMMENDED -> "National Merit Commended Students"
   }
-
-/**
- * The school's own figures, where it publishes any, and null where it publishes
- * words alone -- never a `$0` (D6). A count of years with no amount is words
- * alone too: the school's sentence carries it, and "Over 4 years." says nothing. Read off the [PublishedPackage.Priced], so
- * no figure reaches this page except inside the value that carries the base
- * rate.
- */
-private fun meritFigureOf(priced: PublishedPackage.Priced): String? {
-  val amounts =
-    listOfNotNull(
-      priced.perYearUsd?.let { "${WholeDollars.spoken(it)} a year" },
-      priced.totalUsd?.let { "${WholeDollars.spoken(it)} in total" },
-    )
-  if (amounts.isEmpty()) return null
-  val spoken = amounts.joinToString(", ")
-  val years = priced.years?.let { if (it == 1) "1 year" else "$it years" }
-  return if (years == null) "$spoken." else "$spoken over $years."
-}
 
 /** The first-choice rule in the school's own words, the silence where it states none. */
 private fun firstChoiceLineOf(rule: FirstChoiceRule?): String =
@@ -2556,6 +2728,9 @@ private fun FlowContent.tierKindsSection(
     if (kinds.meritRows.isNotEmpty()) {
       p("report-kind") { +NATIONAL_MERIT_KIND_SENTENCE }
       p("report-kind report-merit-base-rate") { +baseRateSentenceOf(kinds.meritRows) }
+      // K4 (glance/03): what the one word in each row's "Paid or considered"
+      // pair promises, said once here rather than as a sentence in every row.
+      p("report-kind report-kind-merit-guarantee") { +NATIONAL_MERIT_GUARANTEE_KIND_SENTENCE }
     }
     // Once for the page, like the two above (brief 0011 D19). It leans on the
     // administrative-record kind sentence for "only students who got federal

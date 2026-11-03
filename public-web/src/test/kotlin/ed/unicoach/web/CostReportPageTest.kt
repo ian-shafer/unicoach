@@ -33,6 +33,7 @@ import ed.unicoach.common.util.Share
 import ed.unicoach.common.util.WholeCount
 import ed.unicoach.db.models.AbsenceStatus
 import ed.unicoach.db.models.AdmissionTest
+import ed.unicoach.db.models.ApplyDeadline
 import ed.unicoach.db.models.AssuranceTier
 import ed.unicoach.db.models.AutomaticAward
 import ed.unicoach.db.models.AutomaticAwardBand
@@ -2604,6 +2605,41 @@ class CostReportPageTest {
       automaticAwards = answers,
     )
 
+  /** Every published grid's section on the page, in page order, each asserted to hold exactly one table. */
+  private fun gridSectionsOf(body: String): List<Element> =
+    Jsoup.parse(body).select("section.report-award-grid").onEach {
+      assertEquals(1, it.select("table.report-award-table").size, "one table per published grid: [$it]")
+    }
+
+  /** The one grid table on a one-grid page. */
+  private fun gridTableOf(body: String): Element =
+    requireNotNull(gridSectionsOf(body).single().selectFirst("table.report-award-table")) { "no grid table: [$body]" }
+
+  /** A grid table's column headers, left to right. */
+  private fun gridHeadersOf(table: Element): List<String> = table.select("thead th").map { it.text() }
+
+  /**
+   * A grid table's rows as a parent reads them: each cell's text keyed by the
+   * header of the column it sits under, in published row order.
+   *
+   * Every value cell's `data-label` -- the label a phone card prints beside it
+   * -- is ASSERTED here to be exactly its column's header, so every grid test
+   * also proves no cell is read under the wrong column on a phone.
+   */
+  private fun gridRowsOf(table: Element): List<Map<String, String>> {
+    val headers = gridHeadersOf(table)
+    return table.select("tbody tr").map { row ->
+      val cells = row.children()
+      assertEquals(headers.size, cells.size, "a row has one cell per column, so it never mis-aligns: [$row]")
+      assertEquals("th", cells.first()!!.tagName(), "the band's own name heads its row: [$row]")
+      cells.drop(1).forEachIndexed { at, cell ->
+        assertEquals(headers[at + 1], cell.attr("data-label"), "a cell is labelled with its own column: [$row]")
+        assertTrue(cell.text().isNotBlank() && cell.text() != "\u2014", "a cell is never empty and never a dash: [$row]")
+      }
+      headers.zip(cells.map { it.text() }).toMap()
+    }
+  }
+
   @Test
   fun `a school where a score is money shows its published grid, its requirement and its deadline`() {
     val id = CollegeId(UUID.randomUUID())
@@ -2629,19 +2665,39 @@ class CostReportPageTest {
 
     val body = renderedReportOf(costProfile(listOf(gridSchool(collegeId = id, answers = listOf(scoreBands(award)))), answeredMoney()))
 
-    assertTrue(body.contains("report-award-grid"), "the block must be on the page: [$body]")
-    assertTrue(body.contains("Automatic scholarships this school publishes"), "the block must say whose grid it is: [$body]")
-    // The school's own cells, in the order the read served them, each with what
-    // it asks for and what it pays.
-    assertTrue(body.contains("Presidential \u2014 SAT 1200\u20131250 \u2014 \$6,000 a year"), "the SAT cell: [$body]")
-    assertTrue(body.contains("Presidential \u2014 ACT 30\u201331 \u2014 \$8,000 a year"), "the ACT cell: [$body]")
-    assertTrue(
-      body.contains("Achievement \u2014 no test score, GPA 3.50 and above \u2014 \$2,000 a year"),
-      "the published no-score tier says it asks for no score: [$body]",
+    val section = gridSectionsOf(body).single()
+    assertEquals("Automatic scholarships this school publishes", section.selectFirst("h3")?.text(), "whose grid it is: [$section]")
+    // Everything about the whole table is its caption: who published it and
+    // when we read it, the school's requirement and its deadline, verbatim and
+    // in that order. Nothing is left as a sentence above the table.
+    val table = section.selectFirst("table.report-award-table")!!
+    assertEquals(
+      "Source: $GRID_PUBLISHER, read on Aug 1, 2026. $GRID_REQUIREMENT Scores must be with this school by Dec 4, 2026.",
+      captionOf(table),
+      "cited once, at the head of the table, with the requirement and the deadline through the date seam: [$table]",
     )
-    assertTrue(body.contains(GRID_REQUIREMENT), "the submission requirement, in the school's own words: [$body]")
-    assertTrue(body.contains("Scores must be with this school by Dec 4, 2026."), "the score deadline, through the date seam: [$body]")
-    assertTrue(body.contains("Source: $GRID_PUBLISHER, read on Aug 1, 2026."), "cited once, at the head of the block: [$body]")
+    assertEquals("Source: $GRID_PUBLISHER, read on Aug 1, 2026.", table.selectFirst("caption .report-source")?.text())
+    assertEquals(GRID_REQUIREMENT, table.selectFirst("caption .report-award-requirement")?.text())
+    assertEquals("Scores must be with this school by Dec 4, 2026.", table.selectFirst("caption .report-award-deadline")?.text())
+    assertTrue(table.select(".report-award-no-score-effect").isEmpty(), "a score IS money here, so that sentence is not said: [$table]")
+    assertTrue(section.select("p, ul, li").isEmpty(), "no sentence or list is left beside the table: [$section]")
+    // The school's own bands, in the order the read served them, each with what
+    // it asks for and what it pays. Every band is a dollar figure, so the unit
+    // is in the header and the cells are bare amounts. One band has a grade
+    // point average floor, so the column prints, and the bands without one say
+    // so in words rather than leaving a hole.
+    assertEquals(listOf("Scholarship", "Test score", "GPA", "Pays a year"), gridHeadersOf(table))
+    assertEquals(
+      listOf(
+        mapOf("Scholarship" to "Presidential", "Test score" to "SAT 1200\u20131250", "GPA" to "none published", "Pays a year" to "\$6,000"),
+        mapOf("Scholarship" to "Presidential", "Test score" to "ACT 30\u201331", "GPA" to "none published", "Pays a year" to "\$8,000"),
+        // The published no-score tier says it asks for no score.
+        mapOf("Scholarship" to "Achievement", "Test score" to "no test score", "GPA" to "3.50 and above", "Pays a year" to "\$2,000"),
+      ),
+      gridRowsOf(table),
+    )
+    // The labelled blank is the page's one blank shape, so it reads as quiet as every other.
+    assertEquals(2, table.select("td span.report-blank").count { it.text() == "none published" }, "[$table]")
   }
 
   @Test
@@ -2688,12 +2744,64 @@ class CostReportPageTest {
 
     val body = renderedReportOf(costProfile(listOf(gridSchool(collegeId = id, answers = listOf(answer))), answeredMoney()))
 
-    assertTrue(body.contains("report-award-grid"), "a table a score does not move is still published money: [$body]")
-    assertTrue(
-      body.contains("A test score does not change what this school's automatic scholarships pay."),
-      "\"we do not know\" would be false here, so the page says the true thing: [$body]",
+    val table = gridTableOf(body)
+    assertEquals(
+      "A test score does not change what this school's automatic scholarships pay.",
+      table.selectFirst("caption .report-award-no-score-effect")?.text(),
+      "\"we do not know\" would be false here, so the page says the true thing, about the whole table: [$table]",
     )
-    assertTrue(body.contains("Trustee \u2014 GPA 3.75 and above \u2014 \$4,000 a year"), "and it still shows the table: [$body]")
+    assertEquals(
+      "Source: $GRID_PUBLISHER, read on Aug 1, 2026. A test score does not change what this school's automatic scholarships " +
+        "pay. $GRID_REQUIREMENT Scores must be with this school by Dec 4, 2026.",
+      captionOf(table),
+    )
+    // No band names a test, so the table has no test score column at all --
+    // and never a column of "no test score" inventing a test-optional tier.
+    assertEquals(listOf("Scholarship", "GPA", "Pays a year"), gridHeadersOf(table), "and it still shows the table: [$table]")
+    assertEquals(listOf(mapOf("Scholarship" to "Trustee", "GPA" to "3.75 and above", "Pays a year" to "\$4,000")), gridRowsOf(table))
+  }
+
+  @Test
+  fun `a grid's grade point average cells keep each published form, under a header that names the measure`() {
+    val id = CollegeId(UUID.randomUUID())
+    val award =
+      gridAward(
+        collegeId = id,
+        bands =
+          listOf(
+            gridBand(awardName = "Dean", score = sat(1200, 1290), gpaLow = BigDecimal("3.50"), gpaHigh = BigDecimal("3.74")),
+            gridBand(awardName = "Provost", score = sat(1300, 1390), gpaHigh = BigDecimal("3.49")),
+          ),
+        scoreDeadline = null,
+      )
+    val profile = gridSchool(collegeId = id, answers = listOf(scoreBands(award))).let { costProfile(listOf(it), answeredMoney()) }
+
+    val table = gridTableOf(renderedReportOf(profile))
+
+    assertEquals(
+      listOf(
+        mapOf("Scholarship" to "Dean", "Test score" to "SAT 1200\u20131290", "GPA" to "3.50\u20133.74", "Pays a year" to "\$6,000"),
+        mapOf("Scholarship" to "Provost", "Test score" to "SAT 1300\u20131390", "GPA" to "up to 3.49", "Pays a year" to "\$6,000"),
+      ),
+      gridRowsOf(table),
+    )
+    // No deadline published, so the caption says none and invents none.
+    assertEquals("Source: $GRID_PUBLISHER, read on Aug 1, 2026. $GRID_REQUIREMENT", captionOf(table))
+    assertTrue(table.select(".report-award-deadline").isEmpty(), "[$table]")
+  }
+
+  @Test
+  fun `a grid whose school says nothing about submitting a score says that silence in its caption`() {
+    val id = CollegeId(UUID.randomUUID())
+    val award = gridAward(collegeId = id).copy(scoreRequirement = ScoreRequirement.UNSTATED, scoreRequirementAsPublished = null)
+    val table =
+      gridTableOf(renderedReportOf(costProfile(listOf(gridSchool(collegeId = id, answers = listOf(scoreBands(award)))), answeredMoney())))
+
+    assertEquals(
+      "This school does not say whether a test score must be submitted.",
+      table.selectFirst("caption .report-award-requirement")?.text(),
+      "the silence stated, never resolved into a yes or a no: [$table]",
+    )
   }
 
   @Test
@@ -2760,8 +2868,15 @@ class CostReportPageTest {
     listOf("your student scored", "your score", "points away", "qualifies for", "would earn").forEach { studentWords ->
       assertFalse(body.lowercase().contains(studentWords), "the page must say nothing about the student: [$studentWords]")
     }
-    // And the school's own cells are unharmed by the silence.
-    assertTrue(body.contains("Presidential Elite \u2014 SAT 1300\u20131600 \u2014 \$10,321 a year"), "the top cell: [$body]")
+    // And the school's own bands are unharmed by the silence.
+    assertEquals(
+      listOf(
+        mapOf("Scholarship" to "Presidential", "Test score" to "SAT 1200\u20131250", "Pays a year" to "\$6,000"),
+        mapOf("Scholarship" to "Presidential Elite", "Test score" to "SAT 1300\u20131600", "Pays a year" to "\$10,321"),
+      ),
+      gridRowsOf(gridTableOf(body)),
+      "the top band: [$body]",
+    )
   }
 
   @Test
@@ -2780,7 +2895,7 @@ class CostReportPageTest {
         ),
       )
 
-    assertEquals(2, countOf(body, "report-award-grid"), "one block per school that publishes a grid: [$body]")
+    assertEquals(2, gridSectionsOf(body).size, "one block per school that publishes a grid: [$body]")
     assertEquals(1, countOf(body, AWARD_KIND_SENTENCE), "and the standing sentence once for the whole page: [$body]")
     assertTrue(body.indexOf("report-kinds") < body.indexOf(AWARD_KIND_SENTENCE), "in the block that says what kind of numbers these are")
   }
@@ -2808,9 +2923,18 @@ class CostReportPageTest {
 
     val body = renderedReportOf(costProfile(listOf(gridSchool(collegeId = id, answers = listOf(scoreBands(award)))), answeredMoney()))
 
-    assertTrue(
-      body.contains("Presidential Elite \u2014 SAT 1500\u20131600 \u2014 tuition and fees"),
-      "the school's own words for what it pays: [$body]",
+    val table = gridTableOf(body)
+    // ONE band in words, so the header no longer says "a year": it would claim
+    // "tuition and fees" is an amount per year. The dollar band carries its
+    // own unit instead, and the words cell is the school's, verbatim.
+    assertEquals(listOf("Scholarship", "Test score", "Pays"), gridHeadersOf(table), "and no GPA column, since no band has one")
+    assertEquals(
+      listOf(
+        mapOf("Scholarship" to "Presidential", "Test score" to "SAT 1200\u20131250", "Pays" to "\$6,000 a year"),
+        mapOf("Scholarship" to "Presidential Elite", "Test score" to "SAT 1500\u20131600", "Pays" to "tuition and fees"),
+      ),
+      gridRowsOf(table),
+      "the school's own words for what it pays: [$table]",
     )
     assertFalse(body.contains("\$0"), "a cell with no figure is never a zero: [$body]")
   }
@@ -2840,16 +2964,19 @@ class CostReportPageTest {
 
     val body = renderedReportOf(costProfile(listOf(gridSchool(collegeId = id, answers = listOf(inState, outOfState))), answeredMoney()))
 
-    assertEquals(2, countOf(body, "report-award-grid"), "both published grids, and neither picked for the family: [$body]")
-    assertTrue(
-      body.contains("Automatic scholarships this school publishes for students it classes as in-state"),
-      "the in-state grid says who it is for: [$body]",
+    val sections = gridSectionsOf(body)
+    assertEquals(2, sections.size, "both published grids, and neither picked for the family: [$body]")
+    // Each grid under its own heading, with its own money in its own table.
+    assertEquals(
+      listOf(
+        "Automatic scholarships this school publishes for students it classes as in-state" to "\$6,000",
+        "Automatic scholarships this school publishes for students it classes as out-of-state" to "\$14,000",
+      ),
+      sections.map { section ->
+        section.selectFirst("h3")!!.text() to gridRowsOf(section.selectFirst("table")!!).single().getValue("Pays a year")
+      },
+      "each grid says who it is for and keeps its own money: [$body]",
     )
-    assertTrue(
-      body.contains("Automatic scholarships this school publishes for students it classes as out-of-state"),
-      "and so does the other one: [$body]",
-    )
-    assertTrue(body.contains("\$6,000 a year") && body.contains("\$14,000 a year"), "each grid keeps its own money: [$body]")
   }
 
   @Test
@@ -2928,6 +3055,30 @@ class CostReportPageTest {
       .drop(1)
       .map { it.substringBefore("</section>") }
 
+  /** Every printed National Merit row on the page, in page order: one definition list each. */
+  private fun meritRowsOf(body: String): List<Element> = Jsoup.parse(body).select("section.report-national-merit dl.report-merit-facts")
+
+  /**
+   * One row's facts as a parent reads them, in the list's own order: each term
+   * with the value under it, and the class that value carries.
+   *
+   * The list is ASSERTED to be strict term/value pairs, so a term over nothing
+   * -- "A year:" with no figure after it -- fails here rather than reading as
+   * a fact.
+   */
+  private fun meritFactsOf(row: Element): List<Triple<String, String, String>> {
+    val children = row.children()
+    assertEquals(0, children.size % 2, "a row is term/value pairs: [$row]")
+    return children.chunked(2).map { (term, value) ->
+      assertEquals("dt" to "dd", term.tagName() to value.tagName(), "each term is followed by its value: [$row]")
+      assertTrue(value.text().isNotBlank(), "a term is never over nothing: [$row]")
+      Triple(term.text(), value.text(), value.className())
+    }
+  }
+
+  /** One row's facts as term -> value, for a row whose classes another case pins. */
+  private fun meritPairsOf(row: Element): List<Pair<String, String>> = meritFactsOf(row).map { (term, value) -> term to value }
+
   @Test
   fun `an automatic row shows who it is for, that it is paid, the figures, the school's words and its first-choice rule`() {
     val body =
@@ -2939,20 +3090,76 @@ class CostReportPageTest {
       )
 
     val block = meritSectionsOf(body).single()
-    assertTrue(block.contains("National Merit scholarships this school publishes"), "the heading: [$block]")
-    assertTrue(block.contains("Source: $MERIT_PUBLISHER, read on Sep 25, 2026."), "cited once, at the head: [$block]")
-    assertTrue(
-      block.contains("For National Merit Finalists entering in 2027-28, for students it classes as in-state."),
-      "the standing, the entering class and the school's audience: [$block]",
+    val section = Jsoup.parse(body).selectFirst("section.report-national-merit")!!
+    assertEquals("National Merit scholarships this school publishes", section.selectFirst("h3")?.text(), "the heading: [$block]")
+    // A definition list has no caption, so the attribution stays the one line
+    // under the heading, said once above every row it covers.
+    assertEquals(
+      listOf("Source: $MERIT_PUBLISHER, read on Sep 25, 2026."),
+      section.select("p").map { it.text() },
+      "cited once, at the head, and no other sentence beside the rows: [$block]",
     )
-    assertTrue(block.contains(AUTOMATIC_MERIT_LINE), "an automatic row is said as paid: [$block]")
-    assertTrue(block.contains("\$17,500 a year, \$70,000 in total over 4 years."), "the school's own figures: [$block]")
-    assertTrue(block.contains(MERIT_WORDS), "the school's own sentence, verbatim: [$block]")
-    assertTrue(
-      block.contains("$MERIT_FIRST_CHOICE_WORDS Name it first choice by May 1, 2027."),
-      "the first-choice rule in the school's words, its day through the date seam: [$block]",
+    assertTrue(section.select("ul, li").isEmpty(), "the rows are definition lists, not list items: [$block]")
+    assertEquals(
+      listOf(
+        // The standing, the entering class and the school's audience.
+        Triple("For", "National Merit Finalists entering in 2027-28, for students it classes as in-state", "report-merit-standing"),
+        // An automatic row is said as paid, in one word; what that promises is K4's.
+        Triple("Paid or considered", "Paid", "report-merit-guarantee"),
+        // The school's own figures, each under its unit, the years beside the total they qualify.
+        Triple("A year", "\$17,500", "report-merit-per-year"),
+        Triple("In total", "\$70,000 over 4 years", "report-merit-total"),
+        // The school's own sentence, verbatim.
+        Triple("The school's words", MERIT_WORDS, "report-merit-words"),
+        // The first-choice rule in the school's words, its day through the date seam.
+        Triple("First choice", "$MERIT_FIRST_CHOICE_WORDS Name it first choice by May 1, 2027.", "report-merit-first-choice"),
+      ),
+      meritFactsOf(meritRowsOf(body).single()),
     )
     assertFalse(block.contains("of entrants"), "the base rate is said once for the page, never inside a school's block: [$block]")
+    assertFalse(block.contains(MERIT_GUARANTEE_KIND_SENTENCE), "and so is what \"paid\" means: [$block]")
+  }
+
+  @Test
+  fun `a row's own name, its apply-by date and each first-choice rule are each a fact of their own`() {
+    val claim =
+      payingClaim(awardName = "Presidential Merit Scholarship")
+        .copy(applyDeadline = ApplyDeadline(on = LocalDate.of(2026, 12, 1), asPublished = "Apply for admission by December 1."))
+    val body = renderedReportOf(costProfile(listOf(meritSchool { id -> listOf(meritAnswer(meritAward(id, claim))) }), answeredMoney()))
+
+    val facts = meritFactsOf(meritRowsOf(body).single())
+    // The school's own name for its scholarship comes FIRST, where it has one.
+    assertEquals(Triple("Scholarship", "Presidential Merit Scholarship", "report-merit-name"), facts.first())
+    // The deadline's day through the date seam, then the school's own words; last.
+    assertEquals(Triple("Apply by", "Dec 1, 2026. Apply for admission by December 1.", "report-merit-apply"), facts.last())
+
+    // The first-choice rule: required with no day is the school's words alone;
+    // not required is the school's words; unsaid is the silence, stated.
+    mapOf(
+      FirstChoiceRule.Required(deadline = null, asPublished = MERIT_FIRST_CHOICE_WORDS) to MERIT_FIRST_CHOICE_WORDS,
+      FirstChoiceRule.NotRequired(asPublished = "First choice designation is not required.") to "First choice designation is not required.",
+      null to "This school's page does not say whether it must be named first choice.",
+    ).forEach { (rule, said) ->
+      val ruled = payingClaim(firstChoice = rule)
+      val page = renderedReportOf(costProfile(listOf(meritSchool { id -> listOf(meritAnswer(meritAward(id, ruled))) }), answeredMoney()))
+      assertTrue("First choice" to said in meritPairsOf(meritRowsOf(page).single()), "[$rule] says [$said]: [$page]")
+    }
+  }
+
+  @Test
+  fun `a row's years stay with whichever figure the school published`() {
+    // The years qualify the TOTAL where there is one; a yearly figure with no
+    // total carries them itself, so the count is never lost and never said twice.
+    mapOf(
+      payingClaim(totalUsd = null) to listOf("A year" to "\$17,500 for 4 years"),
+      payingClaim(perYearUsd = null) to listOf("In total" to "\$70,000 over 4 years"),
+      payingClaim(perYearUsd = null, years = null) to listOf("In total" to "\$70,000"),
+      payingClaim(totalUsd = null, years = 1) to listOf("A year" to "\$17,500 for 1 year"),
+    ).forEach { (claim, money) ->
+      val body = renderedReportOf(costProfile(listOf(meritSchool { id -> listOf(meritAnswer(meritAward(id, claim))) }), answeredMoney()))
+      val pairs = meritPairsOf(meritRowsOf(body).single())
+      assertEquals(money, pairs.filter { (term, _) -> term == "A year" || term == "In total" }, "[$claim]: [$body]")
+    }
   }
 
   @Test
@@ -2960,23 +3167,37 @@ class CostReportPageTest {
     val claim = payingClaim(guarantee = AwardGuarantee.COMPETITIVE, standing = QualifyingStanding.SEMIFINALIST)
     val body = renderedReportOf(costProfile(listOf(meritSchool { id -> listOf(meritAnswer(meritAward(id, claim))) }), answeredMoney()))
 
-    val block = meritSectionsOf(body).single()
-    assertTrue(block.contains(COMPETITIVE_MERIT_LINE), "considered, and not promised: [$block]")
-    assertFalse(block.contains(AUTOMATIC_MERIT_LINE), "and never the automatic sentence: [$block]")
-    assertTrue(block.contains("For National Merit Semifinalists entering in 2027-28."), "a row for everybody names no audience: [$block]")
+    val pairs = meritPairsOf(meritRowsOf(body).single())
+    assertTrue("Paid or considered" to "Considered" in pairs, "considered, and not promised: [$pairs]")
+    assertFalse(pairs.any { (_, value) -> value == "Paid" }, "and never said as paid: [$pairs]")
+    assertTrue("For" to "National Merit Semifinalists entering in 2027-28" in pairs, "a row for everybody names no audience: [$pairs]")
+    // What "considered" promises -- nothing -- is said once, for the page.
+    assertTrue(kindsBlockOf(body).contains(MERIT_GUARANTEE_KIND_SENTENCE), "[$body]")
   }
 
   @Test
-  fun `a row the school prices in words alone prints its words and no figure line, never a zero`() {
+  fun `a row the school prices in words alone prints its words and no money pair, never a zero`() {
     // A COUNT OF YEARS IS NOT A PRICE: a row with years and no amount is still
     // words alone, and the school's sentence says how long it pays.
     listOf(null, 4).forEach { years ->
       val claim = payingClaim(asPublished = MERIT_WORDS_ONLY, perYearUsd = null, totalUsd = null, years = years)
       val body = renderedReportOf(costProfile(listOf(meritSchool { id -> listOf(meritAnswer(meritAward(id, claim))) }), answeredMoney()))
 
-      val block = meritSectionsOf(body).single()
-      assertTrue(block.contains(MERIT_WORDS_ONLY), "[$years years] the school's words ARE the price: [$block]")
-      assertFalse(block.contains("report-merit-figure"), "[$years years] no figure line where the school publishes no figure: [$block]")
+      val row = meritRowsOf(body).single()
+      assertEquals(
+        listOf(
+          "For" to "National Merit Finalists entering in 2027-28",
+          "Paid or considered" to "Paid",
+          "The school's words" to MERIT_WORDS_ONLY,
+          "First choice" to "$MERIT_FIRST_CHOICE_WORDS Name it first choice by May 1, 2027.",
+        ),
+        meritPairsOf(row),
+        "[$years years] the school's words ARE the price: [$row]",
+      )
+      assertTrue(
+        row.select(".report-merit-per-year, .report-merit-total").isEmpty(),
+        "[$years years] no money pair where the school publishes no figure: [$row]",
+      )
       assertFalse(body.contains("\$0"), "[$years years] and never a zero: [$body]")
     }
   }
@@ -3034,7 +3255,7 @@ class CostReportPageTest {
       )
 
     val block = meritSectionsOf(body).single()
-    assertEquals(1, countOf(block, "<li>"), "only the live row: [$block]")
+    assertEquals(1, meritRowsOf(body).size, "only the live row: [$block]")
     assertTrue(block.contains(MERIT_WORDS), "the live row's words: [$block]")
     assertFalse(block.contains(MERIT_WORDS_ONLY), "and never the stale row's: [$block]")
   }
@@ -3060,10 +3281,21 @@ class CostReportPageTest {
       )
 
     val block = meritSectionsOf(body).single()
-    assertEquals(2, countOf(block, "<li>"), "both rows, and neither picked: [$block]")
-    assertTrue(block.contains("for students it classes as in-state."), "the in-state row says who it is for: [$block]")
-    assertTrue(block.contains("for students it classes as out-of-state."), "and so does the other one: [$block]")
-    assertTrue(block.contains("\$15,000 a year") && block.contains("\$17,500 a year"), "each keeps its own money: [$block]")
+    val rows = meritRowsOf(body).map { meritPairsOf(it).toMap() }
+    assertEquals(2, rows.size, "both rows, and neither picked: [$block]")
+    assertEquals(
+      listOf(
+        // Each row says who it is for, and each keeps its own money.
+        Triple("National Merit Finalists entering in 2027-28, for students it classes as in-state", "\$15,000", "\$60,000 over 4 years"),
+        Triple(
+          "National Merit Finalists entering in 2027-28, for students it classes as out-of-state",
+          "\$17,500",
+          "\$70,000 over 4 years",
+        ),
+      ),
+      rows.map { Triple(it["For"], it["A year"], it["In total"]) },
+      "[$block]",
+    )
     assertFalse(Regex("\\bOR\\b|Oregon|your state|lives in|not yours").containsMatchIn(block), "no comparison with the family: [$block]")
   }
 
@@ -3130,13 +3362,29 @@ class CostReportPageTest {
       "About 1.3% of entrants in the 2028 National Merit competition reach Finalist. " +
         "Source: $MERIT_SPONSOR, read on Sep 1, 2026."
     assertEquals(1, countOf(body, baseRate), "the base rate once, with its own publisher and read date: [$body]")
+    // K4: what "paid" and "considered" mean, once for the page however many
+    // schools print a row -- never a sentence per row any more.
+    assertEquals(1, countOf(body, MERIT_GUARANTEE_KIND_SENTENCE), "what the guarantee word means, once for the page: [$body]")
     val kinds = kindsBlockOf(body)
     assertTrue(kinds.contains(NATIONAL_MERIT_KIND_SENTENCE), "inside the kinds block: [$kinds]")
     assertTrue(kinds.contains(baseRate), "and so is the base rate: [$kinds]")
+    assertTrue(kinds.contains(MERIT_GUARANTEE_KIND_SENTENCE), "and so is K4: [$kinds]")
+    // The kinds block's own bans hold with K4 in it: no count, no ranking word,
+    // and not the word this page never says.
+    val k4 =
+      Jsoup
+        .parse(body)
+        .selectFirst("p.report-kind-merit-guarantee")
+        ?.text()
+        .orEmpty()
+    assertEquals(MERIT_GUARANTEE_KIND_SENTENCE, k4, "[$kinds]")
+    assertFalse(k4.any { it.isDigit() }, "no count in K4: [$k4]")
+    listOf("rank", "score", "rating", "award").forEach { assertFalse(k4.lowercase().contains(it), "[$it] in K4: [$k4]") }
 
     val none = renderedReportOf(costProfile(listOf(stateSchool()), answeredMoney()))
     assertFalse(none.contains(NATIONAL_MERIT_KIND_SENTENCE), "no National Merit row, no kind sentence: [$none]")
     assertFalse(none.contains("of entrants"), "and no base rate: [$none]")
+    assertFalse(none.contains(MERIT_GUARANTEE_KIND_SENTENCE), "and no K4: [$none]")
   }
 
   @Test
@@ -3210,9 +3458,9 @@ class CostReportPageTest {
     const val NATIONAL_MERIT_KIND_SENTENCE =
       "A National Merit scholarship a school publishes is the school's own money, paid only to students who reach " +
         "the standing it names, and is not a financial aid offer."
-    const val AUTOMATIC_MERIT_LINE = "The school pays this to every student holding this standing who meets its terms."
-    const val COMPETITIVE_MERIT_LINE =
-      "The school considers students holding this standing for this scholarship. It does not promise it."
+    const val MERIT_GUARANTEE_KIND_SENTENCE =
+      "A National Merit scholarship marked paid is paid to every student holding that standing who meets the school's " +
+        "terms; one marked considered is not promised."
 
     /** The corpus's own shape: a school's scholarship name and its sentence both say "award", and both are quoted. */
     const val MERIT_SCHOOL_NAME = "National Merit Finalist Award"

@@ -42,10 +42,12 @@ class CostReportShapeTest {
   private fun threeSchools(): CollegeCostProfile = costProfile(listOf(verboseState(), verboseCampus(), verbosePrivate()), answeredMoney())
 
   /**
-   * The three verbose schools with EVERY unconverted block on the page: the
-   * first school publishes a grid and a National Merit row, and the major
-   * answer gives it one program with a shown figure. Composed from the shared
-   * fixture helpers, so the blocks are exactly the ones the page tests render.
+   * The three verbose schools with EVERY block the page can print: the first
+   * school publishes a grid and a National Merit row, and the major answer
+   * gives it one program with a shown figure. Composed from the shared fixture
+   * helpers, so the blocks are exactly the ones the page tests render. The grid
+   * and the National Merit rows are converted (glance/03) and stay here so rule
+   * (a) runs on their new markup; the program block is the one still exempted.
    */
   private fun everyBlock(): CollegeCostProfile {
     val id = CollegeId(UUID.randomUUID())
@@ -203,7 +205,7 @@ class CostReportShapeTest {
 
   companion object {
     /** Blocks not yet converted (brief 0016 D9). Each later slice removes its own entry; the slice that empties this set deletes the mechanism. */
-    val UNCONVERTED_BLOCKS = setOf("report-award-grid", "report-national-merit", "report-program-return")
+    val UNCONVERTED_BLOCKS = setOf("report-program-return")
 
     /** The one permanent exemption: the federal median debt is one figure, one sentence (brief 0016 D4). */
     const val FEDERAL_DEBT_SENTENCE = "report-debt-federal"
