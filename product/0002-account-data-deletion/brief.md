@@ -587,3 +587,18 @@ _(one line per landed slice: ID, RFC, code SHA, date, one-line what.)_
       party, and a row keyed on another account is never erased by any path
       (the student's data copied into a parent's conversation is a known
       limit); D-B..D-I on defaults; at review §10/§2 amended to match the code.
+    deletion/04/the-sweep LANDED as RFC 267 (main@85a9c676, 2026-11-02) —
+      closing an account (the app's Settings → Delete account, and admin-web's
+      Delete) enqueues one ERASE_ACCOUNT job delayed by accountErasure.graceDays
+      (7) in the close transaction; the job runs the walk and, in the same
+      transaction, queues one ACCOUNT_ERASED email to the verified address,
+      whose email_sends row is the receipt, keyed on deleted_user_id; a
+      migration schedules every account already closed; D13 landed (the walk
+      leaves jobs and returns at once for an erased account; the reaper deletes
+      every finished job after 30 days; a dead-letter logs one ERROR line).
+      Approval (Ian, 2026-11-01): D-H — "Could we delay a job for a week
+      instead of using a cron?" / "Do not worry about a max": a job delayed at
+      the close replaces the spec's periodic sweep and its batch size; D-A..D-G
+      on defaults (verified address only; both doors confirm; the backfill runs
+      on the old schedule, so accounts closed more than 7 days before the deploy
+      are erased right after it). Email copy interim (deletion/05).
