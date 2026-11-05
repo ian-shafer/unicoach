@@ -478,6 +478,28 @@ THIS file, so the line lives here and the spec points at it):
   test passed on a 375px phone). Open: none blocking; REST still restates 2048
   in its message, and two older pages hand-write their phone-card cells.
 
+- `web/09/conversations` LANDED as RFC 272 (main@1ac10d7d, 2026-11-04) — "Your
+  conversations" at `/conversations`, the door "Conversations" in the signed-in
+  header right after Chat: the student's unarchived conversations, most recent
+  first, each name reopening it in the chat, the date last used (Eastern, the
+  coach's zone, via `UsDate`), and Archive (immediate, as on iOS) and Delete
+  buttons on every row — no swipe exists on a desktop. Delete asks once on its
+  own page: "You won't be able to open it or read it again, here or in the
+  iPhone app. This can't be undone." and "What your coach has already learned
+  from it is kept. Your college list and Your details don't change." Every call
+  is `CoachingService` in-process (`listConvos`, `updateConvo`, `getConvo`,
+  `deleteConvo`), the same methods the iPhone app's REST routes call. **Ian at
+  approval (2026-11-04): "Approve all"** — D-A the header door (the slice's
+  slide-over menu does not exist on the web), D-B no archived list (iPhone
+  parity), D-C the delete words (soft delete, so never "erased"). No table, no
+  migration, no `SessionMetadata` change. Review fixed the new CSS restating
+  shared button and link rules. Full gate green at scope `full-gated`. The D19
+  device matrix WAS run (six sizes, both pages: no sideways scroll, 44px tap
+  targets; the first-session test passed — a conversation reopened from the list
+  and the coach replied). Open: dates show Eastern time (tomorrow's date after
+  9pm Pacific); the "what the coach learned is kept" sentence holds only while
+  coaching memory has no join to deleted conversations.
+
 ## Research
 
 - research/ios-feature-inventory.md — every iOS screen/flow, endpoints, 23-row
