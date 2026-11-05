@@ -666,7 +666,8 @@ main {
 .auth-form button,
 .college-search-form button,
 .college-results button,
-.college-entry button {
+.college-entry button,
+.conversation-actions button {
   min-height: var(--tap-target);
   padding: 0.5rem 1.25rem;
   font: inherit;
@@ -816,7 +817,9 @@ main {
 
 .college-list-table a,
 .college-back a,
-.college-actions a {
+.college-actions a,
+.conversation-list a,
+.conversation-actions a {
   display: inline-flex;
   align-items: center;
   min-height: var(--tap-target);
@@ -836,7 +839,8 @@ main {
   color: var(--muted);
 }
 
-.college-add {
+.college-add,
+.conversation-new {
   display: inline-flex;
   align-items: center;
   min-height: var(--tap-target);
@@ -935,11 +939,44 @@ main {
   color: var(--muted);
 }
 
-.college-actions {
+.college-actions,
+.conversation-actions {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: 0.5rem 1.25rem;
+}
+
+/* RFC 272 — Your conversations. One card per conversation at every width: a
+   name, a date and two controls never need a table's columns. Archive is a
+   form's button and Delete a link, and both are always visible — a desktop has
+   no swipe to reveal them — each on the tap-target floor. The confirmation's
+   Delete and Cancel share the row's rule. The "New conversation" link, the
+   row, its links and its button join the shared rules above (`.college-add`,
+   the action row, the tap-target links, the submit button). */
+.conversation-list {
+  display: grid;
+  gap: 0.75rem;
+  margin: 0 0 1rem;
+  padding: 0;
+  list-style: none;
+}
+
+.conversation-list li {
+  padding: 0.75rem 1rem;
+  border: 1px solid var(--border);
+  border-radius: 0.25rem;
+  overflow-wrap: anywhere;
+}
+
+.conversation-date {
+  margin: 0 0 0.25rem;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.conversation-actions form {
+  margin: 0;
 }
 
 /* The two error shapes, and they are two because they say different things: a

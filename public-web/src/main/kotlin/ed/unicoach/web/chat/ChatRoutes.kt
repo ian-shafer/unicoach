@@ -26,12 +26,14 @@ import ed.unicoach.web.common.http.canonicalUuidOrNull
 import ed.unicoach.web.formParametersOrNull
 import ed.unicoach.web.render.CHAT_MESSAGE_FIELD
 import ed.unicoach.web.render.CHAT_NOTICE_HEADER
+import ed.unicoach.web.render.CONVERSATION_ID_PARAM
 import ed.unicoach.web.render.ChatExchange
 import ed.unicoach.web.render.ChatNotice
 import ed.unicoach.web.render.MalformedSend
 import ed.unicoach.web.render.OwnNotFoundBody
 import ed.unicoach.web.render.ShellNav
 import ed.unicoach.web.render.chatNoticeHtml
+import ed.unicoach.web.render.conversationPath
 import ed.unicoach.web.render.respondChatPage
 import ed.unicoach.web.render.respondNotFoundPage
 import ed.unicoach.web.render.signedInNav
@@ -52,12 +54,6 @@ import org.slf4j.LoggerFactory
 
 /** The chat routes' own log: who was refused coaching and why, which the notice never says. */
 private val chatLog = LoggerFactory.getLogger("ed.unicoach.web.Chat")
-
-/** The path parameter a conversation's own page carries. */
-private const val CONVO_ID_PARAM = "conversationId"
-
-/** A conversation's own page — the `conversationUrl` the stream names, and the composer's `action` on it. */
-internal fun conversationPath(convoId: ConvoId): String = "$CHAT_PATH/${convoId.asString}"
 
 /**
  * The web chat (RFC 262 §4): the coach, in-process (brief 0013 D13).
@@ -104,11 +100,11 @@ internal fun Route.chatRoutes(
       startConversation(coachingService, call.chatStudent())
     }
 
-    getOnboarded("/{$CONVO_ID_PARAM}", authService, sessionConfig, accountRoles) { caller ->
+    getOnboarded("/{$CONVERSATION_ID_PARAM}", authService, sessionConfig, accountRoles) { caller ->
       showConversation(coachingService, call.chatStudent(), caller.signedInNav)
     }
 
-    postOnboarded("/{$CONVO_ID_PARAM}", authService, sessionConfig, accountRoles) {
+    postOnboarded("/{$CONVERSATION_ID_PARAM}", authService, sessionConfig, accountRoles) {
       continueConversation(coachingService, call.chatStudent())
     }
   }
@@ -120,7 +116,7 @@ private suspend fun RoutingContext.showConversation(
   student: Student,
   nav: ShellNav.SignedIn,
 ) {
-  val convoId = pathConvoId() ?: return call.respondNotFoundPage(nav)
+  val convoId = call.pathConvoId() ?: return call.respondNotFoundPage(nav)
   when (val outcome = coachingService.listTurns(student.id, convoId).getOrThrow()) {
     is ListTurnsResult.Found -> {
       call.respondChatPage(
@@ -161,7 +157,7 @@ private suspend fun RoutingContext.continueConversation(
   coachingService: CoachingService,
   student: Student,
 ) {
-  val convoId = pathConvoId() ?: return call.respondNotice(ChatNotice.Unavailable)
+  val convoId = call.pathConvoId() ?: return call.respondNotice(ChatNotice.Unavailable)
   val message =
     when (val submission = submittedMessage()) {
       is Submission.Message -> submission.text
@@ -201,8 +197,8 @@ private suspend fun RoutingContext.submittedMessage(): Submission {
   }
 }
 
-/** The path's conversation id, iff it is a canonical UUID. */
-private fun RoutingContext.pathConvoId(): ConvoId? = call.parameters[CONVO_ID_PARAM]?.let(::canonicalUuidOrNull)?.let(::ConvoId)
+/** The path's conversation id, iff it is a canonical UUID: the chat's and Your conversations' (RFC 272) one reading of it. */
+internal fun ApplicationCall.pathConvoId(): ConvoId? = parameters[CONVERSATION_ID_PARAM]?.let(::canonicalUuidOrNull)?.let(::ConvoId)
 
 /** `:service`'s own field errors, carried whole to the notice; the web adds no rule of its own (D13). */
 private fun refused(fieldErrors: List<FieldError>): ChatNotice.Refused = ChatNotice.Refused(fieldErrors)

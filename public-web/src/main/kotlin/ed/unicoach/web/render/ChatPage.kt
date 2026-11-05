@@ -5,6 +5,7 @@ import ed.unicoach.coaching.budget.Entitlement
 import ed.unicoach.coaching.budget.EntitlementBasis
 import ed.unicoach.coaching.studentSentence
 import ed.unicoach.common.util.UsDate
+import ed.unicoach.db.models.ConvoId
 import ed.unicoach.error.FieldError
 import ed.unicoach.web.auth.CHAT_PATH
 import ed.unicoach.web.auth.CsrfToken
@@ -44,6 +45,15 @@ const val NOSCRIPT_LINE = "Sending a message needs JavaScript turned on."
 
 /** The form field the composer posts its text in. */
 const val CHAT_MESSAGE_FIELD = "message"
+
+/** The path segment that names one conversation: `/chat/{conversationId}`, and its Your conversations routes (RFC 272). */
+const val CONVERSATION_ID_PARAM = "conversationId"
+
+/**
+ * A conversation's own page — the `conversationUrl` the stream names, the
+ * composer's `action` on it, and where Your conversations opens it (RFC 272).
+ */
+fun conversationPath(convoId: ConvoId): String = "$CHAT_PATH/${convoId.asString}"
 
 // The hooks below are restated in `chat.ts`, which mounts on them: no source is
 // shared across the two languages. Both halves are held to ONE fixture,

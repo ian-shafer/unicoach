@@ -25,6 +25,10 @@ import ed.unicoach.web.render.COLLEGE_SEARCH_FORM_CLASS
 import ed.unicoach.web.render.COLLEGE_STATUS_CELL_CLASS
 import ed.unicoach.web.render.COLLEGE_STATUS_CLASS
 import ed.unicoach.web.render.COMPOSER_CLASS
+import ed.unicoach.web.render.CONVERSATION_ACTIONS_CLASS
+import ed.unicoach.web.render.CONVERSATION_DATE_CLASS
+import ed.unicoach.web.render.CONVERSATION_LIST_CLASS
+import ed.unicoach.web.render.CONVERSATION_NEW_CLASS
 import ed.unicoach.web.render.ChatNotice
 import ed.unicoach.web.render.DATA_LABEL
 import ed.unicoach.web.render.DATA_TABLE_CLASS
@@ -521,6 +525,9 @@ class ShellMechanismTest {
         COLLEGE_PENDING_CLASS,
         COLLEGE_REMOVE_CELL_CLASS,
         COLLEGE_STATUS_CELL_CLASS,
+        CONVERSATION_LIST_CLASS,
+        CONVERSATION_DATE_CLASS,
+        CONVERSATION_ACTIONS_CLASS,
       )) {
         assertTrue(
           Regex("""\.$stateClass\b""").containsMatchIn(css),
@@ -560,6 +567,12 @@ class ShellMechanismTest {
         ".$COLLEGE_LIST_TABLE_CLASS a",
         ".$COLLEGE_BACK_CLASS a",
         ".$COLLEGE_ACTIONS_CLASS a",
+        // Your conversations (RFC 272): each card's name and Delete links,
+        // its Archive button, and the confirmation's Delete and Cancel.
+        ".$CONVERSATION_NEW_CLASS",
+        ".$CONVERSATION_LIST_CLASS a",
+        ".$CONVERSATION_ACTIONS_CLASS a",
+        ".$CONVERSATION_ACTIONS_CLASS button",
       )) {
         assertTrue(
           declares(css, selector, property = "min-height", valueFragment = "var(--tap-target"),

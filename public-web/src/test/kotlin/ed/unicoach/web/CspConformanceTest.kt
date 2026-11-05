@@ -1,7 +1,9 @@
 package ed.unicoach.web
 
+import ed.unicoach.coaching.StartConvoResult
 import ed.unicoach.web.auth.CHAT_PATH
 import ed.unicoach.web.auth.COLLEGES_PATH
+import ed.unicoach.web.auth.CONVERSATIONS_PATH
 import ed.unicoach.web.auth.STUDENT_FORM_PATH
 import ed.unicoach.web.auth.STUDENT_SIGNUP_PATH
 import ed.unicoach.web.auth.YOUR_DETAILS_PATH
@@ -9,11 +11,13 @@ import ed.unicoach.web.common.http.CONTENT_SECURITY_POLICY
 import ed.unicoach.web.common.http.CONTENT_SECURITY_POLICY_HEADER
 import ed.unicoach.web.common.routing.registeredRoutes
 import ed.unicoach.web.render.COLLEGE_SEARCH_PATH
+import ed.unicoach.web.render.CONVERSATION_ID_PARAM
 import ed.unicoach.web.render.ENTRY_ID_PARAM
 import ed.unicoach.web.render.FAFSA_PATH
 import ed.unicoach.web.render.WHO_PAYS_PATH
 import ed.unicoach.web.render.collegeEntryPath
 import ed.unicoach.web.render.collegeRemovePath
+import ed.unicoach.web.render.conversationDeletePath
 import io.ktor.client.request.forms.FormDataContent
 import io.ktor.client.request.get
 import io.ktor.client.request.header
@@ -29,9 +33,11 @@ import io.ktor.server.application.plugin
 import io.ktor.server.routing.RoutingNode
 import io.ktor.server.routing.RoutingRoot
 import io.ktor.server.testing.testApplication
+import kotlinx.coroutines.runBlocking
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertIs
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
@@ -408,8 +414,10 @@ class CspConformanceTest {
       },
     )
 
-    // The signed-in pages (RFC 262): the chat, Your details (RFC 270) and My colleges (RFC 271), fetched as a student, and the
-    // two onboarding pages (RFC 268), fetched as a verified user with no role.
+    // The signed-in pages (RFC 262): the chat, Your details (RFC 270), My
+    // colleges (RFC 271) and Your conversations (RFC 272), fetched as a
+    // student, and the two onboarding pages (RFC 268), fetched as a verified
+    // user with no role.
     // All are pages a browser renders under the same policy, so they are walked
     // like every public one.
     val (_, studentToken) = ChatTestSupport.signedInStudent()
@@ -420,6 +428,14 @@ class CspConformanceTest {
     val (collegeStudent, collegeToken) = CollegeListTestSupport.signedInStudent()
     val collegeWord = CollegeListTestSupport.uniqueWord()
     val entry = CollegeListTestSupport.addEntry(collegeStudent, CollegeListTestSupport.seedCollege("$collegeWord College"))
+    // Your conversations (RFC 272): the list with one card, and that
+    // conversation's delete confirmation.
+    val convo =
+      runBlocking {
+        assertIs<StartConvoResult.Started>(
+          WebAuthTestSupport.defaultCoachingService.startConvo(collegeStudent, "Hello", "Essay ideas").getOrThrow(),
+        ).convo
+      }
     for ((path, token) in listOf(
       CHAT_PATH to studentToken,
       YOUR_DETAILS_PATH to studentToken,
@@ -429,6 +445,8 @@ class CspConformanceTest {
       "$COLLEGE_SEARCH_PATH?q=$collegeWord" to collegeToken,
       collegeEntryPath(entry.id) to collegeToken,
       collegeRemovePath(entry.id) to collegeToken,
+      CONVERSATIONS_PATH to collegeToken,
+      conversationDeletePath(convo.id) to collegeToken,
     )) {
       action(path, HttpStatusCode.OK, client.get(path) { header(HttpHeaders.Cookie, WebAuthTestSupport.cookieHeader(token)) })
     }
@@ -603,6 +621,8 @@ class CspConformanceTest {
         HttpMethod.Get to COLLEGE_SEARCH_PATH,
         HttpMethod.Get to "$COLLEGES_PATH/{$ENTRY_ID_PARAM}",
         HttpMethod.Get to "$COLLEGES_PATH/{$ENTRY_ID_PARAM}/remove",
+        HttpMethod.Get to CONVERSATIONS_PATH,
+        HttpMethod.Get to "$CONVERSATIONS_PATH/{$CONVERSATION_ID_PARAM}/delete",
         HttpMethod.Get to STUDENT_SIGNUP_PATH,
         HttpMethod.Get to STUDENT_FORM_PATH,
       )
@@ -642,7 +662,7 @@ class CspConformanceTest {
           "gated: a signed-out GET redirects to /sign-in, and the signed-in rendering is exercised by the RFC 224 auth routing tests",
         (HttpMethod.Get to "/account/email") to
           "gated: a signed-out GET redirects to /sign-in, and the signed-in rendering is exercised by the RFC 224 auth routing tests",
-        (HttpMethod.Get to "$CHAT_PATH/{conversationId}") to
+        (HttpMethod.Get to "$CHAT_PATH/{$CONVERSATION_ID_PARAM}") to
           "needs a conversation: the same shell as /chat, which is evaluated, plus a reply rendered by the Markdown " +
           "renderer, whose output MarkdownHtmlTest proves carries no style, handler or script",
         (HttpMethod.Get to "/{...}") to

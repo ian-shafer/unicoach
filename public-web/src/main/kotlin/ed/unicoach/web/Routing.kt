@@ -56,6 +56,7 @@ import ed.unicoach.web.common.http.respondSeeOther
 import ed.unicoach.web.common.http.setContentSecurityPolicy
 import ed.unicoach.web.common.http.setLinkHolderPrivacyHeaders
 import ed.unicoach.web.common.logging.secretQueryParams
+import ed.unicoach.web.conversations.conversationRoutes
 import ed.unicoach.web.details.YourDetailsServices
 import ed.unicoach.web.details.yourDetailsRoutes
 import ed.unicoach.web.fafsa.FafsaDeadlineSource
@@ -413,6 +414,8 @@ fun Application.installPublicWebRouting(
     inviteRoute(supporterInviteService, authService, sessionConfig)
 
     chatRoutes(coachingService, accountRoleService, authService, sessionConfig)
+
+    conversationRoutes(coachingService, accountRoleService, authService, sessionConfig)
 
     getStartedRoutes(
       OnboardingServices(accountRoleService, studentService, supporterService, moneyProfileService, vocabularyService),

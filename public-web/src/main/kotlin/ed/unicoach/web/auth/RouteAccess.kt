@@ -114,13 +114,15 @@ internal fun Route.postOnboarded(
 
 /**
  * [getOnboarded] for a page only a STUDENT has — Your details (RFC 270), My
- * colleges (RFC 271) — handing the handler the caller's [StudentId] too.
+ * colleges (RFC 271), Your conversations (RFC 272) — handing the handler the
+ * caller's [StudentId] too.
  *
- * The onboarding wall admits a supporter, and a supporter has no money profile
- * and no college list, so one is sent where their role lives (`/account`) with
- * nothing read or written; an account with no role is sent to onboarding, as
- * [getOnboarded] sends it. The role check is HERE and not in each handler: a
- * handler cannot be written without the [StudentId], so it cannot forget to ask.
+ * The onboarding wall admits a supporter, and a supporter has no money profile,
+ * no college list and no student conversations, so one is sent where their
+ * role lives (`/account`) with nothing read or written; an account with no
+ * role is sent to onboarding, as [getOnboarded] sends it. The role check is
+ * HERE and not in each handler: a handler cannot be written without the
+ * [StudentId], so it cannot forget to ask.
  */
 internal fun Route.getStudent(
   path: String,

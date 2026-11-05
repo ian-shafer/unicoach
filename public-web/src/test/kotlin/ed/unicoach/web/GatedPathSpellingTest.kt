@@ -1,7 +1,9 @@
 package ed.unicoach.web
 
+import ed.unicoach.web.render.DELETE_CONVERSATION_HEADING
 import ed.unicoach.web.render.NO_COLLEGES_YET
 import ed.unicoach.web.render.SEARCH_PROMPT
+import ed.unicoach.web.render.YOUR_CONVERSATIONS_TITLE
 import io.ktor.client.HttpClient
 import io.ktor.client.request.get
 import io.ktor.client.request.header
@@ -44,6 +46,29 @@ class GatedPathSpellingTest {
   /** The same, for My colleges (RFC 271) and its search page. */
   private val collegesSpellings =
     listOf("/colleges", "//colleges", "/%63olleges", "/colleges/", "/./colleges", "/colleges/add", "//colleges/add", "/colleges/%61dd")
+
+  /** The same, for Your conversations (RFC 272) and one conversation's delete confirmation. */
+  private val conversationsSpellings =
+    listOf(
+      "/conversations",
+      "//conversations",
+      "/%63onversations",
+      "/conversations/",
+      "/./conversations",
+      "/conversations/$ANY_ID/delete",
+      "//conversations/$ANY_ID/delete",
+      "/conversations/$ANY_ID/%64elete",
+    )
+
+  /** Your conversations' `POST` routes, by the same spellings. */
+  private val conversationPostSpellings =
+    listOf(
+      "/conversations/$ANY_ID/archive",
+      "//conversations/$ANY_ID/archive",
+      "/%63onversations/$ANY_ID/archive",
+      "/conversations/$ANY_ID/delete",
+      "/./conversations/$ANY_ID/delete",
+    )
 
   /** The same, for the change-email form. */
   private val changeEmailSpellings =
@@ -102,10 +127,10 @@ class GatedPathSpellingTest {
     val noFollow = noFollowClient()
     val leaks = mutableListOf<String>()
 
-    for (path in accountSpellings + changeEmailSpellings + collegesSpellings) {
+    for (path in accountSpellings + changeEmailSpellings + collegesSpellings + conversationsSpellings) {
       leaks += refusalFailure(noFollow.rawGet(path, cookie), "GET [$path]", expected)
     }
-    for (path in changeEmailSpellings + collegesSpellings.take(5)) {
+    for (path in changeEmailSpellings + collegesSpellings.take(5) + conversationPostSpellings) {
       leaks += refusalFailure(rawFormPost(path, cookie, csrf, noFollow), "POST [$path]", expected)
     }
 
@@ -190,6 +215,10 @@ class GatedPathSpellingTest {
      * Text that appears only on the gated pages' bodies — never in the
      * signed-in header, which a branded 404 also carries.
      */
-    val ACCOUNT_MARKERS = listOf("Your account", "Change your email", NO_COLLEGES_YET, SEARCH_PROMPT)
+    val ACCOUNT_MARKERS =
+      listOf("Your account", "Change your email", NO_COLLEGES_YET, SEARCH_PROMPT, YOUR_CONVERSATIONS_TITLE, DELETE_CONVERSATION_HEADING)
+
+    /** A conversation id no test seeds: a refusal must come before anything looks it up. */
+    const val ANY_ID = "00000000-0000-4000-8000-000000000000"
   }
 }
