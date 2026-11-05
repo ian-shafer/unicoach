@@ -454,6 +454,30 @@ THIS file, so the line lives here and the spec points at it):
   dependency labels and captions, the status lines, the no-script notice)
   shipped as approved.
 
+- `web/08/college-list` LANDED as RFC 271 (main@b11c2664, 2026-11-04) — "My
+  colleges" at `/colleges`, the door in the signed-in header between Chat and
+  Your details: the student's list (name, status, first line of the reasons) as
+  a table on a laptop and one card per college below 640px, through the shared
+  `DATA_TABLE_CLASS` mechanism; search by name at `/colleges/add` (a GET form,
+  on submit), each result an "Add" button; an edit page for status (four radios)
+  and reasons, with "From your conversations" quotes; and remove through a
+  confirmation page. Every call is in-process (`CollegeListService`,
+  `CollegeSearchService`; `public-web` now depends on `:college`). Search asks
+  for 21 and shows 20, so a capped result says so; there is no paging. Each save
+  and remove carries the entry's version; a list that moved elsewhere is refused
+  and the student lands on the fresh list with "Your list changed somewhere
+  else…". **Ian at approval (2026-11-04): "Approve all"** — the D11 draft
+  `CollegeEntryDraft { entry_id, status, reasons }`, D-A (on a moved list the
+  typing is KEPT and shown "Not saved yet." over the current version; iOS drops
+  it), and the new copy. Review fixed a real defect: browsers post newlines as
+  CRLF, so reasons a 2,048-character box allowed could be refused; they are now
+  read as LF. The reasons ceiling has one Kotlin home,
+  `CollegeListService.MAX_REASONS_LENGTH`, which the coach's tool now reads too.
+  Full gate green at scope `full-gated`. The D19 device matrix WAS run (all six
+  sizes, four pages: no sideways scroll, 44px tap targets; the first-session
+  test passed on a 375px phone). Open: none blocking; REST still restates 2048
+  in its message, and two older pages hand-write their phone-card cells.
+
 ## Research
 
 - research/ios-feature-inventory.md — every iOS screen/flow, endpoints, 23-row
