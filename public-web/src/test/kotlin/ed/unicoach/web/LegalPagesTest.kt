@@ -8,6 +8,7 @@ import io.ktor.http.HttpStatusCode
 import io.ktor.server.testing.testApplication
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 class LegalPagesTest {
@@ -51,6 +52,34 @@ class LegalPagesTest {
       // Shared chrome proves it rendered through Layout.
       assertTrue(body.contains("class=\"site-header\""), "missing shared header chrome")
       assertTrue(body.contains("class=\"site-footer\""), "missing shared footer chrome")
+    }
+
+  /**
+   * The deletion words a reader finds on /privacy (RFC 269 §4): the same kept
+   * list and AI-provider sentence the iOS confirmation and the ACCOUNT_ERASED
+   * email say, the minors notice with the statute's caveat, and the door. The
+   * coach covers the whole path to college, so "essay" is gone.
+   */
+  @Test
+  fun `privacy says what is kept, the AI provider's retention and the minors notice`() =
+    testApplication {
+      application { testPublicWebModule() }
+
+      val prose = proseOf(client.get("/privacy").bodyAsText())
+
+      for (sentence in listOf(
+        "What we keep: a record that your account existed and when it was deleted; your subscription record " +
+          "with Apple, if you have one; and our usage records — how much you used the coach — with your words removed.",
+        "Our AI provider keeps conversation text for up to 30 days with no account attached, then deletes it.",
+        "If you are under 18, you can remove anything you have posted to unicoach by deleting your account in the " +
+          "app (Settings › Delete account) or by contacting us.",
+        "Removal does not ensure complete or comprehensive removal: a parent you connected keeps their own " +
+          "conversations, and the records listed above are kept.",
+        "You can delete your account in the app: Settings › Delete account.",
+      )) {
+        assertTrue(prose.contains(sentence), "/privacy is missing: $sentence")
+      }
+      assertFalse(prose.contains("essay", ignoreCase = true), "/privacy still says essay")
     }
 
   /**

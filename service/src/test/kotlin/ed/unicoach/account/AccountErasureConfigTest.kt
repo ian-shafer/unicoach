@@ -5,6 +5,7 @@ import com.typesafe.config.ConfigFactory
 import com.typesafe.config.ConfigResolveOptions
 import org.junit.jupiter.api.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.days
 
@@ -39,5 +40,14 @@ class AccountErasureConfigTest {
   fun `a negative grace fails`() {
     val result = AccountErasureConfig.from(packaged("ACCOUNT_ERASURE_GRACE_DAYS = -1"))
     assertTrue(result.isFailure, "a negative grace would schedule an erasure before its close")
+  }
+
+  @Test
+  fun `a grace above 30 days fails, naming the key, the value and the limit`() {
+    assertEquals(30.days, AccountErasureConfig.from(packaged("ACCOUNT_ERASURE_GRACE_DAYS = 30")).getOrThrow().grace)
+    val failure = AccountErasureConfig.from(packaged("ACCOUNT_ERASURE_GRACE_DAYS = 31")).exceptionOrNull()
+    assertNotNull(failure, "31 days breaks the deletion copy's \"within 30 days\"")
+    val message = assertNotNull(failure.message)
+    assertTrue("[accountErasure.graceDays]" in message && "[31]" in message && "at most 30 days" in message, message)
   }
 }

@@ -133,7 +133,7 @@ struct LoginView: View {
     /// from an Apple ID, and the person can (TN3194).
     private var accountClosedNotice: some View {
         VStack(alignment: .leading, spacing: DSSpacing.xs) {
-            Text("Your account has been closed.")
+            Text("Your account has been deleted.")
                 .font(.dsLabel)
                 .foregroundStyle(Color.dsTextPrimary)
                 .accessibilityIdentifier("accountClosedNotice")

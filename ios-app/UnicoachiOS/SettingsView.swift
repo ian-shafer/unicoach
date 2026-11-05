@@ -150,6 +150,7 @@ struct SettingsView: View {
 
                     DeleteAccountControl(
                         subscription: deletionSubscription,
+                        emailVerified: user.emailVerified,
                         confirmingOnAppear: deleteAccountConfirmationOnAppear,
                         onDelete: onDeleteAccount
                     )
@@ -259,9 +260,9 @@ enum DeleteAccountConfirmation {
 }
 
 /// "Delete account" and — after the first tap — its inline confirmation
-/// (RFC 252). An in-view disclosure rather than a stock `confirmationDialog`,
-/// the `FamilyConnectionRow` reason: a system dialog renders in a window the
-/// snapshot rasterizer cannot reach.
+/// (RFC 252, words RFC 269). An in-view disclosure rather than a stock
+/// `confirmationDialog`, the `FamilyConnectionRow` reason: a system dialog
+/// renders in a window the snapshot rasterizer cannot reach.
 private struct DeleteAccountControl: View {
     /// The rail that says whether this person pays Apple. A student's is the
     /// StoreKit rail; a parent's is the home's coaching reading.
@@ -271,12 +272,21 @@ private struct DeleteAccountControl: View {
     }
 
     let subscription: Subscription
+    /// Whether the erasure-complete email can be promised: the server sends it
+    /// to a verified address only (RFC 267 D-A).
+    let emailVerified: Bool
     let onDelete: () async -> Bool
 
     @State private var phase: DeleteAccountConfirmation
 
-    init(subscription: Subscription, confirmingOnAppear: DeleteAccountConfirmation, onDelete: @escaping () async -> Bool) {
+    init(
+        subscription: Subscription,
+        emailVerified: Bool,
+        confirmingOnAppear: DeleteAccountConfirmation,
+        onDelete: @escaping () async -> Bool
+    ) {
         self.subscription = subscription
+        self.emailVerified = emailVerified
         self.onDelete = onDelete
         _phase = State(initialValue: confirmingOnAppear)
     }
@@ -314,18 +324,40 @@ private struct DeleteAccountControl: View {
         .dsOutlinedCard()
     }
 
+    /// What happens now, what is erased and when, what is kept, and what the
+    /// AI provider keeps — Apple's "what will and won't be retained" and "how
+    /// long it will take". The kept list and the AI-provider sentence are also
+    /// said in the ACCOUNT_ERASED email and on `/privacy`, which read them from
+    /// the Kotlin object `ErasureDisclosure` (service module); Swift cannot
+    /// share that string, so these two must match it word for word.
     private var prompt: some View {
         VStack(alignment: .leading, spacing: DSSpacing.xs) {
             Text("Delete your account?")
                 .font(.dsLabel)
                 .foregroundStyle(Color.dsTextPrimary)
                 .accessibilityAddTraits(.isHeader)
-            Text("Your account is closed and you are signed out on every device. Anyone connected to you is told the connection has ended — not why. Their own accounts are not affected.")
-                .font(.dsBody)
-                .foregroundStyle(Color.dsTextPrimary)
-                .fixedSize(horizontal: false, vertical: true)
-                .accessibilityIdentifier("deleteAccountPrompt")
+            VStack(alignment: .leading, spacing: DSSpacing.sm) {
+                promptParagraph("Your account is deleted now. You are signed out on every device, and anyone connected to you is told the connection has ended — not why. Their own accounts are not affected.")
+                    .accessibilityIdentifier("deleteAccountPrompt")
+                promptParagraph("Everything in your account is erased within 30 days. " + emailSentence)
+                promptParagraph("What we keep: a record that your account existed and when it was deleted; your subscription record with Apple, if you have one; and our usage records — how much you used the coach — with your words removed.")
+                promptParagraph("Our AI provider keeps conversation text for up to 30 days with no account attached, then deletes it.")
+            }
         }
+    }
+
+    /// The confirmation email is promised only to an address it can reach.
+    private var emailSentence: String {
+        emailVerified
+            ? "We'll email you when it's done."
+            : "Your email address isn't verified, so we can't email you when it's done."
+    }
+
+    private func promptParagraph(_ text: String) -> some View {
+        Text(text)
+            .font(.dsBody)
+            .foregroundStyle(Color.dsTextPrimary)
+            .fixedSize(horizontal: false, vertical: true)
     }
 
     @ViewBuilder

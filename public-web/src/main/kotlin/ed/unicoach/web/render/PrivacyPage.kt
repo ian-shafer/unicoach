@@ -1,5 +1,6 @@
 package ed.unicoach.web.render
 
+import ed.unicoach.account.ErasureDisclosure
 import io.ktor.server.application.ApplicationCall
 import io.ktor.server.html.respondHtml
 import kotlinx.html.h1
@@ -28,8 +29,9 @@ suspend fun ApplicationCall.respondPrivacyPage(nav: ShellNav = ShellNav.SignedOu
         p {
           +(
             "We collect the account information you provide — such as your name " +
-              "and email address — and the essay content you submit so the service " +
-              "can give you feedback."
+              "and email address — and what you share with your coach: your " +
+              "conversations, the details you add to your profile, and the colleges " +
+              "on your list."
           )
         }
 
@@ -37,20 +39,36 @@ suspend fun ApplicationCall.respondPrivacyPage(nav: ShellNav = ShellNav.SignedOu
         p {
           +(
             "Your information is used to operate and improve the coaching service. " +
-              "We do not sell your personal information."
+              "We do not sell your personal information. " +
+              ErasureDisclosure.AI_PROVIDER_RETENTION
           )
         }
 
         h2 { +"Your choices" }
         p {
           // Names the iOS control `DeleteAccountControl` ("Delete account",
-          // ios-app/UnicoachiOS/SettingsView.swift). Rename or move it and this
-          // sentence points users at a control that no longer exists.
+          // ios-app/UnicoachiOS/SettingsView.swift), as does the minors notice
+          // below. Rename or move it and both point users at a control that no
+          // longer exists. The kept list is [ErasureDisclosure]'s, shared with
+          // the ACCOUNT_ERASED email; that object names the iOS copy.
           +(
-            "You may request access to your account information by contacting us. " +
-              "You can close your account in the app: Settings › Delete account. " +
-              "Some information may be retained as required to operate the service " +
-              "or to comply with legal obligations."
+            "You can delete your account in the app: Settings › Delete account. " +
+              "Your account is deleted at once, everything in it is erased within " +
+              "${ErasureDisclosure.ERASURE_WINDOW_DAYS} days, and we email your verified address when it is done. " +
+              ErasureDisclosure.KEPT + " " +
+              "You may request access to your account information by contacting us."
+          )
+        }
+        p {
+          // The notice to minors Cal. B&P 22581 requires, with the statute's
+          // own caveat; the clause after the colon names the two real reasons
+          // removal is not complete (RFC 266 D-A).
+          +(
+            "If you are under 18, you can remove anything you have posted to " +
+              "unicoach by deleting your account in the app (Settings › Delete " +
+              "account) or by contacting us. Removal does not ensure complete or " +
+              "comprehensive removal: a parent you connected keeps their own " +
+              "conversations, and the records listed above are kept."
           )
         }
       }

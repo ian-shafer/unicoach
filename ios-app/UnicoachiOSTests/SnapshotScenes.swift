@@ -308,6 +308,15 @@ enum SnapshotSeed {
         emailVerified: true
     )
 
+    /// The same parent before verifying their address: the delete
+    /// confirmation cannot promise them the erasure-complete email (RFC 269).
+    static let unverifiedSupporterUser = PublicUser(
+        id: supporterUser.id,
+        email: supporterUser.email,
+        name: supporterUser.name,
+        emailVerified: false
+    )
+
     /// Pinned ids: nothing renders them, but a scene that minted a fresh UUID
     /// per run would make the selection store answer differently each time.
     static func linkedStudent(
@@ -461,6 +470,7 @@ enum SnapshotSeed {
     /// (RFC 252); unloaded by default, which shows the notice's conditional
     /// form (coverage not known is not "does not pay").
     static func supporterSettings(
+        user: PublicUser = supporterUser,
         confirmingOnAppear: UUID? = nil,
         coaching: SupporterCoachingViewModel? = nil,
         deleteConfirmation: DeleteAccountConfirmation = .closed
@@ -469,7 +479,7 @@ enum SnapshotSeed {
         return AnyView(
             NavigationStack {
                 SettingsView(
-                    user: supporterUser,
+                    user: user,
                     caller: .supporter(
                         .init(
                             roster: [
@@ -490,6 +500,20 @@ enum SnapshotSeed {
                     onDeleteAccount: { false }
                 )
             }
+        )
+    }
+
+    /// The bottom `canvas` points of `view`, laid out `contentHeight` tall.
+    /// The open delete confirmation (RFC 269's four paragraphs) sits at the
+    /// foot of a Settings screen taller than `SnapshotScene.maxHeight`, and the
+    /// harness window does not scroll — so these scenes give up the top of the
+    /// screen rather than the confirmation's Delete and Cancel buttons.
+    static func foot(of view: AnyView, canvas: CGFloat, contentHeight: CGFloat) -> AnyView {
+        AnyView(
+            view
+                .frame(height: contentHeight)
+                .frame(height: canvas, alignment: .bottom)
+                .clipped()
         )
     }
 
@@ -958,7 +982,7 @@ enum SnapshotCatalogue {
                     AppearancePreference.system.rawValue,
                     forKey: AppearancePreference.storageKey
                 )
-                return AnyView(
+                return SnapshotSeed.foot(of: AnyView(
                     NavigationStack {
                         SettingsView(
                             user: SnapshotSeed.user,
@@ -971,20 +995,37 @@ enum SnapshotCatalogue {
                             onDeleteAccount: { false }
                         )
                     }
-                )
+                ), canvas: 1500, contentHeight: 1800)
             },
             SnapshotScene(name: "settings-supporter-delete-confirm-open", size: SnapshotScene.tallCanvas(height: 1400)) {
                 let coaching = await SnapshotSeed.supporterCoaching(
                     kind: .ownSubscription,
                     usage: CoachingUsage(usedPercent: 64, exhausted: false, resetsAt: SnapshotClock.pinned)
                 )
-                return SnapshotSeed.supporterSettings(coaching: coaching, deleteConfirmation: .open)
+                return SnapshotSeed.foot(
+                    of: SnapshotSeed.supporterSettings(coaching: coaching, deleteConfirmation: .open),
+                    canvas: 1400,
+                    contentHeight: 1650
+                )
             },
             // The confirmation after a delete the server did not confirm: the
             // person is still signed in, and the error line sits above the
             // buttons that let them try again.
             SnapshotScene(name: "settings-delete-confirm-failed", size: SnapshotScene.tallCanvas(height: 1400)) {
-                SnapshotSeed.supporterSettings(deleteConfirmation: .failed)
+                SnapshotSeed.foot(
+                    of: SnapshotSeed.supporterSettings(deleteConfirmation: .failed),
+                    canvas: 1400,
+                    contentHeight: 1700
+                )
+            },
+            // The confirmation for an address that is not verified (RFC 269):
+            // erasure is still within 30 days, but no email is promised.
+            SnapshotScene(name: "settings-delete-confirm-unverified", size: SnapshotScene.tallCanvas(height: 1400)) {
+                SnapshotSeed.foot(
+                    of: SnapshotSeed.supporterSettings(user: SnapshotSeed.unverifiedSupporterUser, deleteConfirmation: .open),
+                    canvas: 1400,
+                    contentHeight: 1700
+                )
             },
 
             // --- The parent account (RFC 241). Four screens the gate has never
