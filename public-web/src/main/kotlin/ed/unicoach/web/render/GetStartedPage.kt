@@ -114,14 +114,6 @@ private const val OPTIONAL_OVERLINE = "Optional — you can add these any time"
 
 private const val OPTIONAL_BODY = "Answer now or later; just ask me in chat. I'll work without them."
 
-private const val STATE_CAPTION =
-  "Public colleges publish two prices. Knowing your state lets me show the one you'd actually pay — " +
-    "a median \$6,300 a year difference."
-
-private const val INCOME_CAPTION =
-  "Net price varies a lot by income. With a bracket I can show your family's figure instead of the " +
-    "all-family average — about \$1,376 a year for a middle bracket."
-
 /**
  * The student form's place in the session's drafts (RFC 265): the field
  * `session_metadata.proto` gives it, `FormDrafts.student_signup`. It has no

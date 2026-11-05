@@ -1,0 +1,15 @@
+/* RFC 270, D-F — unicoach needs JavaScript. A browser with script off loads
+   this sheet from the <noscript> in every page's <head>; one with script on
+   never does. The page's content is hidden and the notice the <body>'s own
+   <noscript> carries is what is left, under the site header. */
+
+main {
+  display: none;
+}
+
+.noscript-notice {
+  max-width: var(--measure);
+  margin: 2rem auto;
+  padding: 0 var(--gutter-x);
+  color: var(--fg);
+}

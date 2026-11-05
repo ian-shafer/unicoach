@@ -637,7 +637,8 @@ main {
    back out — and `1rem` moves when the 1024px block re-declares
    `--font-size-root`. */
 .auth-form input,
-.auth-form select {
+.auth-form select,
+.details-field select {
   width: 100%;
   min-height: var(--tap-target);
   padding: 0.5rem 0.75rem;
@@ -650,7 +651,8 @@ main {
 }
 
 .auth-form input:focus,
-.auth-form select:focus {
+.auth-form select:focus,
+.details-field select:focus {
   outline: 2px solid var(--accent);
   outline-offset: 1px;
 }
@@ -736,6 +738,63 @@ main {
   border: 0;
   border-radius: 0.25rem;
   cursor: pointer;
+}
+
+/* RFC 270 — Your details. Each answer is a fieldset holding three small
+   forms: the pick (a select the script submits on change), and one button each
+   to decline and to remove it. The fieldset's frame is removed and a rule under
+   it separates one answer from the next. The select fills the form column; the
+   buttons sit in a row that wraps, so on a phone each falls under the select on
+   its own line, every one at the tap-target floor. */
+.details-field {
+  min-width: 0;
+  max-width: var(--form-measure);
+  margin: 0 0 1.5rem;
+  padding: 0 0 1.5rem;
+  border: 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.details-field button {
+  min-height: var(--tap-target);
+  padding: 0.5rem 1.25rem;
+  font: inherit;
+  color: var(--fg);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 0.25rem;
+  cursor: pointer;
+}
+
+/* "Not saved yet." and the button that retries the pick, on one line that
+   wraps. */
+.details-pending {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.75rem;
+  margin: 0 0 1rem;
+}
+
+.details-answer {
+  margin: 0 0 1rem;
+  font-weight: 600;
+}
+
+.details-receipt {
+  margin-left: 0.75rem;
+  font-weight: 400;
+  color: var(--muted);
+}
+
+.details-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0 1rem;
+}
+
+.details-actions form {
+  flex: 1 1 14rem;
 }
 
 /* The two error shapes, and they are two because they say different things: a

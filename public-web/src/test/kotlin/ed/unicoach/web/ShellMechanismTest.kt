@@ -21,6 +21,8 @@ import ed.unicoach.web.render.FIELD_CLASS
 import ed.unicoach.web.render.FIELD_ERROR_CLASS
 import ed.unicoach.web.render.FORM_ERROR_CLASS
 import ed.unicoach.web.render.LINKLIKE_CLASS
+import ed.unicoach.web.render.NOSCRIPT_NOTICE
+import ed.unicoach.web.render.NOSCRIPT_STYLESHEET_PATH
 import ed.unicoach.web.render.NOTICE_CLASS
 import ed.unicoach.web.render.REPORT_CLAIM_CLASS
 import ed.unicoach.web.render.ROLE_BUTTON_CLASS
@@ -32,12 +34,16 @@ import ed.unicoach.web.render.chatNoticeHtml
 import ed.unicoach.web.render.coachMessage
 import ed.unicoach.web.render.siteLayout
 import io.ktor.client.request.get
+import io.ktor.client.request.header
 import io.ktor.client.statement.bodyAsText
+import io.ktor.http.ContentType
+import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
 import io.ktor.server.testing.testApplication
 import kotlinx.html.div
 import kotlinx.html.html
 import kotlinx.html.stream.createHTML
+import org.jsoup.Jsoup
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
@@ -562,6 +568,49 @@ class ShellMechanismTest {
       assertTrue(
         declares(css, ".$AUTH_FORM_CLASS input", property = "font-size", valueFragment = "var(--input-font-size-min"),
         "the form inputs do not read --input-font-size-min: iOS Safari will zoom the page on focus and not zoom back",
+      )
+    }
+
+  /**
+   * JavaScript is required (RFC 270, D-F): every page carries the head
+   * `<noscript>` that links [NOSCRIPT_STYLESHEET_PATH] and the body
+   * `<noscript>` that says so, signed out and signed in alike, and the sheet is
+   * served. What a browser does with them is the browser's; that both are in
+   * every page's bytes is the layout's.
+   */
+  @Test
+  fun `mechanism - every page carries the no-script stylesheet link and notice, and the sheet is served`() =
+    testApplication {
+      application { testPublicWebModule() }
+      val (_, token) = ChatTestSupport.signedInStudent()
+
+      val pages =
+        listOf(
+          "signed out /" to client.get("/"),
+          "signed in /account" to client.get("/account") { header(HttpHeaders.Cookie, WebAuthTestSupport.cookieHeader(token)) },
+        )
+      for ((label, response) in pages) {
+        assertEquals(HttpStatusCode.OK, response.status, "[$label]")
+        val page = Jsoup.parse(response.bodyAsText())
+        assertEquals(
+          listOf(NOSCRIPT_STYLESHEET_PATH),
+          page.select("head > noscript > link[rel=stylesheet]").map { it.attr("href") },
+          "[$label] carries no head noscript stylesheet link",
+        )
+        val notice = page.body().child(0)
+        assertEquals("noscript", notice.tagName(), "[$label]'s body does not open with the no-script notice")
+        assertEquals(NOSCRIPT_NOTICE, notice.text(), "[$label]")
+      }
+
+      val sheet = client.get(NOSCRIPT_STYLESHEET_PATH)
+      assertEquals(HttpStatusCode.OK, sheet.status, "[$NOSCRIPT_STYLESHEET_PATH] is not served")
+      assertTrue(
+        sheet.headers[HttpHeaders.ContentType].orEmpty().startsWith(ContentType.Text.CSS.toString()),
+        "[$NOSCRIPT_STYLESHEET_PATH] is not served as CSS",
+      )
+      assertTrue(
+        declares(sheet.bodyAsText(), "main", property = "display", valueFragment = "none"),
+        "[$NOSCRIPT_STYLESHEET_PATH] does not hide main",
       )
     }
 

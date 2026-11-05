@@ -7,6 +7,7 @@
  * second call here; nothing else in the page changes, because the page
  * references the bundle by the name the manifest gives it.
  */
+import { mount as mountAutosave } from "./autosave.ts";
 import { mount as mountBackToTop } from "./backToTop.ts";
 import { mount as mountChat } from "./chat.ts";
 
@@ -14,3 +15,4 @@ import { mount as mountChat } from "./chat.ts";
 // runs and no DOMContentLoaded dance is needed.
 mountBackToTop(document);
 mountChat(document);
+mountAutosave(document);

@@ -40,6 +40,9 @@ const val ACCOUNT_PATH = "/account"
 /** The change-email form. */
 const val CHANGE_EMAIL_PATH = "/account/email"
 
+/** Your details (RFC 270): the money profile a student reviews and changes, one answer at a time. */
+const val YOUR_DETAILS_PATH = "$ACCOUNT_PATH/details"
+
 /** The chat (RFC 262): the signed-in root, and the prefix of every conversation's own page. */
 const val CHAT_PATH = "/chat"
 

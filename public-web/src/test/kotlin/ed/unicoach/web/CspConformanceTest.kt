@@ -3,6 +3,7 @@ package ed.unicoach.web
 import ed.unicoach.web.auth.CHAT_PATH
 import ed.unicoach.web.auth.STUDENT_FORM_PATH
 import ed.unicoach.web.auth.STUDENT_SIGNUP_PATH
+import ed.unicoach.web.auth.YOUR_DETAILS_PATH
 import ed.unicoach.web.common.http.CONTENT_SECURITY_POLICY
 import ed.unicoach.web.common.http.CONTENT_SECURITY_POLICY_HEADER
 import ed.unicoach.web.common.routing.registeredRoutes
@@ -402,7 +403,7 @@ class CspConformanceTest {
       },
     )
 
-    // The signed-in pages (RFC 262): the chat, fetched as a student, and the
+    // The signed-in pages (RFC 262): the chat and Your details (RFC 270), fetched as a student, and the
     // two onboarding pages (RFC 268), fetched as a verified user with no role.
     // All are pages a browser renders under the same policy, so they are walked
     // like every public one.
@@ -411,6 +412,7 @@ class CspConformanceTest {
     val nonStudentToken = WebAuthTestSupport.login(nonStudent.email.value)
     for ((path, token) in listOf(
       CHAT_PATH to studentToken,
+      YOUR_DETAILS_PATH to studentToken,
       STUDENT_SIGNUP_PATH to nonStudentToken,
       STUDENT_FORM_PATH to nonStudentToken,
     )) {
@@ -580,7 +582,12 @@ class CspConformanceTest {
      * properties initialise in order.
      */
     val SIGNED_IN_GET_ROUTES =
-      listOf(HttpMethod.Get to CHAT_PATH, HttpMethod.Get to STUDENT_SIGNUP_PATH, HttpMethod.Get to STUDENT_FORM_PATH)
+      listOf(
+        HttpMethod.Get to CHAT_PATH,
+        HttpMethod.Get to YOUR_DETAILS_PATH,
+        HttpMethod.Get to STUDENT_SIGNUP_PATH,
+        HttpMethod.Get to STUDENT_FORM_PATH,
+      )
 
     /** Never a live token: the confirm step makes no backend call, and the fake verifier refuses this one. */
     const val NOT_A_REAL_TOKEN = "not-a-real-token"

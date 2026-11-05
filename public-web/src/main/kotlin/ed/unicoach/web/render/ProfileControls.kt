@@ -1,6 +1,9 @@
 package ed.unicoach.web.render
 
 import ed.unicoach.common.util.UsDate
+import ed.unicoach.db.models.DependencyStatus
+import ed.unicoach.db.models.LivingArrangement
+import ed.unicoach.vocabulary.Vocabulary
 import kotlinx.html.FlowContent
 import kotlinx.html.div
 import kotlinx.html.fieldSet
@@ -11,6 +14,19 @@ import java.time.Month
 // The profile controls (RFC 268): the answers a student gives about themselves,
 // each a function taking its current value and its errors, so the onboarding
 // form and `web/07`'s Your details screen render one control and not two.
+
+/**
+ * The options of the one published vocabulary named [name], for the income and
+ * state selects; anything but exactly one is a fault, said with what was
+ * published.
+ */
+fun List<Vocabulary>.optionsOf(name: String): List<SelectOption> {
+  val matches = filter { it.name == name }
+  check(matches.size == 1) {
+    "expected exactly one published vocabulary [$name], found ${matches.size} among ${map(Vocabulary::name)}"
+  }
+  return matches.single().entries.map { entry -> SelectOption(entry.value, entry.label) }
+}
 
 /** The class a partial-date group carries: its selects sit in one row that wraps on a narrow phone. */
 const val DATE_GROUP_CLASS = "date-group"
@@ -112,6 +128,55 @@ fun FlowContent.partialDateGroup(
 }
 
 /**
+ * What the state of residence improves, as the iOS onboarding says it: read by
+ * the onboarding form and by Your details (RFC 270), so both say one sentence.
+ */
+const val STATE_CAPTION =
+  "Public colleges publish two prices. Knowing your state lets me show the one you'd actually pay — " +
+    "a median \$6,300 a year difference."
+
+/** What the household income improves, as the iOS onboarding says it; read where [STATE_CAPTION] is. */
+const val INCOME_CAPTION =
+  "Net price varies a lot by income. With a bracket I can show your family's figure instead of the " +
+    "all-family average — about \$1,376 a year for a middle bracket."
+
+/** What the living plan improves (RFC 270, new). */
+const val LIVING_PLAN_CAPTION =
+  "Housing and food is part of every college's price. Knowing where you'd live lets me use the right figure for it."
+
+/** What the FAFSA dependency improves (RFC 270, new). */
+const val DEPENDENCY_CAPTION =
+  "On the FAFSA, a dependent student reports their parents' income. Knowing which you'll be lets me use the " +
+    "right federal loan limits and Pell Grant rules."
+
+/**
+ * Each living arrangement as the web offers it (brief 0013 D16): web copy at the
+ * edge, not the enum's spoken [LivingArrangement.label]. Exhaustive, so a new
+ * arrangement does not compile until it has words here.
+ */
+fun LivingArrangement.optionCaption(): String =
+  when (this) {
+    LivingArrangement.ON_CAMPUS -> "Living on campus"
+    LivingArrangement.OFF_CAMPUS -> "Renting off campus"
+    LivingArrangement.WITH_FAMILY -> "Living at home with family"
+  }
+
+/** Each dependency status as the web offers it (brief 0013 D16); exhaustive, as [optionCaption] over arrangements is. */
+fun DependencyStatus.optionCaption(): String =
+  when (this) {
+    DependencyStatus.DEPENDENT -> "I will be a dependent on the FAFSA"
+    DependencyStatus.INDEPENDENT -> "I will file as independent"
+  }
+
+/** The living-plan select's options, in the enum's order, each posting the stored value. */
+val LIVING_PLAN_OPTIONS: List<SelectOption> =
+  LivingArrangement.entries.map { plan -> SelectOption(plan.value, plan.optionCaption()) }
+
+/** The dependency select's options, in the enum's order, each posting the stored value. */
+val DEPENDENCY_OPTIONS: List<SelectOption> =
+  DependencyStatus.entries.map { status -> SelectOption(status.value, status.optionCaption()) }
+
+/**
  * The state of residence, one select over the `residency_states` vocabulary
  * ([options], from `VocabularyService`). Blank is UNANSWERED, never declined
  * (RFC 163), and reads [blankLabel].
@@ -149,6 +214,47 @@ fun FlowContent.incomeSelect(
   name = name,
   labelText = "Household income",
   options = options,
+  selected = selected,
+  blankLabel = blankLabel,
+  caption = caption,
+  errors = errors,
+)
+
+/**
+ * Where the student would live (RFC 270), one select over
+ * [LIVING_PLAN_OPTIONS]. Blank is UNANSWERED, never declined, and reads
+ * [blankLabel].
+ */
+fun FlowContent.livingPlanSelect(
+  name: String,
+  selected: String?,
+  blankLabel: String,
+  caption: String? = null,
+  errors: List<String> = emptyList(),
+) = selectField(
+  name = name,
+  labelText = "Where you'd live",
+  options = LIVING_PLAN_OPTIONS,
+  selected = selected,
+  blankLabel = blankLabel,
+  caption = caption,
+  errors = errors,
+)
+
+/**
+ * The FAFSA dependency (RFC 270), one select over [DEPENDENCY_OPTIONS]. Blank
+ * is UNANSWERED, never declined, and reads [blankLabel].
+ */
+fun FlowContent.dependencySelect(
+  name: String,
+  selected: String?,
+  blankLabel: String,
+  caption: String? = null,
+  errors: List<String> = emptyList(),
+) = selectField(
+  name = name,
+  labelText = "FAFSA dependency",
+  options = DEPENDENCY_OPTIONS,
   selected = selected,
   blankLabel = blankLabel,
   caption = caption,

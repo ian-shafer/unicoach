@@ -1,12 +1,15 @@
 package ed.unicoach.web
 
+import ed.unicoach.web.auth.YOUR_DETAILS_PATH
 import ed.unicoach.web.render.FAFSA_PATH
+import ed.unicoach.web.render.YOUR_DETAILS_TITLE
 import io.ktor.client.request.get
 import io.ktor.client.request.header
 import io.ktor.client.statement.bodyAsText
 import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
 import io.ktor.server.testing.testApplication
+import kotlinx.coroutines.runBlocking
 import org.junit.jupiter.api.BeforeEach
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -68,9 +71,38 @@ class ShellNavTest {
         shellHeader.indexOf("<a href=\"/chat\">Chat</a>").let { it >= 0 && it < shellHeader.indexOf("href=\"/account\"") },
         "the signed-in header carries no Chat link before Account; header was [$shellHeader]",
       )
+      // RFC 270: "Your details" sits between "Chat" and "Account", its words and path the page's own.
+      val detailsLink = "<a href=\"$YOUR_DETAILS_PATH\">$YOUR_DETAILS_TITLE</a>"
+      assertTrue(
+        shellHeader
+          .indexOf(
+            detailsLink,
+          ).let { it > shellHeader.indexOf("href=\"/chat\"") && it < shellHeader.indexOf("href=\"/account\"") },
+        "the signed-in header carries no Your details link between Chat and Account; header was [$shellHeader]",
+      )
       assertTrue(shellHeader.contains("action=\"/sign-out\""), "the signed-in header carries no sign-out form")
       assertTrue(shellHeader.contains("method=\"post\""), "sign-out is not a POST: an anchor would be followed by every prefetcher")
       assertTrue(!shellHeader.contains("href=\"/sign-in\""), "the signed-in header still offers the door")
+    }
+
+  /**
+   * A supporter's header offers Your details too (RFC 270, D-D), as it offers
+   * the chat: the header is not role-aware, and the route sends a supporter to
+   * their account.
+   */
+  @Test
+  fun `a supporter's signed-in header carries the Your details link`() =
+    testApplication {
+      val email = WebAuthTestSupport.uniqueEmail()
+      val user = WebAuthTestSupport.seedUser(email)
+      runBlocking { WebAuthTestSupport.supporterService.ensure(user.id).getOrThrow() }
+      application { testPublicWebModule() }
+      val token = WebAuthTestSupport.login(email)
+
+      val response = client.get("/account") { header(HttpHeaders.Cookie, WebAuthTestSupport.cookieHeader(token)) }
+
+      assertEquals(HttpStatusCode.OK, response.status)
+      assertTrue(headerOf(response.bodyAsText()).contains("<a href=\"$YOUR_DETAILS_PATH\">$YOUR_DETAILS_TITLE</a>"))
     }
 
   /**

@@ -30,6 +30,7 @@ message SessionMetadata {
 message FormDrafts {
   ChangeEmailDraft change_email = 1;
   StudentSignupDraft student_signup = 2;
+  MoneyProfileDraft money_profile = 3;
 }
 
 // The change-email form (public-web, /account/email).
@@ -48,4 +49,15 @@ message StudentSignupDraft {
   string graduation_day = 3;
   string residency_state = 4;
   string income_band = 5;
+}
+
+// The Your details form (public-web, /account/details, RFC 270). Each answer
+// saves on its own, so a field here is a pick whose save did not succeed; it is
+// emptied when that field next saves, and the message goes when every field is
+// empty.
+message MoneyProfileDraft {
+  string income_band = 1;
+  string residency_state = 2;
+  string living_plan = 3;
+  string dependency = 4;
 }

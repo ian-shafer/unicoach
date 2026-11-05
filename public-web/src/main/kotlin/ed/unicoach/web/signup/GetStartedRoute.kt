@@ -15,10 +15,11 @@ import ed.unicoach.student.AccountRole
 import ed.unicoach.student.AccountRoleService
 import ed.unicoach.student.CreateStudentResult
 import ed.unicoach.student.StudentService
-import ed.unicoach.vocabulary.Vocabulary
 import ed.unicoach.vocabulary.VocabularyService
 import ed.unicoach.web.DraftNotKept
 import ed.unicoach.web.DraftSave
+import ed.unicoach.web.UnreadableControl
+import ed.unicoach.web.UnreadableMode
 import ed.unicoach.web.WebSessionConfig
 import ed.unicoach.web.auth.ACCOUNT_PATH
 import ed.unicoach.web.auth.CHAT_PATH
@@ -35,8 +36,8 @@ import ed.unicoach.web.auth.respondGateRedirect
 import ed.unicoach.web.clearDraft
 import ed.unicoach.web.common.http.respondSeeOther
 import ed.unicoach.web.draftFor
-import ed.unicoach.web.formField
 import ed.unicoach.web.formParametersOrNull
+import ed.unicoach.web.oneValue
 import ed.unicoach.web.render.BIRTH_DAY_FIELD
 import ed.unicoach.web.render.BIRTH_MONTH_FIELD
 import ed.unicoach.web.render.BIRTH_YEAR_FIELD
@@ -50,12 +51,12 @@ import ed.unicoach.web.render.MONTH_OPTIONS
 import ed.unicoach.web.render.RESIDENCY_STATE_FIELD
 import ed.unicoach.web.render.RoleChoiceState
 import ed.unicoach.web.render.STUDENT_SIGNUP_DRAFT
-import ed.unicoach.web.render.SelectOption
 import ed.unicoach.web.render.StudentFormErrors
 import ed.unicoach.web.render.StudentFormRule
 import ed.unicoach.web.render.StudentFormState
 import ed.unicoach.web.render.StudentFormValues
 import ed.unicoach.web.render.onboardingNav
+import ed.unicoach.web.render.optionsOf
 import ed.unicoach.web.render.respondRoleChoicePage
 import ed.unicoach.web.render.respondStudentFormPage
 import ed.unicoach.web.saveDraft
@@ -153,7 +154,7 @@ internal fun Route.getStartedRoutes(
 
       is StudentFormReading.Unreadable -> {
         // The control and the mode, never the value: these are a minor's answers.
-        onboardingLog.info("student form unreadable at control [{}]: {}", reading.control, reading.mode)
+        onboardingLog.info("student form unreadable at control [{}]: {}", reading.at.control, reading.at.mode)
         call.respondStudentForm(services, caller, StudentFormState.Unreadable)
       }
     }
@@ -297,35 +298,21 @@ private suspend fun ApplicationCall.respondStudentForm(
   )
 }
 
-/** The options of the one published vocabulary named [name]; anything but exactly one is a fault, said with what was published. */
-private fun List<Vocabulary>.optionsOf(name: String): List<SelectOption> {
-  val matches = filter { it.name == name }
-  check(matches.size == 1) {
-    "expected exactly one published vocabulary [$name], found ${matches.size} among ${map(Vocabulary::name)}"
-  }
-  return matches.single().entries.map { entry -> SelectOption(entry.value, entry.label) }
-}
-
 /** A posted student form: its values, or the first control that is not a submission of the form this module renders. */
 private sealed interface StudentFormReading {
   data class Read(
     val values: StudentFormValues,
   ) : StudentFormReading
 
-  /** [control] and why it could not be read. Its value is not kept: these are a minor's answers. */
+  /**
+   * The control the reading stopped [at]. Its value is not kept: these are a
+   * minor's answers. A value that is not an option is a month or day out of
+   * range, a year that is not four digits, or a state or a band the vocabulary
+   * does not hold.
+   */
   data class Unreadable(
-    val control: String,
-    val mode: UnreadableMode,
+    val at: UnreadableControl,
   ) : StudentFormReading
-}
-
-/** Why a posted control is not one this form could have sent. */
-private enum class UnreadableMode {
-  /** The control is absent, or posted more than once ([formField]). */
-  NOT_ONE_VALUE,
-
-  /** A value none of its options carries: a month or day out of range, a year that is not four digits, a state or a band the vocabulary does not hold. */
-  NOT_AN_OPTION,
 }
 
 /**
@@ -364,11 +351,11 @@ private inline fun Parameters.answer(
   isOption: (String) -> Boolean,
   unreadable: (StudentFormReading.Unreadable) -> Nothing,
 ): String? {
-  val value = formField(control) ?: unreadable(StudentFormReading.Unreadable(control, UnreadableMode.NOT_ONE_VALUE))
+  val value = oneValue(control) { unreadable(StudentFormReading.Unreadable(it)) }
   return when {
     value.isEmpty() -> null
     isOption(value) -> value
-    else -> unreadable(StudentFormReading.Unreadable(control, UnreadableMode.NOT_AN_OPTION))
+    else -> unreadable(StudentFormReading.Unreadable(UnreadableControl(control, UnreadableMode.NOT_AN_OPTION)))
   }
 }
 

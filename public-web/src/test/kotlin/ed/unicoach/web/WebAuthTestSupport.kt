@@ -1,6 +1,7 @@
 package ed.unicoach.web
 
 import com.typesafe.config.ConfigFactory
+import com.typesafe.config.ConfigValueFactory
 import ed.unicoach.auth.AppleIdTokenVerifier
 import ed.unicoach.auth.AuthService
 import ed.unicoach.auth.AuthenticatedSession
@@ -143,6 +144,18 @@ object WebAuthTestSupport {
    * outage fails it rather than the way a fake chooses to.
    */
   fun unreachableSessionMetadataService(): SessionMetadataService = SessionMetadataService(Database(dbConfig).also(Database::close))
+
+  /**
+   * A real pool on the real configuration whose every transaction is
+   * read-only (`default_transaction_read_only`): reads succeed and every write
+   * fails the way Postgres refuses it, so a page can render around a write that
+   * did not happen (RFC 270). The caller closes it: every checkout shares the
+   * cluster's connection budget.
+   */
+  fun readOnlyDatabase(): Database {
+    val url = "${dbConfig.jdbcUrl}?options=-c%20default_transaction_read_only%3Don"
+    return Database(DatabaseConfig.from(config.withValue("database.jdbcUrl", ConfigValueFactory.fromAnyRef(url))).getOrThrow())
+  }
 
   /** The production student service onboarding creates students through (RFC 268). */
   val studentService = StudentService(database)

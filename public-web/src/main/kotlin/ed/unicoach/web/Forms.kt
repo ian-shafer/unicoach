@@ -54,3 +54,28 @@ private val FormBodyKey = AttributeKey<FormBody>("ed.unicoach.web.FormBody")
  * an absent or repeated key is a request shape, and is re-rendered instead.
  */
 internal fun Parameters.formField(name: String): String? = getAll(name)?.singleOrNull()
+
+/** Why a posted control is not one the page's forms could have sent. */
+internal enum class UnreadableMode {
+  /** The control is absent, or posted more than once ([formField]). */
+  NOT_ONE_VALUE,
+
+  /** A value none of the control's options carries. */
+  NOT_AN_OPTION,
+}
+
+/**
+ * A posted [control] that is not a submission of the form this module rendered,
+ * and why. Its value is never kept: these forms carry a family's answers, so a
+ * route logs the control and the mode and nothing else.
+ */
+internal data class UnreadableControl(
+  val control: String,
+  val mode: UnreadableMode,
+)
+
+/** The one value [control] posted; an absent or repeated control is handed to [unreadable], which ends the reading. */
+internal inline fun Parameters.oneValue(
+  control: String,
+  unreadable: (UnreadableControl) -> Nothing,
+): String = formField(control) ?: unreadable(UnreadableControl(control, UnreadableMode.NOT_ONE_VALUE))

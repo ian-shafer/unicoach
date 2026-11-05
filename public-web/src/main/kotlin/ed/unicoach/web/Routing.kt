@@ -52,6 +52,8 @@ import ed.unicoach.web.common.http.respondSeeOther
 import ed.unicoach.web.common.http.setContentSecurityPolicy
 import ed.unicoach.web.common.http.setLinkHolderPrivacyHeaders
 import ed.unicoach.web.common.logging.secretQueryParams
+import ed.unicoach.web.details.YourDetailsServices
+import ed.unicoach.web.details.yourDetailsRoutes
 import ed.unicoach.web.fafsa.FafsaDeadlineSource
 import ed.unicoach.web.render.CHANGE_EMAIL_DRAFT
 import ed.unicoach.web.render.ChangeEmailFormState
@@ -408,6 +410,13 @@ fun Application.installPublicWebRouting(
 
     getStartedRoutes(
       OnboardingServices(accountRoleService, studentService, supporterService, moneyProfileService, vocabularyService),
+      sessionMetadataService,
+      authService,
+      sessionConfig,
+    )
+
+    yourDetailsRoutes(
+      YourDetailsServices(accountRoleService, moneyProfileService, vocabularyService),
       sessionMetadataService,
       authService,
       sessionConfig,

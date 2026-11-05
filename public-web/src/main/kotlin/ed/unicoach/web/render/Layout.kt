@@ -7,6 +7,7 @@ import ed.unicoach.web.auth.CsrfToken
 import ed.unicoach.web.auth.SIGN_IN_PATH
 import ed.unicoach.web.auth.SIGN_OUT_PATH
 import ed.unicoach.web.auth.WebCaller
+import ed.unicoach.web.auth.YOUR_DETAILS_PATH
 import ed.unicoach.web.common.http.ROBOTS_NOINDEX
 import kotlinx.html.ButtonType
 import kotlinx.html.FlowContent
@@ -22,6 +23,7 @@ import kotlinx.html.link
 import kotlinx.html.main
 import kotlinx.html.meta
 import kotlinx.html.nav
+import kotlinx.html.noScript
 import kotlinx.html.p
 import kotlinx.html.script
 import kotlinx.html.span
@@ -132,6 +134,15 @@ val WebCaller.signedInNav: ShellNav.SignedIn get() = ShellNav.SignedIn(csrfToken
 /** The header [this] caller's onboarding pages render (RFC 268): sign-out only. */
 val WebCaller.onboardingNav: ShellNav.Onboarding get() = ShellNav.Onboarding(csrfToken)
 
+/** The stylesheet a browser without JavaScript loads (RFC 270, D-F): it hides the page and shows [NOSCRIPT_NOTICE]. */
+const val NOSCRIPT_STYLESHEET_PATH = "/noscript.css"
+
+/** What a browser without JavaScript is told, on every page (RFC 270, new). */
+const val NOSCRIPT_NOTICE = "unicoach needs JavaScript. Turn it on in your browser's settings, then reload this page."
+
+/** The class the no-script notice carries; `noscript.css` styles it. */
+const val NOSCRIPT_NOTICE_CLASS = "noscript-notice"
+
 /**
  * The shared HTML skeleton for every public-web page. Links the chrome-less
  * `/site.css` stylesheet from the static mount and wraps a page body — injected
@@ -172,6 +183,12 @@ fun HTML.siteLayout(
     }
     title { +"unicoach — $pageTitle" }
     link(rel = "stylesheet", href = "/site.css")
+    // JavaScript is required (RFC 270, D-F). A browser running script never
+    // loads this sheet; one without script loads it, and it hides `main` and
+    // shows the notice below. An EXTERNAL same-origin sheet, so `style-src
+    // 'self'` already allows it, and nothing hides the page while the bundle
+    // is still loading.
+    noScript { link(rel = "stylesheet", href = NOSCRIPT_STYLESHEET_PATH) }
     // The one client-side bundle (RFC 225). An EXTERNAL same-origin file, so
     // `script-src 'self'` already allows it and the content-security policy
     // does not change; an inline script would need `'unsafe-inline'`, which is
@@ -191,6 +208,7 @@ fun HTML.siteLayout(
   // renders an empty `class=""` attribute for a blank string, and every page
   // that existed before RFC 210 must keep rendering the bytes it did.
   body(classes = width.bodyClass) {
+    noScript { p(NOSCRIPT_NOTICE_CLASS) { +NOSCRIPT_NOTICE } }
     siteHeader(nav)
     main { content() }
     siteFooter()
@@ -231,6 +249,9 @@ fun FlowContent.siteHeader(shellNav: ShellNav = ShellNav.SignedOut) {
         is ShellNav.SignedIn -> {
           // The signed-in root (RFC 262), reachable from every signed-in page.
           a(href = CHAT_PATH) { +CHAT_TITLE }
+          // Your details (RFC 270), offered to a supporter too, as the chat
+          // is: their route sends them to their account.
+          a(href = YOUR_DETAILS_PATH) { +YOUR_DETAILS_TITLE }
           a(href = ACCOUNT_PATH) { +"Account" }
           signOutControl(shellNav.csrf)
         }
