@@ -9,7 +9,9 @@ import ed.unicoach.auth.RegisterResult
 import ed.unicoach.auth.SessionMetadataService
 import ed.unicoach.auth.VerifyEmailResult
 import ed.unicoach.coaching.CoachingService
+import ed.unicoach.coaching.collegelist.CollegeListService
 import ed.unicoach.coaching.moneyprofile.MoneyProfileService
+import ed.unicoach.college.CollegeSearchService
 import ed.unicoach.common.config.TOKEN_QUERY_PARAM
 import ed.unicoach.db.models.User
 import ed.unicoach.db.models.UserId
@@ -48,6 +50,8 @@ import ed.unicoach.web.auth.respondGateRedirect
 import ed.unicoach.web.auth.sessionCookieToken
 import ed.unicoach.web.auth.setWebSessionCookie
 import ed.unicoach.web.chat.chatRoutes
+import ed.unicoach.web.colleges.CollegeListServices
+import ed.unicoach.web.colleges.collegeListRoutes
 import ed.unicoach.web.common.http.respondSeeOther
 import ed.unicoach.web.common.http.setContentSecurityPolicy
 import ed.unicoach.web.common.http.setLinkHolderPrivacyHeaders
@@ -298,6 +302,8 @@ fun Application.installPublicWebRouting(
   accountRoleService: AccountRoleService,
   moneyProfileService: MoneyProfileService,
   vocabularyService: VocabularyService,
+  collegeListService: CollegeListService,
+  collegeSearchService: CollegeSearchService,
 ) {
   install(StatusPages) {
     status(HttpStatusCode.NotFound) { call, _ ->
@@ -417,6 +423,13 @@ fun Application.installPublicWebRouting(
 
     yourDetailsRoutes(
       YourDetailsServices(accountRoleService, moneyProfileService, vocabularyService),
+      sessionMetadataService,
+      authService,
+      sessionConfig,
+    )
+
+    collegeListRoutes(
+      CollegeListServices(accountRoleService, collegeListService, collegeSearchService),
       sessionMetadataService,
       authService,
       sessionConfig,

@@ -31,6 +31,7 @@ message FormDrafts {
   ChangeEmailDraft change_email = 1;
   StudentSignupDraft student_signup = 2;
   MoneyProfileDraft money_profile = 3;
+  CollegeEntryDraft college_entry = 4;
 }
 
 // The change-email form (public-web, /account/email).
@@ -60,4 +61,14 @@ message MoneyProfileDraft {
   string residency_state = 2;
   string living_plan = 3;
   string dependency = 4;
+}
+
+// The college list's edit form (public-web, /colleges/{id}, RFC 271): what the
+// family typed into one entry's form and did not save. entry_id names that
+// entry; the draft is offered only on its page, and a failed save of another
+// entry replaces it.
+message CollegeEntryDraft {
+  string entry_id = 1;
+  string status = 2;
+  string reasons = 3;
 }

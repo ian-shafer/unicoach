@@ -46,6 +46,9 @@ const val YOUR_DETAILS_PATH = "$ACCOUNT_PATH/details"
 /** The chat (RFC 262): the signed-in root, and the prefix of every conversation's own page. */
 const val CHAT_PATH = "/chat"
 
+/** My colleges (RFC 271): the student's college list, and the prefix of its search, edit and remove pages. */
+const val COLLEGES_PATH = "/colleges"
+
 /**
  * Onboarding (RFC 268): "Who are you here for?" — where every check sends a
  * verified account that is neither a student nor a supporter. The name is
@@ -119,6 +122,7 @@ internal fun mapPathToAccess(path: String): WebAccess =
   when {
     path == ACCOUNT_PATH || path.startsWith("$ACCOUNT_PATH/") -> WebAccess.ONBOARDED
     path == CHAT_PATH || path.startsWith("$CHAT_PATH/") -> WebAccess.ONBOARDED
+    path == COLLEGES_PATH || path.startsWith("$COLLEGES_PATH/") -> WebAccess.ONBOARDED
     path == STUDENT_SIGNUP_PATH || path.startsWith("$STUDENT_SIGNUP_PATH/") -> WebAccess.VERIFIED
     path == SIGN_OUT_PATH || path == RESEND_VERIFICATION_PATH -> WebAccess.SIGNED_IN
     else -> WebAccess.OPEN

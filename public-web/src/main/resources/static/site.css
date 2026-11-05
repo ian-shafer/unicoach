@@ -638,7 +638,9 @@ main {
    `--font-size-root`. */
 .auth-form input,
 .auth-form select,
-.details-field select {
+.details-field select,
+.college-search-form input,
+.college-entry textarea {
   width: 100%;
   min-height: var(--tap-target);
   padding: 0.5rem 0.75rem;
@@ -652,14 +654,19 @@ main {
 
 .auth-form input:focus,
 .auth-form select:focus,
-.details-field select:focus {
+.details-field select:focus,
+.college-search-form input:focus,
+.college-entry textarea:focus {
   outline: 2px solid var(--accent);
   outline-offset: 1px;
 }
 
 /* The submit button carries the tap-target floor for the same reason the nav
    links do, and `font: inherit` for the same reason the sign-out button does. */
-.auth-form button {
+.auth-form button,
+.college-search-form button,
+.college-results button,
+.college-entry button {
   min-height: var(--tap-target);
   padding: 0.5rem 1.25rem;
   font: inherit;
@@ -795,6 +802,144 @@ main {
 
 .details-actions form {
   flex: 1 1 14rem;
+}
+
+/* RFC 271 — My colleges. The list is a data table (the shared mechanism
+   above); its own class only narrows the remove column on a laptop, lets the
+   reasons wrap, and puts every link in it on the tap-target floor. The search
+   results are cards, and the edit page's status radios wrap, each choice its
+   own tap target. No widths but the form measure the other forms read; the
+   boxes and buttons join the shared control rules above. */
+.college-list-table td {
+  overflow-wrap: anywhere;
+}
+
+.college-list-table a,
+.college-back a,
+.college-actions a {
+  display: inline-flex;
+  align-items: center;
+  min-height: var(--tap-target);
+}
+
+.college-list-table .college-remove {
+  width: 1%;
+  white-space: nowrap;
+}
+
+.college-list-table .college-status-cell {
+  white-space: nowrap;
+}
+
+.college-receipt {
+  margin-left: 0.75rem;
+  color: var(--muted);
+}
+
+.college-add {
+  display: inline-flex;
+  align-items: center;
+  min-height: var(--tap-target);
+  padding: 0.5rem 1.25rem;
+  text-decoration: none;
+  color: var(--bg);
+  background: var(--accent);
+  border-radius: 0.25rem;
+}
+
+.college-search-form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  column-gap: 0.75rem;
+  max-width: var(--form-measure);
+}
+
+.college-search-form .field {
+  flex: 1 1 14rem;
+}
+
+.college-search-form button {
+  margin-bottom: 1rem;
+}
+
+.college-results {
+  display: grid;
+  gap: 0.75rem;
+  max-width: var(--form-measure);
+  margin: 0 0 1rem;
+  padding: 0;
+  list-style: none;
+}
+
+.college-results li {
+  padding: 0.75rem 1rem;
+  border: 1px solid var(--border);
+  border-radius: 0.25rem;
+  overflow-wrap: anywhere;
+}
+
+.college-results p {
+  margin: 0 0 0.25rem;
+}
+
+.college-entry form {
+  max-width: var(--form-measure);
+}
+
+.college-status {
+  display: flex;
+  flex-wrap: wrap;
+  column-gap: 1.25rem;
+  min-width: 0;
+  margin: 0 0 1rem;
+  padding: 0;
+  border: 0;
+}
+
+.college-status legend {
+  padding: 0;
+  margin-bottom: 0.25rem;
+  font-weight: 600;
+}
+
+.college-status div {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.college-status label {
+  display: flex;
+  align-items: center;
+  min-height: var(--tap-target);
+}
+
+.college-quotes h2 {
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
+.college-quotes blockquote {
+  margin: 0 0 0.75rem;
+  padding: 0.75rem 1rem;
+  border: 1px solid var(--border);
+  border-radius: 0.25rem;
+  color: var(--muted);
+  font-size: 0.9rem;
+  overflow-wrap: anywhere;
+}
+
+.college-pending {
+  margin: 0 0 0.75rem;
+  color: var(--muted);
+}
+
+.college-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem 1.25rem;
 }
 
 /* The two error shapes, and they are two because they say different things: a
@@ -1123,6 +1268,18 @@ main {
   .data-table .md-center,
   .data-table .md-trailing {
     text-align: left;
+  }
+
+  /* My colleges' remove cell (RFC 271) is narrow only in the grid; as a card
+     row it is as wide as the card, like every other cell. */
+  .college-list-table .college-remove {
+    width: 100%;
+  }
+
+  /* An empty cell — a college with no reasons — is dropped from its card
+     rather than shown as a label with nothing after it. */
+  .college-list-table td:empty {
+    display: none;
   }
 
   /* The two role paths (RFC 268) stack, full width, so neither label wraps

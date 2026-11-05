@@ -5,6 +5,7 @@ import io.ktor.server.application.ApplicationCall
 import io.ktor.server.request.path
 import io.ktor.server.request.receiveParameters
 import io.ktor.util.AttributeKey
+import org.slf4j.Logger
 import org.slf4j.LoggerFactory
 
 /**
@@ -62,6 +63,9 @@ internal enum class UnreadableMode {
 
   /** A value none of the control's options carries. */
   NOT_AN_OPTION,
+
+  /** A value that is not the control's shape: a version that is not an integer, an id that is not a canonical UUID (RFC 271). */
+  MALFORMED,
 }
 
 /**
@@ -79,3 +83,20 @@ internal inline fun Parameters.oneValue(
   control: String,
   unreadable: (UnreadableControl) -> Nothing,
 ): String = formField(control) ?: unreadable(UnreadableControl(control, UnreadableMode.NOT_ONE_VALUE))
+
+/**
+ * Logs a posting [form]'s page did not send: the control and the mode [at]
+ * names, or "not a form" when there was no form body at all (`null`). NEVER the
+ * value — these forms carry a family's own answers and words — which is why
+ * every route logs an unreadable posting through here and not by hand.
+ */
+internal fun Logger.unreadablePosting(
+  form: String,
+  at: UnreadableControl?,
+) {
+  if (at == null) {
+    info("{} posting unreadable: not a form", form)
+  } else {
+    info("{} posting unreadable at control [{}]: {}", form, at.control, at.mode)
+  }
+}

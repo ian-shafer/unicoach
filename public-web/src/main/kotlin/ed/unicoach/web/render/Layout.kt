@@ -3,6 +3,7 @@ package ed.unicoach.web.render
 import ed.unicoach.web.assets.WebAssets
 import ed.unicoach.web.auth.ACCOUNT_PATH
 import ed.unicoach.web.auth.CHAT_PATH
+import ed.unicoach.web.auth.COLLEGES_PATH
 import ed.unicoach.web.auth.CsrfToken
 import ed.unicoach.web.auth.SIGN_IN_PATH
 import ed.unicoach.web.auth.SIGN_OUT_PATH
@@ -249,6 +250,9 @@ fun FlowContent.siteHeader(shellNav: ShellNav = ShellNav.SignedOut) {
         is ShellNav.SignedIn -> {
           // The signed-in root (RFC 262), reachable from every signed-in page.
           a(href = CHAT_PATH) { +CHAT_TITLE }
+          // My colleges (RFC 271), offered to a supporter too, as Your details
+          // is: their route sends them to their account.
+          a(href = COLLEGES_PATH) { +MY_COLLEGES_TITLE }
           // Your details (RFC 270), offered to a supporter too, as the chat
           // is: their route sends them to their account.
           a(href = YOUR_DETAILS_PATH) { +YOUR_DETAILS_TITLE }

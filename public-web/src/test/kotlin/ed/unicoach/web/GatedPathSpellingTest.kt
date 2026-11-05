@@ -1,5 +1,7 @@
 package ed.unicoach.web
 
+import ed.unicoach.web.render.NO_COLLEGES_YET
+import ed.unicoach.web.render.SEARCH_PROMPT
 import io.ktor.client.HttpClient
 import io.ktor.client.request.get
 import io.ktor.client.request.header
@@ -38,6 +40,10 @@ class GatedPathSpellingTest {
   /** Every spelling of `/account` a client may send that Ktor resolves to the account route. */
   private val accountSpellings =
     listOf("/account", "//account", "/%61ccount", "/account/", "/./account")
+
+  /** The same, for My colleges (RFC 271) and its search page. */
+  private val collegesSpellings =
+    listOf("/colleges", "//colleges", "/%63olleges", "/colleges/", "/./colleges", "/colleges/add", "//colleges/add", "/colleges/%61dd")
 
   /** The same, for the change-email form. */
   private val changeEmailSpellings =
@@ -96,10 +102,10 @@ class GatedPathSpellingTest {
     val noFollow = noFollowClient()
     val leaks = mutableListOf<String>()
 
-    for (path in accountSpellings + changeEmailSpellings) {
+    for (path in accountSpellings + changeEmailSpellings + collegesSpellings) {
       leaks += refusalFailure(noFollow.rawGet(path, cookie), "GET [$path]", expected)
     }
-    for (path in changeEmailSpellings) {
+    for (path in changeEmailSpellings + collegesSpellings.take(5)) {
       leaks += refusalFailure(rawFormPost(path, cookie, csrf, noFollow), "POST [$path]", expected)
     }
 
@@ -180,7 +186,10 @@ class GatedPathSpellingTest {
     const val VERIFY_EMAIL = "/verify-email"
     const val GET_STARTED = "/get-started"
 
-    /** Text that appears only on the two gated pages. */
-    val ACCOUNT_MARKERS = listOf("Your account", "Change your email")
+    /**
+     * Text that appears only on the gated pages' bodies — never in the
+     * signed-in header, which a branded 404 also carries.
+     */
+    val ACCOUNT_MARKERS = listOf("Your account", "Change your email", NO_COLLEGES_YET, SEARCH_PROMPT)
   }
 }

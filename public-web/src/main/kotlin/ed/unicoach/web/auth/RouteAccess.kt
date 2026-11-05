@@ -1,6 +1,7 @@
 package ed.unicoach.web.auth
 
 import ed.unicoach.auth.AuthService
+import ed.unicoach.db.models.StudentId
 import ed.unicoach.student.AccountRole
 import ed.unicoach.student.AccountRoleService
 import ed.unicoach.web.WebSessionConfig
@@ -112,6 +113,33 @@ internal fun Route.postOnboarded(
 ) = post(path) { handleOnboarded(authService, sessionConfig, accountRoles, handler) }
 
 /**
+ * [getOnboarded] for a page only a STUDENT has — Your details (RFC 270), My
+ * colleges (RFC 271) — handing the handler the caller's [StudentId] too.
+ *
+ * The onboarding wall admits a supporter, and a supporter has no money profile
+ * and no college list, so one is sent where their role lives (`/account`) with
+ * nothing read or written; an account with no role is sent to onboarding, as
+ * [getOnboarded] sends it. The role check is HERE and not in each handler: a
+ * handler cannot be written without the [StudentId], so it cannot forget to ask.
+ */
+internal fun Route.getStudent(
+  path: String,
+  authService: AuthService,
+  sessionConfig: WebSessionConfig,
+  accountRoles: AccountRoleService,
+  handler: suspend RoutingContext.(WebCaller, StudentId) -> Unit,
+) = get(path) { handleStudent(authService, sessionConfig, accountRoles, handler) }
+
+/** The `POST` half of [getStudent]; same contract, same reasoning. */
+internal fun Route.postStudent(
+  path: String,
+  authService: AuthService,
+  sessionConfig: WebSessionConfig,
+  accountRoles: AccountRoleService,
+  handler: suspend RoutingContext.(WebCaller, StudentId) -> Unit,
+) = post(path) { handleStudent(authService, sessionConfig, accountRoles, handler) }
+
+/**
  * [handleAccess] at [HandledAccess.VERIFIED], then the role check: every refusal
  * the verified class gives — sign-in, the CSRF 403, the hold screen — comes
  * first and reads exactly as it does on a verified route, and only a caller who
@@ -125,6 +153,23 @@ private suspend fun RoutingContext.handleOnboarded(
 ) = handleAccess(HandledAccess.VERIFIED, authService, sessionConfig) { caller ->
   val role = caller.accountRole(accountRoles)
   if (role == AccountRole.None) call.respondGateRedirect(role.homePath()) else handler(caller)
+}
+
+/**
+ * [handleAccess] at [HandledAccess.VERIFIED], then one role read: a student is
+ * handed to [handler] with their id, and every other role is sent home — the
+ * same answer [handleOnboarded] gives an account with no role.
+ */
+private suspend fun RoutingContext.handleStudent(
+  authService: AuthService,
+  sessionConfig: WebSessionConfig,
+  accountRoles: AccountRoleService,
+  handler: suspend RoutingContext.(WebCaller, StudentId) -> Unit,
+) = handleAccess(HandledAccess.VERIFIED, authService, sessionConfig) { caller ->
+  when (val role = caller.accountRole(accountRoles)) {
+    is AccountRole.Student -> handler(caller, role.student.id)
+    is AccountRole.Supporter, AccountRole.None -> call.respondGateRedirect(role.homePath())
+  }
 }
 
 /**
@@ -150,9 +195,9 @@ internal fun AccountRole.homePath(): String =
 /**
  * The access classes [handleAccess] can enforce on its own. [WebAccess.ONBOARDED]
  * is not one: its role check needs an [AccountRoleService], so it is admitted
- * only through [getOnboarded]/[postOnboarded], and leaving it out of this type
- * means a route cannot name it here and skip the wall. [WebAccess.OPEN] needs no
- * wrapper at all.
+ * only through [getOnboarded]/[postOnboarded] and [getStudent]/[postStudent],
+ * and leaving it out of this type means a route cannot name it here and skip
+ * the wall. [WebAccess.OPEN] needs no wrapper at all.
  */
 internal enum class HandledAccess {
   /** A live session. No claim about the email. */

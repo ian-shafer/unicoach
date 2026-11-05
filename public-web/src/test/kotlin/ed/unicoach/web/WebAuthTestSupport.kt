@@ -18,9 +18,11 @@ import ed.unicoach.coaching.CoachingService
 import ed.unicoach.coaching.LlmCallLog
 import ed.unicoach.coaching.budget.BudgetConfig
 import ed.unicoach.coaching.budget.BudgetService
+import ed.unicoach.coaching.collegelist.CollegeListService
 import ed.unicoach.coaching.extraction.ExtractionConfig
 import ed.unicoach.coaching.extraction.ExtractionScheduler
 import ed.unicoach.coaching.moneyprofile.MoneyProfileService
+import ed.unicoach.college.CollegeSearchService
 import ed.unicoach.common.config.AppConfig
 import ed.unicoach.common.models.EmailAddress
 import ed.unicoach.common.models.ValidationResult
@@ -168,6 +170,12 @@ object WebAuthTestSupport {
 
   /** The production vocabularies the student form's state and income options come from (RFC 268). */
   val vocabularyService = VocabularyService(database)
+
+  /** The production college list My colleges reads and writes (RFC 271). */
+  val collegeListService = CollegeListService(database)
+
+  /** The production name search My colleges adds from (RFC 271). */
+  val collegeSearchService = CollegeSearchService(database)
 
   /**
    * The student's coach (RFC 262), wired as `Application.kt` wires it — the

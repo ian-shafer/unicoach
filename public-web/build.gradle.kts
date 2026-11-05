@@ -24,6 +24,10 @@ dependencies {
   // RFC 262: the web chat runs the coach IN-PROCESS (brief 0013 D13), so this
   // root builds the provider (ChatConfig, ChatProviderFactory) and closes it.
   implementation(project(":chat"))
+  // RFC 271: the college list's search page calls CollegeSearchService
+  // in-process (brief 0013 D13). :service reaches :college only as an
+  // implementation detail, so the web names it itself.
+  implementation(project(":college"))
   implementation(libs.ktor.server.core)
   implementation(libs.ktor.server.netty)
   implementation(libs.ktor.server.status.pages)

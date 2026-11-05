@@ -75,6 +75,18 @@ data class SharedCollegeListEntry(
 class CollegeListService(
   private val database: Database,
 ) {
+  companion object {
+    /**
+     * The most characters an entry's reasons may hold: the
+     * `college_list_entries_reasons_length_check` CHECK's ceiling
+     * (db/schema/0024). The CHECK is what refuses, answered as
+     * [UpdateEntryResult.InvalidReasons]; this is its one Kotlin home, for
+     * every surface that names the ceiling — the web form before a family
+     * meets it, the coach's tool after a refusal.
+     */
+    const val MAX_REASONS_LENGTH = 2048
+  }
+
   suspend fun addToList(
     studentId: StudentId,
     collegeId: CollegeId,

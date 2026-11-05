@@ -12,7 +12,6 @@ import ed.unicoach.db.models.IncomeBand
 import ed.unicoach.db.models.LivingArrangement
 import ed.unicoach.db.models.StudentId
 import ed.unicoach.db.session.MoneyProfileDraft
-import ed.unicoach.student.AccountRole
 import ed.unicoach.student.AccountRoleService
 import ed.unicoach.vocabulary.VocabularyService
 import ed.unicoach.web.DraftSave
@@ -22,10 +21,8 @@ import ed.unicoach.web.WebSessionConfig
 import ed.unicoach.web.auth.SIGN_IN_PATH
 import ed.unicoach.web.auth.WebCaller
 import ed.unicoach.web.auth.YOUR_DETAILS_PATH
-import ed.unicoach.web.auth.accountRole
-import ed.unicoach.web.auth.getOnboarded
-import ed.unicoach.web.auth.homePath
-import ed.unicoach.web.auth.postOnboarded
+import ed.unicoach.web.auth.getStudent
+import ed.unicoach.web.auth.postStudent
 import ed.unicoach.web.auth.respondGateRedirect
 import ed.unicoach.web.clearDraft
 import ed.unicoach.web.common.http.respondSeeOther
@@ -45,6 +42,7 @@ import ed.unicoach.web.render.picks
 import ed.unicoach.web.render.respondYourDetailsPage
 import ed.unicoach.web.render.signedInNav
 import ed.unicoach.web.saveDraft
+import ed.unicoach.web.unreadablePosting
 import io.ktor.http.Parameters
 import io.ktor.server.application.ApplicationCall
 import io.ktor.server.routing.Route
@@ -69,8 +67,8 @@ internal class YourDetailsServices(
  * | `GET /account/details`  | the page, with any drafted picks                         |
  * | `POST /account/details` | one field: save a pick, decline it, or remove the answer |
  *
- * Both are ONBOARDED, and both then ask the caller's [AccountRole]: a
- * supporter has no money profile, so is sent home, as the chat sends one.
+ * Both are student pages ([getStudent]/[postStudent]): a supporter has no
+ * money profile, so is sent home, as the chat sends one.
  */
 internal fun Route.yourDetailsRoutes(
   services: YourDetailsServices,
@@ -78,23 +76,21 @@ internal fun Route.yourDetailsRoutes(
   authService: AuthService,
   sessionConfig: WebSessionConfig,
 ) {
-  getOnboarded(YOUR_DETAILS_PATH, authService, sessionConfig, services.accountRoles) { caller ->
-    val studentId = call.studentOrSentHome(caller, services.accountRoles) ?: return@getOnboarded
+  getStudent(YOUR_DETAILS_PATH, authService, sessionConfig, services.accountRoles) { caller, studentId ->
     // A KEY from the closed set, as a `WebNotice` is: an unknown value renders
     // nothing, so no text from a URL reaches the page.
     val saved = DetailsField.fromKey(call.request.queryParameters[SAVED_QUERY_PARAM])
     call.respondDetails(services, caller, studentId, YourDetailsState.Open(saved), caller.draftedPicks())
   }
 
-  postOnboarded(YOUR_DETAILS_PATH, authService, sessionConfig, services.accountRoles) { caller ->
-    val studentId = call.studentOrSentHome(caller, services.accountRoles) ?: return@postOnboarded
+  postStudent(YOUR_DETAILS_PATH, authService, sessionConfig, services.accountRoles) { caller, studentId ->
     // Not this page's submission: the page as it stands at 400, nothing written
     // and no draft — there is no reading of it to keep (the change-email
     // precedent). A body that is not a form at all is logged by
     // `formParametersOrNull`.
     val posting =
       call.formParametersOrNull()?.detailsPosting()
-        ?: return@postOnboarded call.respondDetails(services, caller, studentId, YourDetailsState.Unreadable, caller.draftedPicks())
+        ?: return@postStudent call.respondDetails(services, caller, studentId, YourDetailsState.Unreadable, caller.draftedPicks())
     when (posting) {
       is DetailsPosting.Unreadable -> call.respondUnreadable(services, caller, studentId, posting.at)
       is DetailsPosting.BlankSave -> call.respondBlankSave(services, caller, studentId, posting.field)
@@ -110,8 +106,7 @@ private suspend fun ApplicationCall.respondUnreadable(
   studentId: StudentId,
   at: UnreadableControl,
 ) {
-  // The control and the mode, never the value: these are a family's money answers.
-  detailsLog.info("details posting unreadable at control [{}]: {}", at.control, at.mode)
+  detailsLog.unreadablePosting("details", at)
   respondDetails(services, caller, studentId, YourDetailsState.Unreadable, caller.draftedPicks())
 }
 
@@ -124,26 +119,6 @@ private suspend fun ApplicationCall.respondBlankSave(
 ) {
   respondDetails(services, caller, studentId, YourDetailsState.BlankSave(field), caller.draftedPicks())
 }
-
-/**
- * The caller's student, or `null` once a caller with no money profile has been
- * sent where their role lives — a supporter to `/account` — with nothing read
- * or written.
- */
-private suspend fun ApplicationCall.studentOrSentHome(
-  caller: WebCaller,
-  accountRoles: AccountRoleService,
-): StudentId? =
-  when (val role = caller.accountRole(accountRoles)) {
-    is AccountRole.Student -> {
-      role.student.id
-    }
-
-    is AccountRole.Supporter, AccountRole.None -> {
-      respondGateRedirect(role.homePath())
-      null
-    }
-  }
 
 /** The picks the session's draft holds, by field. */
 private fun WebCaller.draftedPicks(): Map<DetailsField, String> = draftFor(MONEY_PROFILE_DRAFT)?.picks().orEmpty()

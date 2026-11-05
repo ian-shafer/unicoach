@@ -562,10 +562,7 @@ class CollegeListChatTool(
       "the write succeeded, but reading the list back failed; the change is saved and the next turn's college list will show it"
     internal const val CONFLICT_REASON = "the list changed underneath this call; call the tool again"
 
-    // Mirrors the `college_list_entries_reasons_length_check` /
-    // `_not_empty_check` DB CHECKs (db/schema/0024): non-empty, at most
-    // [MAX_REASONS_CHARS] chars. If the CHECKs change, this is what drifts.
-    private const val MAX_REASONS_CHARS = 2048
-    private const val INVALID_REASONS_REASON = "reasons must be non-empty and at most [$MAX_REASONS_CHARS] characters"
+    private const val INVALID_REASONS_REASON =
+      "reasons must be non-empty and at most [${CollegeListService.MAX_REASONS_LENGTH}] characters"
   }
 }

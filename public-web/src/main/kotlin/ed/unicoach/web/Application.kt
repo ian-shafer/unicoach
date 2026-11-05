@@ -22,6 +22,7 @@ import ed.unicoach.coaching.StudentToolRegistry
 import ed.unicoach.coaching.aid.FafsaDeadlineService
 import ed.unicoach.coaching.budget.BudgetConfig
 import ed.unicoach.coaching.budget.BudgetService
+import ed.unicoach.coaching.collegelist.CollegeListService
 import ed.unicoach.coaching.costs.CollegeCostService
 import ed.unicoach.coaching.extraction.ExtractionConfig
 import ed.unicoach.coaching.extraction.ExtractionScheduler
@@ -29,6 +30,7 @@ import ed.unicoach.coaching.moneyprofile.MoneyProfileService
 import ed.unicoach.coaching.report.CostReportConfig
 import ed.unicoach.coaching.report.CostReportShareService
 import ed.unicoach.coaching.report.ShareTokenDeriver
+import ed.unicoach.college.CollegeSearchService
 import ed.unicoach.common.config.AppConfig
 import ed.unicoach.db.Database
 import ed.unicoach.db.DatabaseConfig
@@ -183,6 +185,10 @@ fun startServer(wait: Boolean = true): EmbeddedServer<*, *> {
         accountRoleService = AccountRoleService(database),
         moneyProfileService = MoneyProfileService(database),
         vocabularyService = VocabularyService(database),
+        // My colleges (RFC 271): the student's list and the name search
+        // that adds to it, both in-process (brief 0013 D13).
+        collegeListService = CollegeListService(database),
+        collegeSearchService = CollegeSearchService(database),
       )
     }
 
@@ -382,6 +388,8 @@ fun Application.publicWebModule(
   accountRoleService: AccountRoleService,
   moneyProfileService: MoneyProfileService,
   vocabularyService: VocabularyService,
+  collegeListService: CollegeListService,
+  collegeSearchService: CollegeSearchService,
 ) {
   // READ the bundle name while the module installs (RFC 225). WebAssets is an
   // `object`, so its manifest refusals run at class-init — and nothing touched
@@ -433,5 +441,7 @@ fun Application.publicWebModule(
     accountRoleService,
     moneyProfileService,
     vocabularyService,
+    collegeListService,
+    collegeSearchService,
   )
 }

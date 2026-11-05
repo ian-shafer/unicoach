@@ -1,5 +1,9 @@
 package ed.unicoach.web.render
 
+import kotlinx.html.TD
+import kotlinx.html.TR
+import kotlinx.html.td
+
 /**
  * The class every DATA TABLE on this site carries, on top of its own page's
  * class.
@@ -29,3 +33,19 @@ const val DATA_TABLE_CLASS = "data-table"
  * contract and not three plus a silent loss of every phone-card label.
  */
 const val DATA_LABEL = "data-label"
+
+/**
+ * A data cell of a [DATA_TABLE_CLASS] table: a `td` carrying its column's
+ * [label] as [DATA_LABEL] for the phone card, with [classes] when the page
+ * styles that column.
+ */
+internal fun TR.labelledCell(
+  label: String,
+  classes: String? = null,
+  block: TD.() -> Unit,
+) {
+  td(classes) {
+    attributes[DATA_LABEL] = label
+    block()
+  }
+}

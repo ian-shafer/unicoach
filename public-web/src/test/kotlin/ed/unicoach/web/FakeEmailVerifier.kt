@@ -6,7 +6,9 @@ import ed.unicoach.auth.EmailVerifier
 import ed.unicoach.auth.SessionMetadataService
 import ed.unicoach.auth.VerifyEmailResult
 import ed.unicoach.coaching.CoachingService
+import ed.unicoach.coaching.collegelist.CollegeListService
 import ed.unicoach.coaching.moneyprofile.MoneyProfileService
+import ed.unicoach.college.CollegeSearchService
 import ed.unicoach.family.SupporterInviteService
 import ed.unicoach.family.SupporterLinkRequestService
 import ed.unicoach.family.SupporterService
@@ -79,6 +81,8 @@ fun Application.testPublicWebModule(
   accountRoleService: AccountRoleService = WebAuthTestSupport.accountRoleService,
   moneyProfileService: MoneyProfileService = WebAuthTestSupport.moneyProfileService,
   vocabularyService: VocabularyService = WebAuthTestSupport.vocabularyService,
+  collegeListService: CollegeListService = WebAuthTestSupport.collegeListService,
+  collegeSearchService: CollegeSearchService = WebAuthTestSupport.collegeSearchService,
 ) {
   publicWebModule(
     emailVerifier,
@@ -99,6 +103,8 @@ fun Application.testPublicWebModule(
     accountRoleService,
     moneyProfileService,
     vocabularyService,
+    collegeListService,
+    collegeSearchService,
   )
 }
 

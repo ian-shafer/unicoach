@@ -1,14 +1,19 @@
 package ed.unicoach.web
 
 import ed.unicoach.web.auth.CHAT_PATH
+import ed.unicoach.web.auth.COLLEGES_PATH
 import ed.unicoach.web.auth.STUDENT_FORM_PATH
 import ed.unicoach.web.auth.STUDENT_SIGNUP_PATH
 import ed.unicoach.web.auth.YOUR_DETAILS_PATH
 import ed.unicoach.web.common.http.CONTENT_SECURITY_POLICY
 import ed.unicoach.web.common.http.CONTENT_SECURITY_POLICY_HEADER
 import ed.unicoach.web.common.routing.registeredRoutes
+import ed.unicoach.web.render.COLLEGE_SEARCH_PATH
+import ed.unicoach.web.render.ENTRY_ID_PARAM
 import ed.unicoach.web.render.FAFSA_PATH
 import ed.unicoach.web.render.WHO_PAYS_PATH
+import ed.unicoach.web.render.collegeEntryPath
+import ed.unicoach.web.render.collegeRemovePath
 import io.ktor.client.request.forms.FormDataContent
 import io.ktor.client.request.get
 import io.ktor.client.request.header
@@ -403,18 +408,27 @@ class CspConformanceTest {
       },
     )
 
-    // The signed-in pages (RFC 262): the chat and Your details (RFC 270), fetched as a student, and the
+    // The signed-in pages (RFC 262): the chat, Your details (RFC 270) and My colleges (RFC 271), fetched as a student, and the
     // two onboarding pages (RFC 268), fetched as a verified user with no role.
     // All are pages a browser renders under the same policy, so they are walked
     // like every public one.
     val (_, studentToken) = ChatTestSupport.signedInStudent()
     val nonStudent = WebAuthTestSupport.seedUser(WebAuthTestSupport.uniqueEmail())
     val nonStudentToken = WebAuthTestSupport.login(nonStudent.email.value)
+    // My colleges (RFC 271): the list, a search with a result card, and one
+    // entry's edit and remove pages, over a college this walk seeds.
+    val (collegeStudent, collegeToken) = CollegeListTestSupport.signedInStudent()
+    val collegeWord = CollegeListTestSupport.uniqueWord()
+    val entry = CollegeListTestSupport.addEntry(collegeStudent, CollegeListTestSupport.seedCollege("$collegeWord College"))
     for ((path, token) in listOf(
       CHAT_PATH to studentToken,
       YOUR_DETAILS_PATH to studentToken,
       STUDENT_SIGNUP_PATH to nonStudentToken,
       STUDENT_FORM_PATH to nonStudentToken,
+      COLLEGES_PATH to collegeToken,
+      "$COLLEGE_SEARCH_PATH?q=$collegeWord" to collegeToken,
+      collegeEntryPath(entry.id) to collegeToken,
+      collegeRemovePath(entry.id) to collegeToken,
     )) {
       action(path, HttpStatusCode.OK, client.get(path) { header(HttpHeaders.Cookie, WebAuthTestSupport.cookieHeader(token)) })
     }
@@ -585,6 +599,10 @@ class CspConformanceTest {
       listOf(
         HttpMethod.Get to CHAT_PATH,
         HttpMethod.Get to YOUR_DETAILS_PATH,
+        HttpMethod.Get to COLLEGES_PATH,
+        HttpMethod.Get to COLLEGE_SEARCH_PATH,
+        HttpMethod.Get to "$COLLEGES_PATH/{$ENTRY_ID_PARAM}",
+        HttpMethod.Get to "$COLLEGES_PATH/{$ENTRY_ID_PARAM}/remove",
         HttpMethod.Get to STUDENT_SIGNUP_PATH,
         HttpMethod.Get to STUDENT_FORM_PATH,
       )

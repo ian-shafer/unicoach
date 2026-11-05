@@ -1,7 +1,9 @@
 package ed.unicoach.web
 
+import ed.unicoach.web.auth.COLLEGES_PATH
 import ed.unicoach.web.auth.YOUR_DETAILS_PATH
 import ed.unicoach.web.render.FAFSA_PATH
+import ed.unicoach.web.render.MY_COLLEGES_TITLE
 import ed.unicoach.web.render.YOUR_DETAILS_TITLE
 import io.ktor.client.request.get
 import io.ktor.client.request.header
@@ -80,6 +82,12 @@ class ShellNavTest {
           ).let { it > shellHeader.indexOf("href=\"/chat\"") && it < shellHeader.indexOf("href=\"/account\"") },
         "the signed-in header carries no Your details link between Chat and Account; header was [$shellHeader]",
       )
+      // RFC 271: "My colleges" sits between "Chat" and "Your details", its words and path the page's own.
+      val collegesAt = shellHeader.indexOf("<a href=\"$COLLEGES_PATH\">$MY_COLLEGES_TITLE</a>")
+      assertTrue(
+        collegesAt > shellHeader.indexOf("href=\"/chat\"") && collegesAt < shellHeader.indexOf(detailsLink),
+        "the signed-in header carries no My colleges link between Chat and Your details; header was [$shellHeader]",
+      )
       assertTrue(shellHeader.contains("action=\"/sign-out\""), "the signed-in header carries no sign-out form")
       assertTrue(shellHeader.contains("method=\"post\""), "sign-out is not a POST: an anchor would be followed by every prefetcher")
       assertTrue(!shellHeader.contains("href=\"/sign-in\""), "the signed-in header still offers the door")
@@ -91,7 +99,7 @@ class ShellNavTest {
    * their account.
    */
   @Test
-  fun `a supporter's signed-in header carries the Your details link`() =
+  fun `a supporter's signed-in header carries the Your details and My colleges links`() =
     testApplication {
       val email = WebAuthTestSupport.uniqueEmail()
       val user = WebAuthTestSupport.seedUser(email)
@@ -103,6 +111,8 @@ class ShellNavTest {
 
       assertEquals(HttpStatusCode.OK, response.status)
       assertTrue(headerOf(response.bodyAsText()).contains("<a href=\"$YOUR_DETAILS_PATH\">$YOUR_DETAILS_TITLE</a>"))
+      // My colleges (RFC 271) by the same rule.
+      assertTrue(headerOf(response.bodyAsText()).contains("<a href=\"$COLLEGES_PATH\">$MY_COLLEGES_TITLE</a>"))
     }
 
   /**

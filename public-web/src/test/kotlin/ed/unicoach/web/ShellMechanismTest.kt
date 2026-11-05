@@ -11,6 +11,19 @@ import ed.unicoach.web.render.ACCOUNT_CLASS
 import ed.unicoach.web.render.AUTH_FORM_CLASS
 import ed.unicoach.web.render.CHAT_EMPTY_CLASS
 import ed.unicoach.web.render.CHAT_NOTICE_CLASS
+import ed.unicoach.web.render.COLLEGE_ACTIONS_CLASS
+import ed.unicoach.web.render.COLLEGE_ADD_CLASS
+import ed.unicoach.web.render.COLLEGE_BACK_CLASS
+import ed.unicoach.web.render.COLLEGE_ENTRY_CLASS
+import ed.unicoach.web.render.COLLEGE_LIST_TABLE_CLASS
+import ed.unicoach.web.render.COLLEGE_PENDING_CLASS
+import ed.unicoach.web.render.COLLEGE_QUOTES_CLASS
+import ed.unicoach.web.render.COLLEGE_RECEIPT_CLASS
+import ed.unicoach.web.render.COLLEGE_REMOVE_CELL_CLASS
+import ed.unicoach.web.render.COLLEGE_RESULTS_CLASS
+import ed.unicoach.web.render.COLLEGE_SEARCH_FORM_CLASS
+import ed.unicoach.web.render.COLLEGE_STATUS_CELL_CLASS
+import ed.unicoach.web.render.COLLEGE_STATUS_CLASS
 import ed.unicoach.web.render.COMPOSER_CLASS
 import ed.unicoach.web.render.ChatNotice
 import ed.unicoach.web.render.DATA_LABEL
@@ -503,6 +516,11 @@ class ShellMechanismTest {
         FIELD_CAPTION_CLASS,
         DATE_GROUP_CLASS,
         ROLE_BUTTON_CLASS,
+        COLLEGE_RECEIPT_CLASS,
+        COLLEGE_QUOTES_CLASS,
+        COLLEGE_PENDING_CLASS,
+        COLLEGE_REMOVE_CELL_CLASS,
+        COLLEGE_STATUS_CELL_CLASS,
       )) {
         assertTrue(
           Regex("""\.$stateClass\b""").containsMatchIn(css),
@@ -531,6 +549,17 @@ class ShellMechanismTest {
         ".$ROLE_BUTTON_CLASS",
         ".$REPORT_CLAIM_CLASS button",
         ".site-header .site-nav .$LINKLIKE_CLASS",
+        // My colleges (RFC 271): the search box and every button and link a
+        // thumb hits on the list, search, edit and remove pages.
+        ".$COLLEGE_SEARCH_FORM_CLASS input",
+        ".$COLLEGE_SEARCH_FORM_CLASS button",
+        ".$COLLEGE_RESULTS_CLASS button",
+        ".$COLLEGE_ENTRY_CLASS button",
+        ".$COLLEGE_STATUS_CLASS label",
+        ".$COLLEGE_ADD_CLASS",
+        ".$COLLEGE_LIST_TABLE_CLASS a",
+        ".$COLLEGE_BACK_CLASS a",
+        ".$COLLEGE_ACTIONS_CLASS a",
       )) {
         assertTrue(
           declares(css, selector, property = "min-height", valueFragment = "var(--tap-target"),
