@@ -436,6 +436,24 @@ THIS file, so the line lives here and the spec points at it):
   answered"; "(optional)"; "Choose a month to give a day."; the role choice
   omits iOS's two button captions).
 
+- `web/07/your-details` LANDED as RFC 270 (main@79a0c343, 2026-11-04) — "Your
+  details" at `/account/details`, the door in the signed-in header: household
+  income, state of residence, living plan and dependency (D17), each with what
+  it improves, each saved the moment it is picked, declinable ("Prefer not to
+  say") and removable ("Remove my answer"), one field per write through
+  `MoneyProfileService` (D13). The D16 option captions are web copy in
+  `ProfileControls.kt`. A pick whose save fails is kept in the session
+  (`MoneyProfileDraft`, approved under D11). **Ian at approval (2026-11-04): "We
+  can assume that every browser has javascript. In fact, we should block any
+  browser that does not have javascript enabled"** — the save happens on pick
+  (no Save button, as on iOS), and every page on the site shows a notice instead
+  of its content when script is off (D-F; supersedes D3's no-JS fallback for the
+  whole site). Full gate green at scope `full-gated`. The D19 device matrix WAS
+  run (all six sizes: no horizontal scroll, 44px tap targets; the first-session
+  test passed in a real browser). Open: none blocking; new copy (living plan and
+  dependency labels and captions, the status lines, the no-script notice)
+  shipped as approved.
+
 ## Research
 
 - research/ios-feature-inventory.md — every iOS screen/flow, endpoints, 23-row
