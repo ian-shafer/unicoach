@@ -564,17 +564,53 @@ nothing changes.
 
 ## shape/09/exchange-participation
 
-**Status:** DEFERRED
-
 **Needs:**
 
 - BLOCKS shape/01/canonical-store — participation rows need the canonical store.
 - PREFER shape/02/ipeds-ic-ay — the WUE ceiling formula (≤150%) hangs off a
-  stored in-state tuition row.\ Parked by intent (gate 1 D9):
-  WUE/MSEP/NEBHE-RSP/SREB-ACM rosters as participation facts + read-time ceiling
-  narration, never a stored price. Needs a curated roster source and a licence
-  look; schedule when a real family conversation wants it. Remove this Status
-  line when scheduled.
+  stored in-state tuition row.
+- CONFLICTS cost/05/the-table-first — both author the coach prompt's money
+  section. A rebase, not an order.
+
+Parked by intent at gate 1 (D9): WUE/MSEP/NEBHE-RSP/SREB-ACM rosters as
+participation facts + read-time ceiling narration, never a stored price. It
+needed a curated roster source and a licence look, and was to be scheduled "when
+a real family conversation wants it".
+
+**Scheduled 2026-11-04 by brief 0017 (gate 1 D2, "the exchange tier, read from
+the school").** The conversation came: a Washington student with Oregon State on
+their list was told "there is no comparable out-of-state figure" while two
+chatbots named WUE. Both edges above have landed. The roster source and the
+licence are answered in
+`product/0017-beat-the-chatbots-on-cost/research/fresher-prices-and-exchanges.md`
+§B: each school's own exchange page is the publisher (the automatic-awards
+pattern: `publisher, source_url, archive_url, checked_on, expires_on`); WICHE's
+Savings Finder locates which schools to read and is never ingested, because its
+terms forbid commercial reuse without written consent. Three refinements,
+binding with the text above:
+
+1. **The award basis, in the school's own words.** An own-enumeration column
+   `award_basis` (`automatic`, `automatic_consideration`, `competitive`,
+   `unknown`) with an `as_published` twin carrying the school's sentence and any
+   share it states (Oregon State: "the most competitive scholarship for new
+   undergraduate students", about 30% of eligible applicants; Western
+   Washington: automatic consideration, GPA 3.25, "highly competitive").
+2. **The deadline**, from the school's page, as a date column.
+3. **The coach says it as "if admitted under WUE"** — a labelled possibility
+   beside the out-of-state tier, the way the in-district tier is said: never as
+   the price, never inside a total, always with its basis and deadline. A school
+   with no roster row says nothing about exchanges: absence is unknown, not "not
+   a member", until the roster is marked complete for that compact (0017 D10).
+   The eligible-states column decides who is told, never the coach's memory.
+
+WUE first; MSEP, NEBHE and SREB rows only when a school on a student's list is
+in one. First rows: the WUE members among the six schools in 0017's test
+(Western Washington, Oregon State), then the rest of WUE's roster as a human
+reads each school's page. New table: DDL at /work's approval stop (0001 D10).
+Door: the coach's cost tool (iOS and web chat) and the Family Cost Report page.
+First-session test: a Washington student with Oregon State on their list is told
+the exchange exists, its basis and its deadline, and the capped price as a
+labelled possibility that never enters a total.
 
 ---
 

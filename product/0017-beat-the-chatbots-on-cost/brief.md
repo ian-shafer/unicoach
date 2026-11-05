@@ -4,11 +4,14 @@
 
 ## Status
 
-- **Phase:** PRIORITISE — FRAME written 2026-11-04; three research reports
-  delivered the same day; **gate 1 presented 2026-11-04, awaiting Ian.**
-- **Gate 1 (prioritisation):** PRESENTED 2026-11-04 — D1–D7 below, defaults
+- **Phase:** SPEC & SLICE — gate 1 passed 2026-11-04; DISCOVER done the same day
+  against `main@48018319`; `spec.md` written with five `cost/` slices plus brief
+  0006's `shape/09` unparked; **gate 2 presented 2026-11-04, awaiting Ian.**
+- **Gate 1 (prioritisation):** **PASSED 2026-11-04 — Ian approved all seven
+  defaults, verbatim: "approve"**, after two questions recorded under "Gate 1
+  outcome" below. D1–D7 stand as written. D7 is `standing` for this brief.
+- **Gate 2 (spec):** PRESENTED 2026-11-04 — D8–D14 in `spec.md`, defaults
   pre-chosen. Not yet answered.
-- **Gate 2 (spec):** not yet presented.
 - **Research:** 4 reports, 2,192 lines — `research/side-by-side-2026-11-04.md`
   (297 lines; the raw test, written by the coordinator from the browser
   session); `research/what-the-others-give.md` (643 lines, external, competitor
@@ -25,7 +28,7 @@ Opened: 2026-11-04, by Ian, from a side-by-side test he ran: the same cost
 question put to unicoach, Google's AI Overview, ChatGPT and Gemini.
 
     PHASE      FRAME -> [PRIORITISE gate 1] -> DISCOVER -> [SPEC & SLICE gate 2] -> EXECUTE -> LEARN
-    NOW                 ^^^^^^^^^^^^^^^^^^ HERE
+    NOW                                                    ^^^^^^^^^^^^^^^^^^^^^ HERE
 
 ## The question
 
@@ -221,3 +224,27 @@ _Default: defer._
 answer recorded in this brief's LEARN section against the five success criteria
 above. A slice whose re-run does not move its criterion is not done. _Default:
 as written; standing for this brief._
+
+## Gate 1 outcome (2026-11-04)
+
+Ian, verbatim: **"approve"** — all seven defaults, no amendments.
+
+Two questions came before the answer, and both are recorded because they shape
+the spec:
+
+1. _"Do we already have a brief for WUE?"_ — Yes, in part. Brief 0006 parked
+   `shape/09/exchange-participation` by intent (0006 gate 1 D9: "schedule when a
+   real family conversation wants it"), with the same design D2 reaches:
+   participation facts plus a read-time ceiling, never a stored price, and "a
+   curated roster source and a licence look" as its two open needs. Both of its
+   dependency edges have landed. **So D2 is executed by unparking `shape/09`
+   rather than minting a `cost/` slice for the same work**: its `DEFERRED` line
+   goes, D2's three refinements (the award basis in the school's own words, the
+   deadline, and the "if admitted under WUE, beside the tier, never inside a
+   total" rule) are appended to its slice text, and this brief's spec points at
+   it. Ian did not object; recorded as the coordinator's reading of D2, not as
+   an amendment.
+2. _"A four-year total for the student — we already did work for this, right?"_
+   — For the parent only (RFC 261, `family/07`). The student's coach has no such
+   tool and the Family Cost Report shows per-year figures only. D4 stands as the
+   thin student tool over the same arithmetic.

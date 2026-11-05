@@ -561,8 +561,9 @@ this data admits by design. The cohort address now has ONE home in `:db` — whi
 made the run's own cross-module contract test tautological, so it was deleted
 deliberately, the falsifier and the two-series tests carrying the real
 protection. Gate: **3,012 tests, 0 failures**, 1,188 shell assertions. **Brief
-0006's cutover is complete**; `shape/09/exchange-participation` remains DEFERRED
-by intent.
+0006's cutover is complete**; `shape/09/exchange-participation` was DEFERRED by
+intent until 2026-11-04, when brief 0017 (D2) scheduled it — see its slice text
+in `spec.md` for the three refinements that came with the scheduling.
 
 ## Gate 1 outcome (2026-09-02)
 
