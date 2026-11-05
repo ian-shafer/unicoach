@@ -602,3 +602,16 @@ _(one line per landed slice: ID, RFC, code SHA, date, one-line what.)_
       on defaults (verified address only; both doors confirm; the backfill runs
       on the old schedule, so accounts closed more than 7 days before the deploy
       are erased right after it). Email copy interim (deletion/05).
+    deletion/05/the-words LANDED as RFC 269 (main@2fce18f7, 2026-11-04) —
+      the iOS delete confirmation (both roles), the login line after a delete,
+      the ACCOUNT_ERASED email and /privacy say the account is deleted now,
+      erased within 30 days, what is kept (the existence-and-date record, any
+      Apple subscription record, usage records with the words removed) and that
+      the AI provider keeps conversation text up to 30 days with no account
+      attached; the confirmation promises the email only to a verified address;
+      /privacy drops "essay content" and gains the Cal. B&P 22581 minors
+      notice. Kotlin copy has one home (ErasureDisclosure); graceDays above 30
+      fails boot. Approval (Ian, 2026-11-04): "Approve defaults" — provider
+      line on all three surfaces, unverified users told no email will come,
+      "closed" → "deleted" on the login line, the minors caveat names its two
+      reasons. PREFER deletion/04 was already met.
