@@ -4,18 +4,20 @@
 
 ## Status
 
-- **Phase:** SPEC & SLICE — gate 1 passed 2026-11-04; DISCOVER done the same day
-  against `main@48018319`; `spec.md` written with six `cost/` slices plus brief
-  0006's `shape/09` unparked; **gate 2 presented 2026-11-04, amended at the gate
-  2026-11-05 (D15, standing) and re-presented, awaiting Ian.**
+- **Phase:** EXECUTE — gates 1 and 2 passed (2026-11-04, 2026-11-05). Six
+  `cost/` slices plus brief 0006's `shape/09`; wave 1 (`cost/01`, `cost/03`,
+  `cost/04`, `shape/09`) is startable now — say _"/slice start work on
+  `cost/01/the-latest-release`"_. The coordinator re-runs the six-school
+  question after each land (D7, D14) and records it under LEARN.
 - **Gate 1 (prioritisation):** **PASSED 2026-11-04 — Ian approved all seven
   defaults, verbatim: "approve"**, after two questions recorded under "Gate 1
   outcome" below. D1–D7 stand as written. D7 is `standing` for this brief.
 - **Gate 2 (spec):** PRESENTED 2026-11-04 — D8–D14 in `spec.md`, defaults
   pre-chosen. **Amended 2026-11-05** on Ian's rule at the gate (recorded under
   "Gate 2 amendment" below and as D15, `standing`): `cost/01` and `cost/02`
-  rewritten without years, `cost/06` added, D16 added. Re-presented; not yet
-  answered.
+  rewritten without years, `cost/06` added, D16 added. Re-presented the same day
+  and **PASSED 2026-11-05 — Ian, verbatim: "Approve"**. D8–D16 stand as written;
+  D15 is `standing` for every brief, D14 for this one.
 - **Research:** 4 reports, 2,192 lines — `research/side-by-side-2026-11-04.md`
   (297 lines; the raw test, written by the coordinator from the browser
   session); `research/what-the-others-give.md` (643 lines, external, competitor
@@ -32,7 +34,7 @@ Opened: 2026-11-04, by Ian, from a side-by-side test he ran: the same cost
 question put to unicoach, Google's AI Overview, ChatGPT and Gemini.
 
     PHASE      FRAME -> [PRIORITISE gate 1] -> DISCOVER -> [SPEC & SLICE gate 2] -> EXECUTE -> LEARN
-    NOW                                                    ^^^^^^^^^^^^^^^^^^^^^ HERE
+    NOW                                                                             ^^^^^^^ HERE
 
 ## The question
 
@@ -279,3 +281,8 @@ before gate 2 was answered:
 - The same rule reaches `bin/fetch-ipeds` (pins `SURVEY_YEAR`) and the CDS
   corpus fetch; both go to the backlog as mechanism work. D1's deferral of
   buying the IPEDS year stands.
+
+## Gate 2 outcome (2026-11-05)
+
+Ian, verbatim: "Approve". All nine defaults (D8–D16) stand as written in
+`spec.md`, including the amendment above. Wave 1 is startable.

@@ -443,6 +443,10 @@ the measure is the length and the order, not the phrasing.
 
 ## Gate 2 — decisions
 
+**PASSED 2026-11-05 — Ian, verbatim: "Approve"**, after the amendment recorded
+in D15 (presented 2026-11-04, amended and re-presented 2026-11-05). D8–D16 stand
+as written.
+
 Defaults pre-chosen. Approving costs one word; amending costs one line.
 
 - **D8 — the slice set, order and waves.** Six `cost/` slices plus `shape/09`
