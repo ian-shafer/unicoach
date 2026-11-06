@@ -18,6 +18,12 @@
   rewritten without years, `cost/06` added, D16 added. Re-presented the same day
   and **PASSED 2026-11-05 — Ian, verbatim: "Approve"**. D8–D16 stand as written;
   D15 is `standing` for every brief, D14 for this one.
+- **Post-gate (2026-11-05):** D17 appended in `spec.md` — raised by Ian at RFC
+  274's approval stop (`cost/01`): fourteen search and admissions figures stored
+  on `colleges` with no year move to one `college_figures` table, each row
+  carrying its own academic year. New slice
+  `cost/07/the-figures-carry-their-year`, BLOCKED by `cost/01`; `cost/01`
+  continues without a schema change.
 - **Research:** 4 reports, 2,192 lines — `research/side-by-side-2026-11-04.md`
   (297 lines; the raw test, written by the coordinator from the browser
   session); `research/what-the-others-give.md` (643 lines, external, competitor

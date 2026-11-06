@@ -145,7 +145,10 @@ incomplete (DISCOVER 2 says the precedence already does this; confirm by test).
   ingest, naming the variable.
 - No year literal for a Scorecard figure lives in `college/` or `service/`
   Kotlin, main or test; the fetched dictionary is the one home, and PROVENANCE
-  records the release stamp and the dictionary's digest.
+  records the release stamp and the dictionary's digest. _Appended 2026-11-05
+  (D17): the fourteen search and admissions figures stored on `colleges` with no
+  year keep their constants, pinned to the fetched dictionary, until
+  `cost/07/the-figures-carry-their-year` deletes them._
 - No new table, no migration, no prompt change.
 - **First-session test:** a Washington student with UW on their list asks what
   it costs; every year label in the answer equals the year the fetched
@@ -299,6 +302,116 @@ the RFC), the cadence, and whether the two sources share one job.
 - **First-session test:** with PROVENANCE at one release and the publisher at a
   later one, the job's next run shows the two stamps and their dates in the
   named place.
+
+---
+
+### `cost/07/the-figures-carry-their-year`
+
+**Needs:**
+
+- BLOCKS cost/01/the-latest-release — the ingest stamps each figure with the
+  year read from the fetched publisher dictionary, through the reader `cost/01`
+  lands; without it there is no year to stamp.
+
+**What and why.** Fourteen College Scorecard figures the coach quotes — the
+undergraduate headcount, admission rate, SAT average, the six SAT and ACT band
+scores, the four-year completion rate, the three eight-year completion rates and
+the transfer-out rate — are columns on `colleges` with no year beside them. The
+year the coach says for them is a constant in Kotlin
+(`ScorecardOutcomeCitations`, `ScoreBandCitation.COHORT_TERM`), pinned against
+the fetched dictionary by a test from `cost/01` on (D17). A fact about stored
+data lives in code, linked to the data by nothing the database can check. Each
+figure becomes a row that carries its own academic year, written by the same
+load that writes the value, and `colleges` sheds fourteen columns. Serves D15
+("the latest data, always") and D17 (the database stands alone).
+
+**Foundations.** `price_figures` (RFC 158): one row per college per named price
+per academic year, with `source` / `source_variable` provenance — the shape this
+slice extends to the non-money figures. Migration 0094, which moved the money
+columns off `colleges` and `colleges_versions` and shrank the history trigger.
+`college_search_index` (migration 0064), rebuilt wholesale from `colleges` by
+the `search-index` phase. The dictionary reader `cost/01` lands (RFC 274;
+`ScorecardDictionary` in its design), which parses each served variable's period
+at ingest.
+
+**Decided here (D17).** One table, `college_figures`, one row per college per
+figure. Five typed value columns, exactly one set per row, and the one set is
+the one the figure's unit names:
+
+```sql
+CREATE TABLE college_figures (
+    college_id        UUID             NOT NULL REFERENCES colleges(id) ON DELETE CASCADE,
+    figure            TEXT             NOT NULL,
+    share             DOUBLE PRECISION NULL,
+    sat_total_score   SMALLINT         NULL,
+    sat_section_score SMALLINT         NULL,
+    act_score         SMALLINT         NULL,
+    headcount         INTEGER          NULL,
+    academic_year     academic_year    NOT NULL,   -- the year the figure describes; for a cohort, the year it entered
+    source            TEXT             NOT NULL,   -- provenance, as price_figures: 'scorecard'
+    source_variable   TEXT             NOT NULL,   -- provenance: 'ADM_RATE'
+    created_at        TIMESTAMPTZ      NOT NULL DEFAULT NOW(),
+    CONSTRAINT college_figures_pkey PRIMARY KEY (college_id, figure),
+    CONSTRAINT college_figures_figure_check CHECK (figure IN (
+        'undergrad_enrollment', 'admission_rate', 'sat_average',
+        'sat_reading_25th_percentile', 'sat_reading_75th_percentile',
+        'sat_math_25th_percentile', 'sat_math_75th_percentile',
+        'act_composite_25th_percentile', 'act_composite_75th_percentile',
+        'completion_rate_150pct_4yr', 'completion_rate_8yr',
+        'completion_rate_8yr_pell', 'completion_rate_8yr_non_pell',
+        'transfer_out_rate_4yr')),
+    CONSTRAINT college_figures_one_value_check
+        CHECK (num_nonnulls(share, sat_total_score, sat_section_score, act_score, headcount) = 1),
+    CONSTRAINT college_figures_share_figures_check
+        CHECK ((share IS NOT NULL) = (figure IN ('admission_rate', 'completion_rate_150pct_4yr',
+            'completion_rate_8yr', 'completion_rate_8yr_pell', 'completion_rate_8yr_non_pell',
+            'transfer_out_rate_4yr'))),
+    CONSTRAINT college_figures_sat_total_figures_check
+        CHECK ((sat_total_score IS NOT NULL) = (figure = 'sat_average')),
+    CONSTRAINT college_figures_sat_section_figures_check
+        CHECK ((sat_section_score IS NOT NULL) = (figure IN ('sat_reading_25th_percentile',
+            'sat_reading_75th_percentile', 'sat_math_25th_percentile', 'sat_math_75th_percentile'))),
+    CONSTRAINT college_figures_act_figures_check
+        CHECK ((act_score IS NOT NULL) = (figure IN ('act_composite_25th_percentile',
+            'act_composite_75th_percentile'))),
+    CONSTRAINT college_figures_headcount_figures_check
+        CHECK ((headcount IS NOT NULL) = (figure = 'undergrad_enrollment')),
+    CONSTRAINT college_figures_share_range_check       CHECK (share BETWEEN 0 AND 1),
+    CONSTRAINT college_figures_sat_total_range_check   CHECK (sat_total_score BETWEEN 400 AND 1600),
+    CONSTRAINT college_figures_sat_section_range_check CHECK (sat_section_score BETWEEN 200 AND 800),
+    CONSTRAINT college_figures_act_range_check         CHECK (act_score BETWEEN 1 AND 36),
+    CONSTRAINT college_figures_headcount_range_check   CHECK (headcount >= 0),
+    CONSTRAINT college_figures_source_nonempty_check          CHECK (source <> ''),
+    CONSTRAINT college_figures_source_variable_nonempty_check CHECK (source_variable <> '')
+);
+```
+
+`figure` is an own enumeration: the CHECK above and exactly one Kotlin enum. An
+entering-term cohort (a fall term) is stored as the academic year it opens and
+spoken from it. The fourteen columns leave `colleges` and `colleges_versions`
+and the history trigger, as 0094 did for money. The rejected shapes and their
+reasons are in D17. **Left to /work:** how readers pivot rows back to one line
+per college (the search index rebuild and the result pages), and the order of
+the column drop against the first ingest that fills the table.
+
+**Acceptance criteria.**
+
+- **Door:** the coach's college search, similar-colleges and admissions answers
+  on iOS and the web chat — unchanged doors; every dated figure in them reads
+  its year from its own row.
+- `ScorecardOutcomeCitations`' period values, `ScoreBandCitation.COHORT_TERM`
+  and their pins against the dictionary are deleted; no year literal for a
+  Scorecard figure lives in `college/` or `service/` Kotlin, main or test —
+  `cost/01`'s criterion, completed (D17).
+- A test ingests a dictionary that dates a figure one year later and sees that
+  year on the row and in the coach's answer.
+- `colleges` holds no figure column; the search index rebuilds from
+  `college_figures` with the same results on the committed fixtures.
+- **DDL at the approval stop** (0001 D10): the table above, unless /work's RFC
+  finds a reason to amend it, in which case the amendment is presented.
+- **First-session test:** a student asks the coach for colleges like UW; every
+  admission-rate and graduation-rate year in the answer equals the
+  `academic_year` stored on that college's row for that figure.
 
 ---
 
@@ -503,10 +616,34 @@ Defaults pre-chosen. Approving costs one word; amending costs one line.
   renamed variable is the failure `cost/01`'s located faults exist to catch, and
   it should catch them in front of a person first.
 
+## Appended decisions (post-gate, 2026-11-05)
+
+Gate decisions are immutable, so a changed decision is a new numbered decision
+(chart non-negotiable 7). Raised by Ian after gate 2 closed.
+
+- **D17 — the figures carry their year.** Raised at RFC 274's approval stop
+  (`cost/01`), where Ian found fourteen search and admissions figures — the
+  undergraduate headcount, admission rate, SAT average, the SAT and ACT bands,
+  the completion and transfer-out rates — stored as columns on `colleges` with
+  no stored year, so their year lives only in a Kotlin constant. Ian: the
+  database should stand alone. Decided: those figures move to one
+  `college_figures` table, one row per college per figure, five typed value
+  columns with exactly one set per row, each row carrying its own
+  `academic_year` (DDL in `cost/07/the-figures-carry-their-year`). Rejected, and
+  why: a side table of periods keyed by figure name (data and year linked only
+  by a name two languages must spell alike); a year column beside each figure on
+  `colleges` (a 50-column table); seven tables (one shape repeated); one untyped
+  value column with a CASE range check (the unit inferred from a name suffix).
+  The work is its own slice, `cost/07`, blocked by `cost/01`. **`cost/01`
+  continues without a schema change**: for these fourteen figures its "no year
+  literal in Kotlin" criterion is met by pinning the remaining constants to the
+  fetched dictionary, and `cost/07` deletes them. D8 stands as committed; this
+  adds a seventh `cost/` slice to wave 2.
+
 ## Wave board (for the reader; `slice-board` is the answer)
 
 | Wave | Slices                                                   |
 | ---- | -------------------------------------------------------- |
 | 1    | `cost/01`, `cost/03`, `cost/04`, `shape/09` (brief 0006) |
-| 2    | `cost/02`, `cost/06`                                     |
+| 2    | `cost/02`, `cost/06`, `cost/07` (added post-gate, D17)   |
 | 3    | `cost/05`                                                |
