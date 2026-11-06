@@ -527,6 +527,32 @@ THIS file, so the line lives here and the spec points at it):
   subscriber reads the free-tier words with no manage link (the service's free
   branch — a product call for /chart).
 
+- `web/11/sso` LANDED as RFC 275 (main@e32cc35b, 2026-11-05) — **Continue with
+  Apple** and **Continue with Google** above the email form on Sign in and
+  Create account (D-B): each provider's own JS button in popup mode hands the
+  page an ID token, posted same-origin to `POST /sign-in/apple` /
+  `/sign-in/google`, which call the iPhone's `AuthService.loginWithSso`
+  in-process (D13, D-A) — so an iPhone Apple user reaches the same account, the
+  invite and report tokens carry through, and a new SSO account meets the
+  onboarding wall. Apple's first-authorization name is posted beside the token
+  and kept on a refused retry; absent, `deriveName` falls back to the email
+  local-part, never an empty name. Web client IDs are optional config
+  (`GOOGLE_WEB_CLIENT_ID`, `APPLE_WEB_SERVICES_ID`) added to the accepted
+  audiences by derivation; a button, its script and its widened CSP appear only
+  when its ID is set (D-C) — **prod is dark until Ian creates the two IDs**.
+  **Ian at approval (2026-11-05): "Approve all"; mid-run, "Option A"** —
+  Google's script injects inline CSS its documented CSP sources do not admit, so
+  the two sign-in pages allow `style-src 'unsafe-inline'` when Google is
+  configured (D-D amended); no nonce (D-E). No table, no migration, no
+  `SessionMetadata` change. Review (36 lenses, 4 tiers) fixed a Tier 0 spec
+  error (`defer`, not `async`), unlogged browser failures, a dropped transport
+  cause, two misuse-permitting types and a duplicated config reader. Full gate
+  green at scope `full-gated`; browser-checked locally with placeholder IDs
+  (both buttons render, zero CSP violations, one policy header). Open: the real
+  round trip needs real IDs on a deployed domain (Apple refuses localhost); D19
+  matrix checked at desktop and 375px only; a blocked popup reads the "couldn't
+  load" sentence.
+
 ## Research
 
 - research/ios-feature-inventory.md — every iOS screen/flow, endpoints, 23-row
