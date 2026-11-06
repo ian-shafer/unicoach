@@ -499,6 +499,33 @@ THIS file, so the line lives here and the spec points at it):
   and the coach replied). Open: dates show Eastern time (tomorrow's date after
   9pm Pacific); the "what the coach learned is kept" sentence holds only while
   coaching memory has no join to deleted conversations.
+- `web/10/settings-and-allowance` LANDED as RFC 273 (main@76b2fca5, 2026-11-05)
+  — "Settings" at `/account`, the door **Settings** in the signed-in header (the
+  old "Account" link renamed, D-A): who you are signed in as, **Your coaching**
+  — the iPhone app's usage meter from the one `BudgetService` entitlement
+  (`usedPercent`, never a dollar figure), captioned per basis ("One-time free
+  allowance" / "Resets ⟨date⟩" in Eastern via `UsDate`) — and Change email. The
+  out-of-allowance notice in the chat (owned by `web/04` as interim copy) now
+  speaks per basis: a web-only family reads "You've used your free coaching. To
+  keep going, subscribe in the Unicoach app on iPhone. Subscribing on the web
+  isn't available yet. Everything else here still works." (D18, as written); an
+  Apple-billed subscriber reads the period's reset date, "when your subscription
+  renews", and Settings offers **Manage subscription** → Apple's subscriptions
+  page with "Cancelling is handled by the App Store." No Appearance control:
+  `site.css` has no dark theme, so there is nothing to switch (D-B; a dark theme
+  is a surface of its own, for /chart). **Ian at approval (2026-11-05): "Approve
+  all"** — D-A the rename, D-B no Appearance, D-C the words. No table, no
+  migration, no `SessionMetadata` change; one `BudgetService` shared by the web
+  coach and the page. Review (36 lenses, 4 tiers) fixed a time-of-day- dependent
+  test, three stale "Back to your account" links, duplicated fixtures and
+  sentences, and an unanswered `AdminExemption`+exhausted state. Full gate
+  green; **the D19 device matrix WAS run** (six sizes: header wraps, meter fits,
+  no sideways scroll) and the first-session test passed — a web-only account
+  spent its allowance and read the way on in Settings and in the chat without an
+  LLM call. Open: an admin-exempt account's meter is captioned "One-time free
+  allowance" under an "exempt" sentence (approved copy, one account); a lapsed
+  subscriber reads the free-tier words with no manage link (the service's free
+  branch — a product call for /chart).
 
 ## Research
 
