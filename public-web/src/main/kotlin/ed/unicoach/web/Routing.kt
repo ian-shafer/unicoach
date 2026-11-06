@@ -9,10 +9,12 @@ import ed.unicoach.auth.RegisterResult
 import ed.unicoach.auth.SessionMetadataService
 import ed.unicoach.auth.VerifyEmailResult
 import ed.unicoach.coaching.CoachingService
+import ed.unicoach.coaching.budget.BudgetService
 import ed.unicoach.coaching.collegelist.CollegeListService
 import ed.unicoach.coaching.moneyprofile.MoneyProfileService
 import ed.unicoach.college.CollegeSearchService
 import ed.unicoach.common.config.TOKEN_QUERY_PARAM
+import ed.unicoach.db.models.StudentId
 import ed.unicoach.db.models.User
 import ed.unicoach.db.models.UserId
 import ed.unicoach.db.session.ChangeEmailDraft
@@ -24,6 +26,7 @@ import ed.unicoach.family.InvitePreviewOutcome
 import ed.unicoach.family.SupporterInviteService
 import ed.unicoach.family.SupporterLinkRequestService
 import ed.unicoach.family.SupporterService
+import ed.unicoach.student.AccountRole
 import ed.unicoach.student.AccountRoleService
 import ed.unicoach.student.StudentService
 import ed.unicoach.vocabulary.VocabularyService
@@ -39,10 +42,12 @@ import ed.unicoach.web.auth.SIGN_IN_PATH
 import ed.unicoach.web.auth.SIGN_OUT_PATH
 import ed.unicoach.web.auth.VERIFY_EMAIL_PATH
 import ed.unicoach.web.auth.WebCaller
+import ed.unicoach.web.auth.accountRole
 import ed.unicoach.web.auth.clearWebSessionCookie
 import ed.unicoach.web.auth.getOnboarded
 import ed.unicoach.web.auth.getSignedIn
 import ed.unicoach.web.auth.handleAccess
+import ed.unicoach.web.auth.homePath
 import ed.unicoach.web.auth.postOnboarded
 import ed.unicoach.web.auth.postSignedIn
 import ed.unicoach.web.auth.resolveWebCaller
@@ -63,6 +68,7 @@ import ed.unicoach.web.fafsa.FafsaDeadlineSource
 import ed.unicoach.web.render.CHANGE_EMAIL_DRAFT
 import ed.unicoach.web.render.ChangeEmailFormState
 import ed.unicoach.web.render.ClaimOffer
+import ed.unicoach.web.render.CoachingMeter
 import ed.unicoach.web.render.EMAIL_FIELD
 import ed.unicoach.web.render.FAFSA_PATH
 import ed.unicoach.web.render.InviteViewer
@@ -72,12 +78,12 @@ import ed.unicoach.web.render.PASSWORD_FIELD
 import ed.unicoach.web.render.REPORT_FIELD
 import ed.unicoach.web.render.RegisterFormState
 import ed.unicoach.web.render.SIGNUP_DOOR_SECRET_PARAMS
+import ed.unicoach.web.render.SettingsCoaching
 import ed.unicoach.web.render.ShellNav
 import ed.unicoach.web.render.SignInFormState
 import ed.unicoach.web.render.TOKEN_FIELD
 import ed.unicoach.web.render.WHO_PAYS_PATH
 import ed.unicoach.web.render.WebNotice
-import ed.unicoach.web.render.respondAccountPage
 import ed.unicoach.web.render.respondChangeEmailPage
 import ed.unicoach.web.render.respondCostReportPage
 import ed.unicoach.web.render.respondFafsaPage
@@ -87,6 +93,7 @@ import ed.unicoach.web.render.respondNotFoundPage
 import ed.unicoach.web.render.respondPrivacyPage
 import ed.unicoach.web.render.respondRegisterPage
 import ed.unicoach.web.render.respondServiceUnavailablePage
+import ed.unicoach.web.render.respondSettingsPage
 import ed.unicoach.web.render.respondSignInPage
 import ed.unicoach.web.render.respondTermsPage
 import ed.unicoach.web.render.respondVerifyEmailConfirm
@@ -213,6 +220,9 @@ private val inviteLog = LoggerFactory.getLogger("ed.unicoach.web.SupporterInvite
 /** The report claim's own log (RFC 254): WHY a claim made no request, never rendered and never the token. */
 private val claimLog = LoggerFactory.getLogger("ed.unicoach.web.ReportClaim")
 
+/** Settings (RFC 273): the one event it logs is a budget read it rendered around. */
+private val settingsLog = LoggerFactory.getLogger("ed.unicoach.web.Settings")
+
 /**
  * A year, as a DURATION. `max-age` is counted in seconds, so the header spells
  * this as `31536000` — a number nobody reads as "a year" without doing the
@@ -298,6 +308,7 @@ fun Application.installPublicWebRouting(
   supporterService: SupporterService,
   linkRequestService: SupporterLinkRequestService,
   coachingService: CoachingService,
+  budgetService: BudgetService,
   studentService: StudentService,
   sessionMetadataService: SessionMetadataService,
   accountRoleService: AccountRoleService,
@@ -403,10 +414,10 @@ fun Application.installPublicWebRouting(
       emailVerificationService,
       sessionConfig,
       supporterInviteService,
-      supporterService,
       linkRequestService,
       sessionMetadataService,
       accountRoleService,
+      budgetService,
     )
 
     reportRoute(costReportSource, authService, sessionConfig, linkRequestService)
@@ -676,10 +687,10 @@ private fun Route.authRoutes(
   emailVerificationService: EmailVerificationService,
   sessionConfig: WebSessionConfig,
   supporterInviteService: SupporterInviteService,
-  supporterService: SupporterService,
   linkRequestService: SupporterLinkRequestService,
   sessionMetadata: SessionMetadataService,
   accountRoles: AccountRoleService,
+  budgetService: BudgetService,
 ) {
   // `/invite` sends a signed-out recipient to these two doors with the RAW
   // invite token in the query string, so both scope it secret exactly as
@@ -887,8 +898,17 @@ private fun Route.authRoutes(
   }
 
   getOnboarded(ACCOUNT_PATH, authService, sessionConfig, accountRoles) { caller ->
-    val isSupporter = supporterService.find(caller.user.id).getOrThrow() != null
-    call.respondAccountPage(caller.user, isSupporter, caller.signedInNav, notice = call.requestedNotice())
+    // Settings (RFC 273). The role is read through the ONE reader every gate
+    // asks, so who gets the meter and who gets the supporter note is the same
+    // answer the wall gave a moment ago; a role that vanished between the two
+    // reads is sent where the wall sends an account with none.
+    val coaching =
+      when (val role = caller.accountRole(accountRoles)) {
+        is AccountRole.Student -> SettingsCoaching.Student(budgetService.coachingMeter(role.student.id))
+        is AccountRole.Supporter -> SettingsCoaching.Supporter
+        AccountRole.None -> return@getOnboarded call.respondGateRedirect(role.homePath())
+      }
+    call.respondSettingsPage(caller.user, coaching, caller.signedInNav, notice = call.requestedNotice())
   }
 
   getOnboarded(CHANGE_EMAIL_PATH, authService, sessionConfig, accountRoles) { caller ->
@@ -992,6 +1012,22 @@ private const val NOTICE_QUERY_PARAM = "notice"
  * key. One reader, so the key and its closed value set are read in one place.
  */
 private fun ApplicationCall.requestedNotice(): WebNotice? = request.queryParameters[NOTICE_QUERY_PARAM]?.let(WebNotice::fromKey)
+
+/**
+ * The student's meter for Settings: the same [ed.unicoach.coaching.budget.Entitlement]
+ * the coach's gate blocks on, or [CoachingMeter.Unavailable] when the read
+ * failed. The failure is LOGGED here with its cause and never rendered or
+ * rethrown: the page is guided, not gated (RFC 273 §2), so a budget outage
+ * costs the family one section and not the whole page.
+ */
+private suspend fun BudgetService.coachingMeter(studentId: StudentId): CoachingMeter =
+  entitlement(studentId).fold(
+    onSuccess = { CoachingMeter.Read(it) },
+    onFailure = { cause ->
+      settingsLog.error("coaching usage read failed: student=[{}]", studentId.asString, cause)
+      CoachingMeter.Unavailable
+    },
+  )
 
 /**
  * [path] carrying [notice], or [path] alone when there is nothing to say: the

@@ -1,6 +1,7 @@
 package ed.unicoach.web
 
 import ed.unicoach.web.render.FAFSA_PATH
+import ed.unicoach.web.render.SETTINGS_HEADING
 import io.ktor.client.request.get
 import io.ktor.client.request.header
 import io.ktor.client.statement.bodyAsText
@@ -126,7 +127,8 @@ class WebAuthGateTest {
       val response = client.get("/account") { header(HttpHeaders.Cookie, WebAuthTestSupport.cookieHeader(token)) }
 
       assertEquals(HttpStatusCode.OK, response.status)
-      assertTrue(response.bodyAsText().contains("Your account"))
+      // The page's own heading (RFC 273): "Settings" alone is also the header's label on every signed-in page.
+      assertTrue(response.bodyAsText().contains("<h1>$SETTINGS_HEADING</h1>"))
     }
 
   /**

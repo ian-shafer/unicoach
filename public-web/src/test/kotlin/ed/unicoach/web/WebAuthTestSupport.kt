@@ -26,17 +26,23 @@ import ed.unicoach.college.CollegeSearchService
 import ed.unicoach.common.config.AppConfig
 import ed.unicoach.common.models.EmailAddress
 import ed.unicoach.common.models.ValidationResult
+import ed.unicoach.common.money.Nanodollars
+import ed.unicoach.common.util.UsDate
 import ed.unicoach.db.Database
 import ed.unicoach.db.DatabaseConfig
+import ed.unicoach.db.dao.LlmCallRowFixture
 import ed.unicoach.db.dao.RawSql
 import ed.unicoach.db.dao.StudentRowFixture
+import ed.unicoach.db.dao.SubscriptionsDao
 import ed.unicoach.db.dao.UsersDao
 import ed.unicoach.db.models.NewUser
 import ed.unicoach.db.models.PasswordHash
 import ed.unicoach.db.models.PersonName
 import ed.unicoach.db.models.StudentId
+import ed.unicoach.db.models.SubscriptionStatus
 import ed.unicoach.db.models.TokenHash
 import ed.unicoach.db.models.User
+import ed.unicoach.db.models.UserId
 import ed.unicoach.family.LinkEndedNotice
 import ed.unicoach.family.LinkRequestedNotice
 import ed.unicoach.family.SupporterInviteConfig
@@ -69,6 +75,9 @@ import java.sql.DriverManager
 import java.sql.PreparedStatement
 import java.sql.ResultSet
 import java.time.Instant
+import java.time.LocalDate
+import java.time.ZoneOffset
+import java.time.temporal.ChronoUnit
 import java.util.UUID
 
 /**
@@ -177,19 +186,19 @@ object WebAuthTestSupport {
   /** The production name search My colleges adds from (RFC 271). */
   val collegeSearchService = CollegeSearchService(database)
 
+  /** The packaged plan box (RFC 110), the one the budget read prices a subscription period from. */
+  val subscriptionPlans: SubscriptionPlans = SubscriptionPlans.from(config).getOrThrow()
+
   /**
-   * The student's coach (RFC 262), wired as `Application.kt` wires it — the
-   * packaged coaching, budget and extraction config, the real call log and the
-   * real extraction scheduler — over [provider] instead of a network one.
+   * The budget read (RFC 273 §4), wired as `Application.kt` wires it — the
+   * packaged budget config and plans over the test database. The coach's gate
+   * and the Settings meter read ONE of these in production, so a suite that
+   * turns the knob builds one here and hands it to both.
    *
-   * A suite about a specific reply passes a provider over a
-   * `ScriptedAnthropicTransport`; [freeAllowanceUsd] is the one budget knob a
-   * suite turns, and `0.00` is the exhausted student.
+   * [freeAllowanceUsd] is the one budget knob a suite turns, and `0.00` is the
+   * exhausted student.
    */
-  fun coachingService(
-    provider: ChatProvider = LogOnlyChatProvider(),
-    freeAllowanceUsd: String? = null,
-  ): CoachingService {
+  fun budgetService(freeAllowanceUsd: String? = null): BudgetService {
     val budgetConfig =
       BudgetConfig
         .from(
@@ -197,17 +206,135 @@ object WebAuthTestSupport {
             ?.let { ConfigFactory.parseString("budget.freeAllowanceUsd = $it").withFallback(config) }
             ?: config,
         ).getOrThrow()
-    return CoachingService(
+    return BudgetService(database, budgetConfig, subscriptionPlans)
+  }
+
+  /** The budget read every suite gets unless it is about the allowance: the packaged allowance. */
+  val defaultBudgetService: BudgetService by lazy { budgetService() }
+
+  /**
+   * The budget read over a database that has gone away: a real pool on the
+   * real configuration, closed, so the read fails the way an outage fails it
+   * — what Settings renders around (RFC 273 §2).
+   */
+  fun unreachableBudgetService(): BudgetService =
+    BudgetService(Database(dbConfig).also(Database::close), BudgetConfig.from(config).getOrThrow(), subscriptionPlans)
+
+  /**
+   * The student's coach (RFC 262), wired as `Application.kt` wires it — the
+   * packaged coaching and extraction config, the real call log and the real
+   * extraction scheduler — over [provider] instead of a network one, gated by
+   * [budgetService].
+   *
+   * A suite about a specific reply passes a provider over a
+   * `ScriptedAnthropicTransport`; a suite about the allowance passes the
+   * [WebAuthTestSupport.budgetService] it also hands the module.
+   */
+  fun coachingService(
+    provider: ChatProvider = LogOnlyChatProvider(),
+    budgetService: BudgetService = defaultBudgetService,
+  ): CoachingService =
+    CoachingService(
       database,
       LlmCallLog(provider, database),
       CoachingConfig.from(config).getOrThrow(),
-      BudgetService(database, budgetConfig, SubscriptionPlans.from(config).getOrThrow()),
+      budgetService,
       ExtractionScheduler(QueueService(database), ExtractionConfig.from(config).getOrThrow()),
     )
-  }
 
   /** The coach every suite gets unless it is about the coach: the log-only provider. */
   val defaultCoachingService: CoachingService by lazy { coachingService() }
+
+  /** The one plan the packaged config prices: what a seeded subscription is for. */
+  const val SUBSCRIBED_PRODUCT_ID = "coach.uni.UnicoachiOS.monthly10"
+
+  /**
+   * What a period of [productId] buys, read from the packaged plans — so a
+   * suite that spends "the whole period" spends the number the gate meters
+   * against, not a figure typed beside it.
+   */
+  fun periodBudget(productId: String = SUBSCRIBED_PRODUCT_ID): Nanodollars =
+    requireNotNull(subscriptionPlans.periodBudget(productId)) { "the packaged plans price no [$productId]" }
+
+  /** A period end to seed, and the reset text a page must render for it. */
+  class SeededPeriodEnd(
+    val instant: Instant,
+    val resetDate: String,
+  )
+
+  /**
+   * A period end 20 days out, at 03:00Z. At that hour New York is still on the
+   * previous calendar day (22:00 EST or 23:00 EDT, year round), so a page or
+   * notice rendering the UTC date fails at any hour of any day — and the row
+   * stays current, which a fixed future instant would stop being one day. The
+   * expected text is the previous day through `UsDate`, with no production
+   * zone call in the test: `COACH_ZONE` is the thing under test (RFC 273 §3),
+   * not a tool for stating the answer.
+   */
+  fun seededPeriodEnd(): SeededPeriodEnd {
+    val utcDate = LocalDate.now(ZoneOffset.UTC).plusDays(20)
+    return SeededPeriodEnd(
+      instant = utcDate.atTime(3, 0).toInstant(ZoneOffset.UTC),
+      resetDate = UsDate.of(utcDate.minusDays(1)),
+    )
+  }
+
+  /**
+   * A current, entitling `subscriptions` row for [userId]'s ACCOUNT (RFC 273):
+   * [productId] over a period that covers now, so the budget read takes the
+   * subscription branch. [periodEnd] is the reset point Settings renders.
+   */
+  fun seedSubscription(
+    userId: UserId,
+    periodEnd: Instant = Instant.now().plus(20, ChronoUnit.DAYS),
+    productId: String = SUBSCRIBED_PRODUCT_ID,
+  ) {
+    runBlocking {
+      database.withConnection { session ->
+        SubscriptionsDao
+          .upsert(
+            session,
+            userId,
+            originalTransactionId = "web-${userId.value}",
+            productId = productId,
+            status = SubscriptionStatus.ACTIVE,
+            periodStart = Instant.now().minus(10, ChronoUnit.DAYS),
+            periodEnd = periodEnd,
+          ).getOrThrow()
+      }
+    }
+  }
+
+  /**
+   * One completed, costed coaching call of [cost] attributed to [studentId]
+   * through a synthesis run (the cheapest single-call owner), timestamped now —
+   * inside any current subscription period. The ledger `BudgetService` meters
+   * (`account_llm_cost`) re-keys it onto the student's account.
+   */
+  fun seedSpend(
+    studentId: StudentId,
+    cost: Nanodollars,
+  ) {
+    withConnection { connection ->
+      val requestId = LlmCallRowFixture.insert(connection, cost.value)
+      // Unique per row: `system_prompts` is the migration-seeded catalog and is
+      // never truncated, so a fixed (name, version) would collide on the second test.
+      val promptId = UUID.randomUUID()
+      RawSql.execute(
+        connection,
+        "INSERT INTO system_prompts (id, name, version, body) VALUES (?, 'extraction', ?, 'distill')",
+        promptId,
+        "v-$promptId",
+      )
+      RawSql.execute(
+        connection,
+        "INSERT INTO synthesis_runs (student_id, outcome, system_prompt_id, llm_request_id) VALUES (?, 'applied', ?, ?)",
+        studentId.value,
+        promptId,
+        requestId,
+      )
+    }
+  }
 
   /** Truncates users (cascading to sessions) and the job queue, for an isolated test. */
   fun resetDatabase() {

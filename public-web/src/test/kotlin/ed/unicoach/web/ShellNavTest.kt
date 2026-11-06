@@ -6,6 +6,7 @@ import ed.unicoach.web.auth.YOUR_DETAILS_PATH
 import ed.unicoach.web.render.CONVERSATIONS_LINK
 import ed.unicoach.web.render.FAFSA_PATH
 import ed.unicoach.web.render.MY_COLLEGES_TITLE
+import ed.unicoach.web.render.SETTINGS_HEADING
 import ed.unicoach.web.render.YOUR_DETAILS_TITLE
 import io.ktor.client.request.get
 import io.ktor.client.request.header
@@ -70,19 +71,32 @@ class ShellNavTest {
       val shellHeader = headerOf(client.get("/account") { header(HttpHeaders.Cookie, WebAuthTestSupport.cookieHeader(token)) }.bodyAsText())
 
       assertTrue(shellHeader.contains("href=\"/account\""), "the signed-in header carries no account link")
-      // RFC 262: "Chat" comes before "Account", so the signed-in root is the first door.
+      // RFC 273, D-A: the door to Settings is the last link before sign-out,
+      // its label the page's own heading and its path unchanged.
+      val settingsLink = "<a href=\"/account\">$SETTINGS_HEADING</a>"
+      val settingsAt = shellHeader.indexOf(settingsLink)
+      val signOutAt = shellHeader.indexOf("action=\"/sign-out\"")
+      assertTrue(
+        settingsAt >= 0 && settingsAt < signOutAt,
+        "the signed-in header carries no Settings link before sign-out; header was [$shellHeader]",
+      )
+      assertTrue(
+        !shellHeader.substring(settingsAt + settingsLink.length, signOutAt).contains("<a "),
+        "a link sits between Settings and sign-out; header was [$shellHeader]",
+      )
+      // RFC 262: "Chat" comes before "Settings", so the signed-in root is the first door.
       assertTrue(
         shellHeader.indexOf("<a href=\"/chat\">Chat</a>").let { it >= 0 && it < shellHeader.indexOf("href=\"/account\"") },
-        "the signed-in header carries no Chat link before Account; header was [$shellHeader]",
+        "the signed-in header carries no Chat link before Settings; header was [$shellHeader]",
       )
-      // RFC 270: "Your details" sits between "Chat" and "Account", its words and path the page's own.
+      // RFC 270: "Your details" sits between "Chat" and "Settings", its words and path the page's own.
       val detailsLink = "<a href=\"$YOUR_DETAILS_PATH\">$YOUR_DETAILS_TITLE</a>"
       assertTrue(
         shellHeader
           .indexOf(
             detailsLink,
           ).let { it > shellHeader.indexOf("href=\"/chat\"") && it < shellHeader.indexOf("href=\"/account\"") },
-        "the signed-in header carries no Your details link between Chat and Account; header was [$shellHeader]",
+        "the signed-in header carries no Your details link between Chat and Settings; header was [$shellHeader]",
       )
       // RFC 271: "My colleges" sits between "Chat" and "Your details", its words and path the page's own.
       val collegesAt = shellHeader.indexOf("<a href=\"$COLLEGES_PATH\">$MY_COLLEGES_TITLE</a>")

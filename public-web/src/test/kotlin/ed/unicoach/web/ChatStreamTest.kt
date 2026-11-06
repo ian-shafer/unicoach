@@ -18,10 +18,11 @@ import ed.unicoach.web.WebAuthTestSupport.count
 import ed.unicoach.web.auth.CSRF_HEADER
 import ed.unicoach.web.render.CHAT_MESSAGE_FIELD
 import ed.unicoach.web.render.CONVERSATION_UNAVAILABLE
+import ed.unicoach.web.render.EVERYTHING_ELSE_WORKS
 import ed.unicoach.web.render.MESSAGE_NOT_SENT
 import ed.unicoach.web.render.MalformedSend
-import ed.unicoach.web.render.OUT_OF_ALLOWANCE_NEXT_STEP
 import ed.unicoach.web.render.OUT_OF_ALLOWANCE_TITLE
+import ed.unicoach.web.render.SUBSCRIBE_ON_IPHONE
 import io.ktor.client.request.get
 import io.ktor.client.request.header
 import io.ktor.client.request.post
@@ -60,6 +61,8 @@ class ChatStreamTest {
   fun reset() {
     WebAuthTestSupport.resetDatabase()
   }
+
+  private val periodEnd = WebAuthTestSupport.seededPeriodEnd()
 
   private fun dataOf(event: Event): JsonObject = Json.parseToJsonElement(event.data).jsonObject
 
@@ -262,7 +265,7 @@ class ChatStreamTest {
   @Test
   fun `a spent allowance is a 402 notice naming the basis and the way on, never a figure`() {
     testApplication {
-      application { testPublicWebModule(coachingService = coach(freeAllowanceUsd = "0.00")) }
+      application { testPublicWebModule(coachingService = coach(budgetService = WebAuthTestSupport.budgetService("0.00"))) }
       val (_, token) = signedInStudent()
       // `llm_requests` hangs off no user, so the reset leaves other suites' rows: count the change.
       val llmRequestsBefore = count("SELECT count(*) FROM llm_requests")
@@ -272,10 +275,37 @@ class ChatStreamTest {
       val notice = Jsoup.parseBodyFragment(response.bodyAsText()).body()
       assertEquals(OUT_OF_ALLOWANCE_TITLE, notice.selectFirst("h2")?.text())
       assertTrue(notice.text().contains("You've used your free coaching."))
-      assertTrue(notice.text().contains(OUT_OF_ALLOWANCE_NEXT_STEP))
+      // The way on for the free allowance names the iPhone app (D18), then the rest of the site.
+      assertTrue(notice.text().contains("$SUBSCRIBE_ON_IPHONE $EVERYTHING_ELSE_WORKS"), notice.text())
       assertFalse(Regex("""\$|\d""").containsMatchIn(notice.text()), "a dollar figure or count reached the notice: ${notice.text()}")
       assertEquals(0, count("SELECT count(*) FROM convos"))
       assertEquals(llmRequestsBefore, count("SELECT count(*) FROM llm_requests"), "a refused turn makes no provider call")
+    }
+  }
+
+  /**
+   * RFC 273 §3: a subscriber who spent the period is told when it resets and
+   * is NOT sent to subscribe — they already have.
+   */
+  @Test
+  fun `a subscriber's spent period is a 402 notice naming the reset, never the iPhone app`() {
+    testApplication {
+      application { testPublicWebModule(coachingService = coach()) }
+      val user = WebAuthTestSupport.seedUser(WebAuthTestSupport.uniqueEmail())
+      val studentId = WebAuthTestSupport.seedStudent(user)
+      val token = WebAuthTestSupport.login(user.email.value)
+      WebAuthTestSupport.seedSubscription(user.id, periodEnd = periodEnd.instant)
+      WebAuthTestSupport.seedSpend(studentId, WebAuthTestSupport.periodBudget())
+
+      val response = sendMessage(client, "/chat", token, message("Hello"))
+      assertNotice(response, HttpStatusCode.PaymentRequired)
+      val notice = Jsoup.parseBodyFragment(response.bodyAsText()).body()
+      assertEquals(OUT_OF_ALLOWANCE_TITLE, notice.selectFirst("h2")?.text())
+      assertTrue(notice.text().contains("You've used this period's coaching. It resets ${periodEnd.resetDate}."), notice.text())
+      assertTrue(notice.text().contains(EVERYTHING_ELSE_WORKS), notice.text())
+      assertFalse(notice.text().contains("iPhone"), "a subscriber was told to subscribe: ${notice.text()}")
+      assertFalse(notice.text().contains("subscribe"), "a subscriber was told to subscribe: ${notice.text()}")
+      assertEquals(0, count("SELECT count(*) FROM convos"))
     }
   }
 

@@ -3,6 +3,7 @@ package ed.unicoach.web
 import ed.unicoach.web.render.DELETE_CONVERSATION_HEADING
 import ed.unicoach.web.render.NO_COLLEGES_YET
 import ed.unicoach.web.render.SEARCH_PROMPT
+import ed.unicoach.web.render.SIGNED_IN_AS_HEADING
 import ed.unicoach.web.render.YOUR_CONVERSATIONS_TITLE
 import io.ktor.client.HttpClient
 import io.ktor.client.request.get
@@ -216,7 +217,14 @@ class GatedPathSpellingTest {
      * signed-in header, which a branded 404 also carries.
      */
     val ACCOUNT_MARKERS =
-      listOf("Your account", "Change your email", NO_COLLEGES_YET, SEARCH_PROMPT, YOUR_CONVERSATIONS_TITLE, DELETE_CONVERSATION_HEADING)
+      listOf(
+        SIGNED_IN_AS_HEADING,
+        "Change your email",
+        NO_COLLEGES_YET,
+        SEARCH_PROMPT,
+        YOUR_CONVERSATIONS_TITLE,
+        DELETE_CONVERSATION_HEADING,
+      )
 
     /** A conversation id no test seeds: a refusal must come before anything looks it up. */
     const val ANY_ID = "00000000-0000-4000-8000-000000000000"

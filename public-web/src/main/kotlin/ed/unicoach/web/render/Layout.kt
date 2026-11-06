@@ -103,7 +103,7 @@ sealed interface ShellNav {
   data object SignedOut : ShellNav
 
   /**
-   * A live session: the nav carries "Account" and the sign-out control.
+   * A live session: the nav carries "Settings" and the sign-out control.
    *
    * Sign-out is a `form` with a submit button and NOT an anchor, and that is
    * not styling pedantry: it changes state, so it must be a `POST` the
@@ -121,7 +121,7 @@ sealed interface ShellNav {
 
   /**
    * A live session that has not onboarded (RFC 268): the nav carries the
-   * sign-out control and nothing else. "Chat" and "Account" would each send
+   * sign-out control and nothing else. "Chat" and "Settings" would each send
    * the family straight back to onboarding, so they are not offered. Every
    * page under `/get-started` renders with it.
    */
@@ -260,7 +260,10 @@ fun FlowContent.siteHeader(shellNav: ShellNav = ShellNav.SignedOut) {
           // Your details (RFC 270), offered to a supporter too, as the chat
           // is: their route sends them to their account.
           a(href = YOUR_DETAILS_PATH) { +YOUR_DETAILS_TITLE }
-          a(href = ACCOUNT_PATH) { +"Account" }
+          // Settings (RFC 273, D-A): the label reads the page's own heading,
+          // so the header cannot call it one thing while the page calls
+          // itself another. The path stays `/account`.
+          a(href = ACCOUNT_PATH) { +SETTINGS_HEADING }
           signOutControl(shellNav.csrf)
         }
 

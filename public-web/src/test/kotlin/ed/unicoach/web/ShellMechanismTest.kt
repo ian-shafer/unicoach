@@ -47,6 +47,7 @@ import ed.unicoach.web.render.SIGN_OUT_FORM_CLASS
 import ed.unicoach.web.render.STUDENT_MESSAGE_CLASSES
 import ed.unicoach.web.render.ShellWidth
 import ed.unicoach.web.render.TRANSCRIPT_CLASS
+import ed.unicoach.web.render.USAGE_METER_CLASS
 import ed.unicoach.web.render.chatNoticeHtml
 import ed.unicoach.web.render.coachMessage
 import ed.unicoach.web.render.siteLayout
@@ -516,6 +517,7 @@ class ShellMechanismTest {
         SIGN_OUT_FORM_CLASS,
         LINKLIKE_CLASS,
         ACCOUNT_CLASS,
+        USAGE_METER_CLASS,
         REPORT_CLAIM_CLASS,
         FIELD_CAPTION_CLASS,
         DATE_GROUP_CLASS,

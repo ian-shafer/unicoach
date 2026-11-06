@@ -1,10 +1,7 @@
 package ed.unicoach.web.render
 
-import ed.unicoach.coaching.COACH_ZONE
 import ed.unicoach.coaching.budget.Entitlement
-import ed.unicoach.coaching.budget.EntitlementBasis
 import ed.unicoach.coaching.studentSentence
-import ed.unicoach.common.util.UsDate
 import ed.unicoach.db.models.ConvoId
 import ed.unicoach.error.FieldError
 import ed.unicoach.web.auth.CHAT_PATH
@@ -108,17 +105,6 @@ const val CHAT_NOTICE_CLASS = "chat-notice"
  * carries nothing.
  */
 const val CHAT_NOTICE_HEADER = "X-Chat-Notice"
-
-/** The heading of the out-of-allowance notice — the iOS paywall's own title. */
-const val OUT_OF_ALLOWANCE_TITLE = "Coaching is paused"
-
-/**
- * What the web says about continuing once the allowance is spent (brief 0013
- * D18). Interim copy until `web/10` owns it.
- */
-const val OUT_OF_ALLOWANCE_NEXT_STEP =
-  "To keep going, subscribe in the Unicoach app on iPhone. Subscribing on the web isn't available yet. " +
-    "Everything else here still works."
 
 /**
  * What a send that was not a submission of the composer is told: the page's own
@@ -249,7 +235,11 @@ sealed interface ChatNotice {
     override val status: HttpStatusCode get() = HttpStatusCode.BadRequest
   }
 
-  /** The allowance is spent (§8): the basis sentence and what to do next, never a figure. */
+  /**
+   * The allowance is spent (§8): the basis sentence and what to do next, never
+   * a figure. Both are read from `CoachingUsage.kt`, the one home of every
+   * meter sentence (RFC 273 §3), so the notice and Settings say the same thing.
+   */
   data class OutOfAllowance(
     val entitlement: Entitlement,
   ) : ChatNotice {
@@ -289,7 +279,7 @@ fun chatNoticeHtml(notice: ChatNotice): String =
       is ChatNotice.OutOfAllowance -> {
         h2 { +OUT_OF_ALLOWANCE_TITLE }
         p { +exhaustedSentence(notice.entitlement) }
-        p { +OUT_OF_ALLOWANCE_NEXT_STEP }
+        p { +nextStepSentence(notice.entitlement.basis) }
       }
 
       ChatNotice.Unavailable -> {
@@ -297,20 +287,4 @@ fun chatNoticeHtml(notice: ChatNotice): String =
         p { a(href = CHAT_PATH) { +NEW_CONVERSATION_LABEL } }
       }
     }
-  }
-
-/**
- * The sentence for the basis the allowance was spent on — the iOS paywall's
- * sentences (`PaywallCopy`), one per basis. The reset date is read in the
- * coach's own zone, the zone every date the coach says is read in.
- */
-internal fun exhaustedSentence(entitlement: Entitlement): String =
-  when (val basis = entitlement.basis) {
-    EntitlementBasis.FreeAllowance -> "You've used your free coaching."
-
-    is EntitlementBasis.Subscription -> "You've used this period's coaching. It resets ${UsDate.of(
-      basis.resetsAt.atZone(COACH_ZONE).toLocalDate(),
-    )}."
-
-    EntitlementBasis.AdminExemption -> "You've used your coaching allowance."
   }

@@ -6,6 +6,7 @@ import ed.unicoach.auth.EmailVerifier
 import ed.unicoach.auth.SessionMetadataService
 import ed.unicoach.auth.VerifyEmailResult
 import ed.unicoach.coaching.CoachingService
+import ed.unicoach.coaching.budget.BudgetService
 import ed.unicoach.coaching.collegelist.CollegeListService
 import ed.unicoach.coaching.moneyprofile.MoneyProfileService
 import ed.unicoach.college.CollegeSearchService
@@ -76,6 +77,7 @@ fun Application.testPublicWebModule(
   supporterService: SupporterService = WebAuthTestSupport.supporterService,
   linkRequestService: SupporterLinkRequestService = WebAuthTestSupport.linkRequestService,
   coachingService: CoachingService = WebAuthTestSupport.defaultCoachingService,
+  budgetService: BudgetService = WebAuthTestSupport.defaultBudgetService,
   studentService: StudentService = WebAuthTestSupport.studentService,
   sessionMetadataService: SessionMetadataService = WebAuthTestSupport.sessionMetadataService,
   accountRoleService: AccountRoleService = WebAuthTestSupport.accountRoleService,
@@ -98,6 +100,7 @@ fun Application.testPublicWebModule(
     supporterService,
     linkRequestService,
     coachingService,
+    budgetService,
     studentService,
     sessionMetadataService,
     accountRoleService,

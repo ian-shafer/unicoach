@@ -1023,6 +1023,36 @@ main {
   margin: 0;
 }
 
+/* RFC 273 — the coaching meter on Settings: the iPhone app's UsageMeter in
+   HTML. Label and value share one row, the bar runs the full width under them,
+   the caption sits under the bar. The bar is a <progress> because the CSP
+   serves no inline style: its length comes from its own attributes and only
+   its colour from here. Capped at the form measure for the same reason a
+   text input is — a bar as wide as the shell says nothing more. */
+.usage-meter {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  row-gap: 0.25rem;
+  margin: 0.75rem 0;
+  max-width: var(--form-measure);
+}
+
+.usage-meter progress {
+  grid-column: 1 / -1;
+  width: 100%;
+  height: 0.5rem;
+  accent-color: var(--accent);
+}
+
+.usage-meter-value {
+  font-variant-numeric: tabular-nums;
+}
+
+.usage-meter-caption {
+  grid-column: 1 / -1;
+  color: var(--muted);
+}
+
 /* RFC 262 — the chat. The transcript is the one scrolling region; the
    composer below it never moves. */
 .chat {

@@ -8,6 +8,7 @@ import ed.unicoach.chat.AnthropicTransportEvent
 import ed.unicoach.chat.Replay
 import ed.unicoach.chat.ScriptedAnthropicTransport
 import ed.unicoach.coaching.CoachingService
+import ed.unicoach.coaching.budget.BudgetService
 import ed.unicoach.db.models.User
 import ed.unicoach.web.auth.CSRF_HEADER
 import io.ktor.client.HttpClient
@@ -39,14 +40,17 @@ object ChatTestSupport {
     vararg deltas: String,
   ): Replay = Replay(opening() + deltas.map(::textDelta) + errorFrame(errorType, "SECRET-PROVIDER-REASON"))
 
-  /** A coach whose provider answers each call with the next of [replays]. */
+  /**
+   * A coach whose provider answers each call with the next of [replays], gated
+   * by [budgetService] — the default allowance unless the suite is about it.
+   */
   fun coach(
     vararg replays: Replay,
-    freeAllowanceUsd: String? = null,
+    budgetService: BudgetService = WebAuthTestSupport.defaultBudgetService,
   ): CoachingService =
     WebAuthTestSupport.coachingService(
       AnthropicChatProvider(ScriptedAnthropicTransport(replays.toList()), AutoCloseable {}),
-      freeAllowanceUsd,
+      budgetService,
     )
 
   /** A verified user with a `students` row, signed in: their session token. */

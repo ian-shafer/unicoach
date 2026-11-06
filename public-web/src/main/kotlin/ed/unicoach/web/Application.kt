@@ -151,7 +151,11 @@ fun startServer(wait: Boolean = true): EmbeddedServer<*, *> {
   val supporterInviteService = SupporterInviteService(database, supporterInviteConfig, TokenGenerator(), supporterService)
 
   val authServices = WebAuthServices.build(emailVerificationConfig, database, linkRequestService::releaseOnVerified)
-  val coach = closingOnFailure(database::close) { WebCoach.build(coachConfigs, database, supporterInviteService) }
+  // ONE budget read for the whole process (RFC 273 §4): the coach's gate
+  // blocks on it and Settings renders it, so the meter a family reads and the
+  // meter the coach stops at are one object, not two readers of one config.
+  val budgetService = BudgetService(database, coachConfigs.budget, coachConfigs.plans)
+  val coach = closingOnFailure(database::close) { WebCoach.build(coachConfigs, database, supporterInviteService, budgetService) }
 
   val server =
     embeddedServer(Netty, port = publicWebConfig.port, host = publicWebConfig.host) {
@@ -177,6 +181,7 @@ fun startServer(wait: Boolean = true): EmbeddedServer<*, *> {
         supporterService = supporterService,
         linkRequestService = linkRequestService,
         coachingService = coach.coachingService,
+        budgetService = budgetService,
         studentService = StudentService(database),
         // The one writer of a session's metadata (RFC 265): the draft rail's.
         sessionMetadataService = SessionMetadataService(database),
@@ -316,6 +321,7 @@ private class WebCoach(
       configs: CoachConfigs,
       database: Database,
       supporterInvites: SupporterInviteService,
+      budgetService: BudgetService,
     ): WebCoach {
       val provider = ChatProviderFactory.fromConfig(configs.chat).getOrThrow()
       // A boot-time read (the codebook); a refusal closes the provider it would
@@ -343,7 +349,7 @@ private class WebCoach(
           database,
           LlmCallLog(provider, database, configs.priceBook),
           configs.coaching,
-          BudgetService(database, configs.budget, configs.plans),
+          budgetService,
           ExtractionScheduler(QueueService(database), configs.extraction),
           tools,
         )
@@ -383,6 +389,7 @@ fun Application.publicWebModule(
   supporterService: SupporterService,
   linkRequestService: SupporterLinkRequestService,
   coachingService: CoachingService,
+  budgetService: BudgetService,
   studentService: StudentService,
   sessionMetadataService: SessionMetadataService,
   accountRoleService: AccountRoleService,
@@ -436,6 +443,7 @@ fun Application.publicWebModule(
     supporterService,
     linkRequestService,
     coachingService,
+    budgetService,
     studentService,
     sessionMetadataService,
     accountRoleService,

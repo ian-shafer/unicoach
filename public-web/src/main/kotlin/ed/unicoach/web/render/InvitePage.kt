@@ -172,7 +172,7 @@ private fun SECTION.inviteActions(
 private fun SECTION.ownLinkNotice() {
   p { +INVITE_OWN_LINK_NOTICE }
   p {
-    a(href = ACCOUNT_PATH) { +"Back to your account" }
+    a(href = ACCOUNT_PATH) { +"Back to $SETTINGS_HEADING" }
   }
 }
 

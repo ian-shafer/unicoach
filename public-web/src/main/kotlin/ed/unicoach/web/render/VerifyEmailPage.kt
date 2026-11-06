@@ -173,7 +173,7 @@ suspend fun ApplicationCall.respondVerifyEmailHold(
         signedInForm(action = RESEND_VERIFICATION_PATH, csrf = nav.csrf) {
           button(type = ButtonType.submit) { +"Send it again" }
         }
-        p { +"Signed in with the wrong address? Change it from your account page once you have verified, or sign out and register again." }
+        p { +"Signed in with the wrong address? Change it from $SETTINGS_HEADING once you have verified, or sign out and register again." }
       }
     }
   }

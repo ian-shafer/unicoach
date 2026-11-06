@@ -134,7 +134,7 @@ suspend fun ApplicationCall.respondChangeEmailPage(
         },
         after = {
           p {
-            a(href = ACCOUNT_PATH) { +"Back to your account" }
+            a(href = ACCOUNT_PATH) { +"Back to $SETTINGS_HEADING" }
           }
         },
       ) {
