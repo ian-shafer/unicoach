@@ -75,6 +75,18 @@
      agree or a header row and the nav row below it read as one strip to a
      thumb. Two hand-typed values agree only until one of them is tuned. */
   --chrome-row-gap: 0.5rem;
+
+  /* "Continue with Apple" is black with a white label, as Apple's guidelines
+     ask (RFC 275); tokens rather than literals in the rule, so the site's
+     palette stays in one place. */
+  --apple-button-bg: #000000;
+  --apple-button-fg: #ffffff;
+
+  /* The widest the two provider buttons get: Google's `renderButton` will not
+     draw wider than 400px (`GOOGLE_BUTTON_MAX_WIDTH` in `sso.ts`), so the
+     Apple button stops there too and the two line up. A cap, not a width:
+     below it both fill the column, as on a 375px phone. */
+  --sso-button-max-width: 400px;
 }
 
 /* ---------------------------------------------------------------------------
@@ -746,6 +758,64 @@ main {
   border: 0;
   border-radius: 0.25rem;
   cursor: pointer;
+}
+
+/* RFC 275 — provider sign-in, above the email form on sign-in and Create
+   account: Google's button, ours for Apple, the line the bundle writes into,
+   and the divider. A column at the form's width; the two buttons fill it up to
+   --sso-button-max-width, so they line up with each other. */
+.sso {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  margin-bottom: 1rem;
+}
+
+/* Google's own iframe fills this host. It holds a tap target's height while
+   the script loads, so the Apple button below does not jump when it arrives. */
+.sso [data-sso-google] {
+  max-width: var(--sso-button-max-width);
+  min-height: var(--tap-target);
+}
+
+/* Our Apple button, to Apple's guidelines: black, a white label in the system
+   font, the column's full width up to Google's. Two classes deep, because
+   `.auth-form button` would otherwise paint it the site's accent. */
+.auth-form .sso-apple {
+  width: 100%;
+  max-width: var(--sso-button-max-width);
+  min-height: var(--tap-target);
+  padding: 0.5rem 1.25rem;
+  font: inherit;
+  font-family: -apple-system, BlinkMacSystemFont, "Helvetica Neue", Helvetica, Arial, sans-serif;
+  font-weight: 500;
+  color: var(--apple-button-fg);
+  background: var(--apple-button-bg);
+  border: 0;
+  border-radius: 0.25rem;
+  cursor: pointer;
+}
+
+/* Empty until the bundle writes a sentence ("Sign in with Apple was
+   cancelled."); never hidden, so a screen reader hears it when it arrives. */
+.sso-status {
+  margin: 0;
+}
+
+/* "or use your email", between two hairlines. */
+.sso-divider {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin: 0 0 1rem;
+  color: var(--muted);
+}
+
+.sso-divider::before,
+.sso-divider::after {
+  content: "";
+  flex: 1 1 0;
+  border-top: 1px solid var(--border);
 }
 
 /* RFC 270 — Your details. Each answer is a fieldset holding three small

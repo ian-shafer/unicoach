@@ -1,7 +1,20 @@
 package ed.unicoach.web
 
+import ed.unicoach.web.common.http.CONTENT_SECURITY_POLICY
+import ed.unicoach.web.common.http.CONTENT_SECURITY_POLICY_HEADER
+import ed.unicoach.web.common.http.REFERRER_POLICY_HEADER
+import ed.unicoach.web.common.http.REFERRER_POLICY_SAME_ORIGIN
+import ed.unicoach.web.common.http.REFERRER_POLICY_STRICT_ORIGIN_WHEN_CROSS_ORIGIN
+import ed.unicoach.web.render.APPLE_SDK_URL
+import ed.unicoach.web.render.CONTINUE_WITH_APPLE
 import ed.unicoach.web.render.EMAIL_FIELD
+import ed.unicoach.web.render.GOOGLE_SDK_URL
 import ed.unicoach.web.render.PASSWORD_FIELD
+import ed.unicoach.web.render.SSO_APPLE_ATTRIBUTE
+import ed.unicoach.web.render.SSO_DIVIDER
+import ed.unicoach.web.render.SSO_GOOGLE_ATTRIBUTE
+import ed.unicoach.web.render.SsoButtons
+import ed.unicoach.web.render.SsoDoor
 import io.ktor.client.request.get
 import io.ktor.client.request.header
 import io.ktor.client.request.post
@@ -15,9 +28,11 @@ import io.ktor.http.contentType
 import io.ktor.http.parameters
 import io.ktor.server.testing.ApplicationTestBuilder
 import io.ktor.server.testing.testApplication
+import org.jsoup.Jsoup
 import org.junit.jupiter.api.BeforeEach
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
 /**
@@ -251,6 +266,119 @@ class SignInRoutingTest {
 
       assertEquals(HttpStatusCode.OK, response.status, "a session minted outside the web tier did not resolve on a web page")
       assertTrue(response.bodyAsText().contains(email), "the account page does not name the signed-in address")
+    }
+
+  /** The two pages that carry the provider buttons (RFC 275 D-B). */
+  private val ssoPages = listOf("/sign-in", "/register")
+
+  /** The page's policy header, asserted to be exactly ONE: two are enforced as their intersection. */
+  private fun HttpResponse.soleContentSecurityPolicy(path: String): String {
+    val policies = headers.getAll(CONTENT_SECURITY_POLICY_HEADER).orEmpty()
+    assertEquals(1, policies.size, "[$path] carries [${policies.size}] Content-Security-Policy headers: $policies")
+    return policies.single()
+  }
+
+  /** The `src` of every script element the page carries. */
+  private fun scriptSources(body: String): List<String> = Jsoup.parse(body).select("script[src]").map { it.attr("src") }
+
+  @Test
+  fun `with both providers configured, both pages render both buttons under one widened policy`() =
+    testApplication {
+      application { testPublicWebModule(ssoButtons = WebAuthTestSupport.bothSsoButtons) }
+
+      for (path in ssoPages) {
+        val response = client.get(path)
+        assertEquals(HttpStatusCode.OK, response.status, "[$path]")
+        val page = Jsoup.parse(response.bodyAsText())
+
+        // The bundle's contract (`sso.ts`), pinned as LITERALS rather than
+        // through the Kotlin constants: `sso.ts` restates these strings, so a
+        // rename on the Kotlin side must fail here, not leave the buttons dead.
+        val google = page.selectFirst("[data-sso-google]")
+        assertEquals(WebAuthTestSupport.TEST_GOOGLE_WEB_CLIENT_ID, google?.attr("data-client-id"), "[$path] Google host")
+        val apple = page.selectFirst("button[data-sso-apple]")
+        assertEquals(CONTINUE_WITH_APPLE, apple?.text(), "[$path] Apple button")
+        assertEquals(WebAuthTestSupport.TEST_APPLE_SERVICES_ID, apple?.attr("data-client-id"), "[$path] Apple Services ID")
+        assertEquals("${WebAuthTestSupport.urlBase}/sign-in", apple?.attr("data-redirect-uri"), "[$path] Apple return URL")
+        assertEquals(
+          listOf("google", "apple"),
+          page.select("form[data-sso-form]").map { it.attr("data-sso-form") },
+          "[$path] the provider forms' segments",
+        )
+        assertEquals(
+          SsoDoor.entries.map { it.path },
+          page.select("form[data-sso-form]").map { it.attr("action") },
+          "[$path] the provider forms",
+        )
+        for (segment in listOf("google", "apple")) {
+          assertNotNull(page.selectFirst("form[data-sso-form=$segment] input[name=id_token]"), "[$path] $segment's token field")
+        }
+        assertNotNull(page.selectFirst("form[data-sso-form=apple] input[name=name]"), "[$path] Apple's name field")
+        assertNotNull(page.selectFirst("[data-sso-status]"), "[$path] the bundle's status line")
+        assertTrue(page.text().contains(SSO_DIVIDER), "[$path] no divider")
+        assertTrue(scriptSources(response.bodyAsText()).containsAll(listOf(GOOGLE_SDK_URL, APPLE_SDK_URL)), "[$path] provider scripts")
+
+        val directives = response.soleContentSecurityPolicy(path).split(";").map { it.trim() }
+        for (expected in listOf(
+          "script-src 'self' https://accounts.google.com/gsi/client https://appleid.cdn-apple.com",
+          "frame-src https://accounts.google.com/gsi/",
+          "connect-src 'self' https://accounts.google.com/gsi/",
+          "style-src 'self' https://accounts.google.com/gsi/style 'unsafe-inline'",
+        )) {
+          assertTrue(expected in directives, "[$path] the policy lacks [$expected]: $directives")
+        }
+        assertEquals(REFERRER_POLICY_STRICT_ORIGIN_WHEN_CROSS_ORIGIN, response.headers[REFERRER_POLICY_HEADER], "[$path]")
+      }
+    }
+
+  @Test
+  fun `with neither provider configured, both pages are the pages they were`() =
+    testApplication {
+      application { testPublicWebModule(ssoButtons = SsoButtons.NONE) }
+
+      for (path in ssoPages) {
+        val response = client.get(path)
+        val body = response.bodyAsText()
+        assertTrue(!body.contains("data-sso"), "[$path] renders SSO markup with no provider configured")
+        assertTrue(!body.contains(SSO_DIVIDER), "[$path] renders the divider with nothing above it")
+        assertLoadsBundleAsItsOnlyScript(path, body)
+        assertEquals(CONTENT_SECURITY_POLICY, response.soleContentSecurityPolicy(path), "[$path]")
+        assertEquals(REFERRER_POLICY_SAME_ORIGIN, response.headers[REFERRER_POLICY_HEADER], "[$path]")
+      }
+    }
+
+  @Test
+  fun `with only Apple configured, the pages name Apple's source and nothing of Google's`() =
+    testApplication {
+      val appleOnly = SsoButtons.of(null, WebAuthTestSupport.TEST_APPLE_SERVICES_ID, WebAuthTestSupport.publicWebConfig.origin)
+      application { testPublicWebModule(ssoButtons = appleOnly) }
+
+      for (path in ssoPages) {
+        val response = client.get(path)
+        val body = response.bodyAsText()
+        assertTrue(!body.contains(SSO_GOOGLE_ATTRIBUTE), "[$path] renders a Google host with Google unconfigured")
+        assertTrue(body.contains(SSO_APPLE_ATTRIBUTE), "[$path] has no Apple button")
+        assertEquals(listOf(APPLE_SDK_URL), scriptSources(body).filter { it.startsWith("https://") }, "[$path]")
+        val policy = response.soleContentSecurityPolicy(path)
+        assertTrue(policy.contains("https://appleid.cdn-apple.com"), "[$path] the policy does not admit Apple: [$policy]")
+        assertTrue(!policy.contains("accounts.google.com"), "[$path] the policy admits Google unconfigured: [$policy]")
+        assertTrue(!policy.contains("'unsafe-inline'"), "[$path] Apple alone admits inline style: [$policy]")
+        assertEquals(REFERRER_POLICY_SAME_ORIGIN, response.headers[REFERRER_POLICY_HEADER], "[$path] Apple alone needs no wider referrer")
+      }
+    }
+
+  @Test
+  fun `with providers configured, every other page keeps the default policy`() =
+    testApplication {
+      application { testPublicWebModule(ssoButtons = WebAuthTestSupport.bothSsoButtons) }
+      val token = WebAuthTestSupport.login(WebAuthTestSupport.seedStudentUser(WebAuthTestSupport.uniqueEmail()).email.value)
+
+      for (path in listOf("/chat", "/account", "/")) {
+        val response = client.get(path) { header(HttpHeaders.Cookie, WebAuthTestSupport.cookieHeader(token)) }
+        assertEquals(HttpStatusCode.OK, response.status, "[$path]")
+        assertEquals(CONTENT_SECURITY_POLICY, response.soleContentSecurityPolicy(path), "[$path] widened by the sign-in pages' policy")
+        assertTrue(scriptSources(response.bodyAsText()).none { it.startsWith("https://") }, "[$path] loads a provider script")
+      }
     }
 
   /**

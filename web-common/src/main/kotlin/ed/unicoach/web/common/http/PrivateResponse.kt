@@ -44,6 +44,15 @@ const val REFERRER_POLICY_HEADER = "Referrer-Policy"
 const val REFERRER_POLICY_SAME_ORIGIN = "same-origin"
 
 /**
+ * The one other value (RFC 275 §6): what a link-holder page sends when it
+ * embeds a frame that needs to know which site it is on — Google's sign-in
+ * button. Cross-origin it sends the ORIGIN only, never the path or the query,
+ * so the credential in the URL still never leaves the site; same-origin it
+ * sends the full URL, exactly as [REFERRER_POLICY_SAME_ORIGIN] does.
+ */
+const val REFERRER_POLICY_STRICT_ORIGIN_WHEN_CROSS_ORIGIN = "strict-origin-when-cross-origin"
+
+/**
  * Marks a route as PRIVATE TO WHOEVER HOLDS ITS LINK: no shared cache keeps a
  * copy, no crawler indexes it, and no link to another origin carries its URL in
  * a `Referer` (RFC 155 D-H, RFC 254).
@@ -54,16 +63,38 @@ const val REFERRER_POLICY_SAME_ORIGIN = "same-origin"
  * for a read fault — and a handler added under the route later cannot forget
  * them. Set inside one handler they covered exactly that handler.
  */
-fun Route.setLinkHolderPrivacyHeaders() {
-  install(PrivateToLinkHolderPlugin)
+fun Route.setLinkHolderPrivacyHeaders(referrerPolicy: LinkHolderReferrerPolicy = LinkHolderReferrerPolicy.SAME_ORIGIN) {
+  install(PrivateToLinkHolderPlugin) { this.referrerPolicy = referrerPolicy }
+}
+
+/**
+ * The two `Referrer-Policy` values a link-holder page may send. A closed set
+ * rather than a string, because each one is a claim that the credential in the
+ * URL never reaches another origin, and a free-form value could be
+ * `unsafe-url`.
+ */
+enum class LinkHolderReferrerPolicy(
+  val value: String,
+) {
+  /** No `Referer` to any other origin at all. */
+  SAME_ORIGIN(REFERRER_POLICY_SAME_ORIGIN),
+
+  /** The origin alone to another origin, for a page that embeds a provider's frame (RFC 275). */
+  STRICT_ORIGIN_WHEN_CROSS_ORIGIN(REFERRER_POLICY_STRICT_ORIGIN_WHEN_CROSS_ORIGIN),
+}
+
+/** The referrer policy [PrivateToLinkHolderPlugin] stamps; defaulted so the common case names nothing. */
+class PrivateToLinkHolderConfiguration {
+  var referrerPolicy: LinkHolderReferrerPolicy = LinkHolderReferrerPolicy.SAME_ORIGIN
 }
 
 /** The plugin behind [setLinkHolderPrivacyHeaders]; installed only on the routes that opt in. */
 val PrivateToLinkHolderPlugin =
-  createRouteScopedPlugin("PrivateToLinkHolder") {
+  createRouteScopedPlugin("PrivateToLinkHolder", ::PrivateToLinkHolderConfiguration) {
+    val referrerPolicy = pluginConfig.referrerPolicy.value
     on(CallSetup) { call ->
       call.response.header(HttpHeaders.CacheControl, CACHE_CONTROL_NO_STORE)
       call.response.header(X_ROBOTS_TAG_HEADER, ROBOTS_NOINDEX)
-      call.response.header(REFERRER_POLICY_HEADER, REFERRER_POLICY_SAME_ORIGIN)
+      call.response.header(REFERRER_POLICY_HEADER, referrerPolicy)
     }
   }

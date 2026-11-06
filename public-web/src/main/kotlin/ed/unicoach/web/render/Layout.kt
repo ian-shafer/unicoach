@@ -164,12 +164,18 @@ const val NOSCRIPT_NOTICE_CLASS = "noscript-notice"
  * silently selects no rule at all — the page simply comes out the wrong width,
  * with every test still green. [ShellWidth.PROSE] by default, so every page
  * that existed before renders the same markup it did.
+ *
+ * [headScripts] is RFC 275's seam: the provider scripts the sign-in and
+ * Create-account pages load for their buttons. Typed as [SsoDoor] rather
+ * than as URLs, so a page can load only a script some door names
+ * ([SsoDoor.sdkUrl]).
  */
 fun HTML.siteLayout(
   pageTitle: String,
   width: ShellWidth = ShellWidth.PROSE,
   noindex: Boolean = false,
   nav: ShellNav = ShellNav.SignedOut,
+  headScripts: List<SsoDoor> = emptyList(),
   content: MAIN.() -> Unit,
 ) {
   head {
@@ -191,6 +197,19 @@ fun HTML.siteLayout(
     // 'self'` already allows it, and nothing hides the page while the bundle
     // is still loading.
     noScript { link(rel = "stylesheet", href = NOSCRIPT_STYLESHEET_PATH) }
+    // The provider scripts a sign-in page's buttons need (RFC 275), and only
+    // there: a page that passes none renders the bytes it always did. `defer`
+    // and BEFORE the bundle, so they run first, in document order, and by the
+    // time the bundle mounts each has either defined its global or failed —
+    // a script a content blocker cancelled fires its `error` before a
+    // listener added later could hear it, and the bundle then reads "absent"
+    // as "could not load" instead of waiting for an event that already fired.
+    for (door in headScripts) {
+      script {
+        src = door.sdkUrl
+        defer = true
+      }
+    }
     // The one client-side bundle (RFC 225). An EXTERNAL same-origin file, so
     // `script-src 'self'` already allows it and the content-security policy
     // does not change; an inline script would need `'unsafe-inline'`, which is

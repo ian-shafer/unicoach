@@ -10,6 +10,7 @@ import kotlinx.coroutines.runBlocking
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.Test
 import java.math.BigInteger
+import java.nio.file.Files
 import java.security.KeyPairGenerator
 import java.security.interfaces.ECPublicKey
 import java.security.interfaces.RSAPrivateKey
@@ -279,6 +280,43 @@ class JwksIdTokenVerifierTest {
       assertEquals("ada@example.com", identity.email)
       assertTrue(identity.emailVerified)
       assertEquals("Ada Lovelace", identity.name)
+    }
+  }
+
+  /**
+   * The website's audience, end to end through the FACTORY (RFC 275): a token
+   * minted for the web client verifies against a config whose `clientIds` holds
+   * only the iOS client, because the factory hands the verifier
+   * [SsoProviderConfig.acceptedAudiences]. The JWKS is this suite's own key,
+   * served from a `file:` URL, so the factory builds its real URL-backed JWKS
+   * provider and still nothing touches the network.
+   */
+  @Test
+  fun `a token for the web client verifies through the factory-built verifier`() {
+    runBlocking {
+      val jwks = Files.createTempFile("jwks", ".json").toFile().apply { deleteOnExit() }
+      jwks.writeText(
+        """{"keys":[{"kid":"$KEY_ID","kty":"RSA","alg":"RS256","use":"sig",""" +
+          """"n":"${encodeUnsignedBigInt(publicKey.modulus)}","e":"${encodeUnsignedBigInt(publicKey.publicExponent)}"}]}""",
+      )
+      val config =
+        SsoProviderConfig(
+          provider = "google",
+          clientIds = listOf("ios-client"),
+          webClientId = "web-client",
+          issuers = listOf(ISSUER),
+          jwksUri = jwks.toURI().toString(),
+          clockSkew = Duration.ofSeconds(60),
+          connectTimeout = Duration.ofSeconds(1),
+          readTimeout = Duration.ofSeconds(1),
+        )
+      val verifier = IdTokenVerifierFactory.googleFromConfig(config).getOrThrow().value
+
+      val identity = verifier.verify(buildToken(audiences = listOf("web-client"))).getOrThrow()
+      assertEquals("user-sub", identity.subject)
+
+      val foreign = verifier.verify(buildToken(audiences = listOf("some-other-client")))
+      assertTrue(foreign.isFailure && foreign.exceptionOrNull() is IdTokenInvalidException, "an unlisted audience verified")
     }
   }
 }

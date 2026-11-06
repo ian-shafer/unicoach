@@ -4,6 +4,7 @@ import com.typesafe.config.ConfigFactory
 import org.junit.jupiter.api.Test
 import java.time.Duration
 import kotlin.test.assertEquals
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 class SsoProviderConfigTest {
@@ -136,4 +137,84 @@ class SsoProviderConfigTest {
     val result = SsoProviderConfig.from(config, "auth.apple")
     assertTrue(result.isFailure)
   }
+
+  /**
+   * The web client joins the accepted audiences by derivation (RFC 275 D-C),
+   * listed once even when an operator also put it in `clientIds`.
+   */
+  @Test
+  fun `acceptedAudiences is clientIds plus the web client id, de-duplicated`() {
+    val parsed =
+      SsoProviderConfig
+        .from(
+          googleBlock("""clientIds = ["ios-1", "web-1"]""", """webClientId = " web-1 """"),
+          "auth.google",
+        ).getOrThrow()
+    assertEquals("web-1", parsed.webClientId)
+    assertEquals(listOf("ios-1", "web-1"), parsed.acceptedAudiences)
+
+    val added = SsoProviderConfig.from(googleBlock("""clientIds = ["ios-1"]""", """webClientId = "web-2""""), "auth.google").getOrThrow()
+    assertEquals(listOf("ios-1", "web-2"), added.acceptedAudiences)
+  }
+
+  @Test
+  fun `a blank or absent web client id reads as absent`() {
+    val blank = SsoProviderConfig.from(googleBlock("""clientIds = ["ios-1"]""", """webClientId = "  """"), "auth.google").getOrThrow()
+    assertNull(blank.webClientId)
+    assertEquals(listOf("ios-1"), blank.acceptedAudiences)
+
+    val absent = SsoProviderConfig.from(googleBlock("""clientIds = ["ios-1"]"""), "auth.google").getOrThrow()
+    assertNull(absent.webClientId)
+    assertEquals(listOf("ios-1"), absent.acceptedAudiences)
+  }
+
+  /**
+   * The env shape prod actually sets, through the packaged conf: the
+   * comma-separated `GOOGLE_CLIENT_IDS` string still splits, and
+   * `GOOGLE_WEB_CLIENT_ID` lands in `webClientId` and the accepted set.
+   */
+  @Test
+  fun `the packaged conf reads the web client ids from their env keys`() {
+    val config =
+      ConfigFactory
+        .parseString(
+          """
+          GOOGLE_AUTH_PROVIDER = stub
+          APPLE_AUTH_PROVIDER = stub
+          GOOGLE_CLIENT_IDS = " ios-a , ios-b "
+          GOOGLE_WEB_CLIENT_ID = "web-g"
+          APPLE_WEB_SERVICES_ID = "coach.uni.web"
+          """.trimIndent(),
+        ).withFallback(ConfigFactory.parseResources("service.conf"))
+        .resolve(
+          com.typesafe.config.ConfigResolveOptions
+            .defaults()
+            .setUseSystemEnvironment(false)
+            .setAllowUnresolved(true),
+        )
+
+    val google = SsoProviderConfig.from(config, "auth.google").getOrThrow()
+    assertEquals(listOf("ios-a", "ios-b"), google.clientIds)
+    assertEquals(listOf("ios-a", "ios-b", "web-g"), google.acceptedAudiences)
+    val apple = SsoProviderConfig.from(config, "auth.apple").getOrThrow()
+    assertEquals("coach.uni.web", apple.webClientId)
+    assertEquals(listOf("coach.uni.web"), apple.acceptedAudiences)
+  }
+
+  private fun googleBlock(vararg lines: String) =
+    ConfigFactory.parseString(
+      """
+      auth {
+        google {
+          provider = "google"
+          ${lines.joinToString("\n          ")}
+          issuers = ["accounts.google.com"]
+          jwksUri = "https://example.test/certs"
+          clockSkew = "60s"
+          connectTimeout = "1s"
+          readTimeout = "1s"
+        }
+      }
+      """.trimIndent(),
+    )
 }

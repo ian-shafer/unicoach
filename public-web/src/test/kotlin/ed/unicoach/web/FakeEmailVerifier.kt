@@ -21,6 +21,7 @@ import ed.unicoach.web.common.logging.Detail
 import ed.unicoach.web.common.logging.HeaderSelection
 import ed.unicoach.web.common.logging.RequestLoggingConfig
 import ed.unicoach.web.fafsa.FafsaDeadlineSource
+import ed.unicoach.web.render.SsoButtons
 import ed.unicoach.web.report.CostReportSource
 import io.ktor.server.application.Application
 import java.util.concurrent.atomic.AtomicInteger
@@ -85,6 +86,7 @@ fun Application.testPublicWebModule(
   vocabularyService: VocabularyService = WebAuthTestSupport.vocabularyService,
   collegeListService: CollegeListService = WebAuthTestSupport.collegeListService,
   collegeSearchService: CollegeSearchService = WebAuthTestSupport.collegeSearchService,
+  ssoButtons: SsoButtons = WebAuthTestSupport.ssoButtons,
 ) {
   publicWebModule(
     emailVerifier,
@@ -108,6 +110,7 @@ fun Application.testPublicWebModule(
     vocabularyService,
     collegeListService,
     collegeSearchService,
+    ssoButtons,
   )
 }
 

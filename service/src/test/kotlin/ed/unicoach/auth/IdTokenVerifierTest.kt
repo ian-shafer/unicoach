@@ -118,14 +118,32 @@ class IdTokenVerifierTest {
     assertContains(message, "[google]")
   }
 
+  /**
+   * The web client alone is enough (RFC 275): the union of audiences is what
+   * must be non-empty, so a provider configured only for the website builds.
+   */
+  @Test
+  fun `factory builds the JWKS verifier from a web client id alone`() {
+    val google =
+      IdTokenVerifierFactory.googleFromConfig(providerConfig(clientIds = emptyList(), webClientId = "web-client")).getOrThrow()
+    assertTrue(google.value is JwksIdTokenVerifier)
+    val apple =
+      IdTokenVerifierFactory
+        .appleFromConfig(providerConfig(provider = "apple", clientIds = emptyList(), webClientId = "coach.uni.web"))
+        .getOrThrow()
+    assertTrue(apple.value is JwksIdTokenVerifier)
+  }
+
   private fun stubConfig() = providerConfig(provider = "stub", clientIds = emptyList())
 
   private fun providerConfig(
     provider: String = "google",
     clientIds: List<String>,
+    webClientId: String? = null,
   ) = SsoProviderConfig(
     provider = provider,
     clientIds = clientIds,
+    webClientId = webClientId,
     issuers = listOf("accounts.google.com", "https://accounts.google.com"),
     jwksUri = "https://www.googleapis.com/oauth2/v3/certs",
     clockSkew = Duration.ofSeconds(60),

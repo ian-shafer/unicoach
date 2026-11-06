@@ -30,8 +30,10 @@ import ed.unicoach.web.render.CLAIM_NOT_SENT_NOTICE
 import ed.unicoach.web.render.CLAIM_PENDING_LINE
 import ed.unicoach.web.render.CLAIM_PENDING_NOTICE
 import ed.unicoach.web.render.CLAIM_SENT_NOTICE
+import ed.unicoach.web.render.ID_TOKEN_FIELD
 import ed.unicoach.web.render.REPORT_CLAIM_CLASS
 import ed.unicoach.web.render.SUPPORTER_APP_NOTE
+import ed.unicoach.web.render.SsoDoor
 import ed.unicoach.web.render.TOKEN_FIELD
 import ed.unicoach.web.report.ServiceCostReportSource
 import io.ktor.client.request.forms.FormDataContent
@@ -46,6 +48,7 @@ import io.ktor.http.Parameters
 import io.ktor.server.testing.ApplicationTestBuilder
 import io.ktor.server.testing.testApplication
 import kotlinx.coroutines.runBlocking
+import org.jsoup.Jsoup
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import org.slf4j.LoggerFactory
@@ -351,6 +354,32 @@ class ReportClaimRoutingTest {
           Parameters.build {
             append("email", jane.email.value)
             append("password", WebAuthTestSupport.DEFAULT_PASSWORD)
+            append("report", ava.token)
+          },
+          client = noFollowClient(),
+        )
+
+      assertEquals("/account?notice=claim-sent", response.headers[HttpHeaders.Location])
+      assertEquals(1, requestCount())
+      assertEquals(1, linkRequestedEmailCount(), "a verified claimant's request is sent to the student at once")
+    }
+
+  /** The provider doors carry the report as the password door does (RFC 275), and land where it lands. */
+  @Test
+  fun `signing in with Google from the report asks the student and says so`() =
+    testApplication {
+      application { testPublicWebModule(costReportSource = source, ssoButtons = WebAuthTestSupport.bothSsoButtons) }
+      val ava = sharedStudent()
+
+      val page = client.get("/sign-in?report=${ava.token}").bodyAsText()
+      val googleForm = Jsoup.parse(page).selectFirst("form[action=${SsoDoor.GOOGLE.path}]")
+      assertEquals(ava.token, googleForm?.selectFirst("input[name=report]")?.attr("value"), "the Google form drops the report token")
+
+      val response =
+        formPost(
+          SsoDoor.GOOGLE.path,
+          Parameters.build {
+            append(ID_TOKEN_FIELD, "stub:sub=google-jane;email=${WebAuthTestSupport.uniqueEmail()};email_verified=true;name=Jane Parent")
             append("report", ava.token)
           },
           client = noFollowClient(),

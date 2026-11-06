@@ -74,7 +74,9 @@ sealed interface RegisterFormState {
 }
 
 /**
- * The registration form, in one of the three states [RegisterFormState] allows.
+ * The registration form, in one of the three states [RegisterFormState] allows,
+ * with the provider buttons [sso] configures above it (RFC 275); [sso] has no
+ * default for the reason [respondSignInPage]'s has none.
  *
  * `RegisterResult` has exactly two failures and they are mutually exclusive, so
  * the page that renders them must not be able to show both — or to answer `409`
@@ -93,9 +95,10 @@ suspend fun ApplicationCall.respondRegisterPage(
   nav: ShellNav = ShellNav.SignedOut,
   token: String? = null,
   report: String? = null,
+  sso: SsoButtons,
 ) {
   respondHtml(state.status) {
-    siteLayout(REGISTER_HEADING, nav = nav) {
+    siteLayout(REGISTER_HEADING, nav = nav, headScripts = sso.scripts) {
       authFormCard(
         heading = REGISTER_HEADING,
         action = REGISTER_PATH,
@@ -107,6 +110,12 @@ suspend fun ApplicationCall.respondRegisterPage(
             is RegisterFormState.Duplicate -> REGISTER_DUPLICATE_ERROR
           },
         intro = {
+          // The provider buttons too (RFC 275 D-B): `loginWithSso` creates an
+          // account on first sight, so "Continue with Apple" IS creating one,
+          // and an Apple user who clicked "Create an account" must not be
+          // offered a password form alone. Its refusals render on the sign-in
+          // page, so it never carries one here.
+          ssoBlock(sso, token, report)
           // The validation failures are a LIST and sit where the single
           // form-level message would: they are the same rank of problem.
           if (state is RegisterFormState.Invalid) formErrors(state.messages)

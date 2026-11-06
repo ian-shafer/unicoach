@@ -30,7 +30,7 @@ const val SIGN_IN_HEADING = "Sign in"
 const val SIGN_IN_ERROR = "Email or password is incorrect."
 
 /**
- * The two states the sign-in form is ever rendered in.
+ * The states the sign-in form is ever rendered in.
  *
  * A sealed type that OWNS its status, rather than a `status` parameter and an
  * `error` parameter that happen to be passed together. The rule is "a rejected
@@ -72,17 +72,118 @@ sealed interface SignInFormState {
     // must not be told a typo is a data problem.
     override val status: HttpStatusCode get() = HttpStatusCode.Unauthorized
   }
+
+  /**
+   * A refused provider sign-in (RFC 275 §4), re-rendered at [refusal]'s status
+   * with its sentence above the buttons.
+   *
+   * One arm per provider, because the two refusals carry different things:
+   * only [Apple] has a posted name to put back, so a Google refusal holding a
+   * name does not compile — it has no slot to hold one.
+   */
+  sealed interface SsoRefused : SignInFormState {
+    val door: SsoDoor
+    val refusal: SsoRefusal
+
+    override val status: HttpStatusCode get() = refusal.status
+
+    /** A refused Google post. */
+    data class Google(
+      override val refusal: SsoRefusal,
+    ) : SsoRefused {
+      override val door: SsoDoor get() = SsoDoor.GOOGLE
+    }
+
+    /**
+     * A refused Apple post. [name] is the name it carried, put back in the
+     * Apple form so a retry sends it again: Apple resolves the name only on a
+     * user's FIRST authorization, and the retry's token carries none. `null`
+     * when the post carried none.
+     */
+    data class Apple(
+      override val refusal: SsoRefusal,
+      val name: String?,
+    ) : SsoRefused {
+      override val door: SsoDoor get() = SsoDoor.APPLE
+    }
+  }
 }
 
-/** The sign-in form, in one of the two states [SignInFormState] allows. */
+/**
+ * Every way a provider sign-in is refused, each with its status and its
+ * sentence (RFC 275 §4, D-F). The words name the provider ([SsoDoor.label]) and
+ * always offer the email form, because a family refused at one door has the
+ * other one on the same page.
+ */
+enum class SsoRefusal(
+  val status: HttpStatusCode,
+) {
+  /** The provider's token did not verify — including a token for an audience we do not accept. */
+  TOKEN_REJECTED(HttpStatusCode.Unauthorized),
+
+  /** The post carried no token at all: the same sentence, at the status a malformed request earns. */
+  TOKEN_MISSING(HttpStatusCode.BadRequest),
+
+  /** The provider says the address on the account is unverified. */
+  EMAIL_NOT_VERIFIED(HttpStatusCode.Forbidden),
+
+  /** An unverified password account already holds the address, so linking it would be a takeover. */
+  LINK_BLOCKED_UNVERIFIED_EMAIL(HttpStatusCode.Forbidden),
+
+  /** The account is closed. */
+  ACCOUNT_CLOSED(HttpStatusCode.Forbidden),
+
+  /** The provider's keys could not be fetched. */
+  UNAVAILABLE(HttpStatusCode.ServiceUnavailable),
+  ;
+
+  /** The sentence the page renders for this refusal at [door]. */
+  fun sentence(door: SsoDoor): String {
+    val provider = door.label
+    return when (this) {
+      TOKEN_REJECTED, TOKEN_MISSING -> {
+        "We couldn't sign you in with $provider. Please try again, or use your email and password."
+      }
+
+      EMAIL_NOT_VERIFIED -> {
+        "Your $provider account's email address isn't verified, so we can't use it to sign you in. " +
+          "Verify it with $provider, or use your email and password."
+      }
+
+      LINK_BLOCKED_UNVERIFIED_EMAIL -> {
+        "There's already an account for this email address, and its address hasn't been verified yet. " +
+          "Sign in with your email and password and verify it, then try $provider again."
+      }
+
+      ACCOUNT_CLOSED -> {
+        "This account has been closed, so it can't be signed in to."
+      }
+
+      UNAVAILABLE -> {
+        "$provider sign-in isn't available right now. Please try again in a few minutes, or use your email and password."
+      }
+    }
+  }
+}
+
+/**
+ * The sign-in form, in one of the states [SignInFormState] allows, with the
+ * provider buttons [sso] configures above it (RFC 275).
+ *
+ * [sso] has no default: the route that renders this page is also the route
+ * that widens the policy for it, and both read the same value, so a caller
+ * cannot render buttons the policy does not admit by forgetting one of them.
+ */
 suspend fun ApplicationCall.respondSignInPage(
   state: SignInFormState = SignInFormState.Fresh,
   nav: ShellNav = ShellNav.SignedOut,
   token: String? = null,
   report: String? = null,
+  sso: SsoButtons,
 ) {
+  val refused = state as? SignInFormState.SsoRefused
   respondHtml(state.status) {
-    siteLayout(SIGN_IN_HEADING, nav = nav) {
+    siteLayout(SIGN_IN_HEADING, nav = nav, headScripts = sso.scripts) {
       authFormCard(
         heading = SIGN_IN_HEADING,
         action = SIGN_IN_PATH,
@@ -90,9 +191,20 @@ suspend fun ApplicationCall.respondSignInPage(
         csrf = null,
         error =
           when (state) {
-            SignInFormState.Fresh -> null
+            SignInFormState.Fresh, is SignInFormState.SsoRefused -> null
             is SignInFormState.Rejected -> SIGN_IN_ERROR
           },
+        // A provider's refusal is said beside the provider buttons, not above
+        // the email form it is not about.
+        intro = {
+          ssoBlock(
+            sso,
+            token,
+            report,
+            refusal = refused?.refusal?.sentence(refused.door),
+            appleName = (refused as? SignInFormState.SsoRefused.Apple)?.name,
+          )
+        },
         after = {
           p {
             +"New to unicoach? "

@@ -4,12 +4,13 @@ import com.typesafe.config.Config
 import ed.unicoach.auth.AppleIdTokenVerifier
 import ed.unicoach.auth.AuthService
 import ed.unicoach.auth.DbEmailVerifier
-import ed.unicoach.auth.DisabledIdTokenVerifier
 import ed.unicoach.auth.EmailVerificationConfig
 import ed.unicoach.auth.EmailVerificationService
 import ed.unicoach.auth.EmailVerifier
 import ed.unicoach.auth.GoogleIdTokenVerifier
+import ed.unicoach.auth.IdTokenVerifierFactory
 import ed.unicoach.auth.SessionMetadataService
+import ed.unicoach.auth.SsoProviderConfig
 import ed.unicoach.chat.ChatConfig
 import ed.unicoach.chat.ChatProviderFactory
 import ed.unicoach.chat.CloseableChatProvider
@@ -52,11 +53,13 @@ import ed.unicoach.vocabulary.VocabularyService
 import ed.unicoach.web.assets.WebAssets
 import ed.unicoach.web.auth.installSignedInLanding
 import ed.unicoach.web.auth.installWebAuthGate
+import ed.unicoach.web.common.http.SiteOrigin
 import ed.unicoach.web.common.http.installSameOriginGuard
 import ed.unicoach.web.common.logging.RequestLoggingConfig
 import ed.unicoach.web.common.logging.configureRequestLogging
 import ed.unicoach.web.fafsa.FafsaDeadlineSource
 import ed.unicoach.web.fafsa.ServiceFafsaDeadlineSource
+import ed.unicoach.web.render.SsoButtons
 import ed.unicoach.web.render.respondForbiddenPage
 import ed.unicoach.web.report.CostReportSource
 import ed.unicoach.web.report.ServiceCostReportSource
@@ -68,8 +71,9 @@ import io.ktor.server.netty.Netty
 import org.slf4j.LoggerFactory
 
 /**
- * The module's own log. It exists for ONE line — the bundle the build produced
- * — because that line is also the touch that makes [WebAssets] initialise.
+ * The module's own log: the bundle the build produced — the line that is also
+ * the touch that makes [WebAssets] initialise — and which provider buttons are
+ * on (RFC 275).
  */
 private val publicWebLog = LoggerFactory.getLogger("ed.unicoach.web.PublicWeb")
 
@@ -82,10 +86,9 @@ private val publicWebLog = LoggerFactory.getLogger("ed.unicoach.web.PublicWeb")
  * test green and the deployed box failing at boot.
  *
  * `service.conf` is in the list because it carries `publicWeb.urlBase` (RFC 155
- * D-J) and the `emailVerification` block. It also carries REQUIRED
- * `GOOGLE_AUTH_PROVIDER`/`APPLE_AUTH_PROVIDER` substitutions, so
- * public-web needs both set to boot even though it serves no SSO route until
- * web/11 — the same inheritance `admin-web` and `queue-worker` already have.
+ * D-J), the `emailVerification` block, and the `auth.google`/`auth.apple`
+ * blocks the web's provider sign-in verifies against and renders its buttons
+ * from (RFC 275).
  *
  * `chat.conf` is in the list since RFC 262, after `service.conf` as in
  * `rest-server`'s list: the web chat runs the coach in-process, so this root
@@ -132,6 +135,8 @@ fun startServer(wait: Boolean = true): EmbeddedServer<*, *> {
   val emailVerificationConfig = EmailVerificationConfig.from(config).getOrThrow()
   val supporterInviteConfig = SupporterInviteConfig.from(config).getOrThrow()
   val coachConfigs = CoachConfigs.read(config)
+  val signInProviders = WebSignInProviders.read(config)
+  val ssoButtons = signInProviders.buttons(publicWebConfig.origin)
 
   val database = Database(databaseConfig)
   // The one writer of a `supporters` row (RFC 241), and the one writer of a
@@ -150,7 +155,7 @@ fun startServer(wait: Boolean = true): EmbeddedServer<*, *> {
   // writer of it (RFC 241).
   val supporterInviteService = SupporterInviteService(database, supporterInviteConfig, TokenGenerator(), supporterService)
 
-  val authServices = WebAuthServices.build(emailVerificationConfig, database, linkRequestService::releaseOnVerified)
+  val authServices = WebAuthServices.build(emailVerificationConfig, database, signInProviders, linkRequestService::releaseOnVerified)
   // ONE budget read for the whole process (RFC 273 §4): the coach's gate
   // blocks on it and Settings renders it, so the meter a family reads and the
   // meter the coach stops at are one object, not two readers of one config.
@@ -194,6 +199,7 @@ fun startServer(wait: Boolean = true): EmbeddedServer<*, *> {
         // that adds to it, both in-process (brief 0013 D13).
         collegeListService = CollegeListService(database),
         collegeSearchService = CollegeSearchService(database),
+        ssoButtons = ssoButtons,
       )
     }
 
@@ -223,9 +229,9 @@ fun startServer(wait: Boolean = true): EmbeddedServer<*, *> {
  * [EmailVerificationService] (RFC 96), so public-web is an enqueue-only queue
  * producer and never constructs an `EmailService`.
  *
- * Both SSO slots are wired FAIL-CLOSED (RFC 111): public-web serves no SSO route
- * until web/11, and [DisabledIdTokenVerifier] refuses every token rather than a
- * stub silently accepting one.
+ * Both SSO slots carry the REAL verifiers since RFC 275, built from
+ * [WebSignInProviders] exactly as `rest-server` builds its own, so the web's
+ * provider doors verify a token the way the iPhone's do.
  */
 private data class WebAuthServices(
   val authService: AuthService,
@@ -235,6 +241,7 @@ private data class WebAuthServices(
     fun build(
       emailVerificationConfig: EmailVerificationConfig,
       database: Database,
+      signInProviders: WebSignInProviders,
       afterVerified: (SqlSession, UserId) -> Unit,
     ): WebAuthServices {
       val tokenGenerator = TokenGenerator()
@@ -252,13 +259,44 @@ private data class WebAuthServices(
             Argon2Hasher(),
             tokenGenerator,
             emailVerificationService,
-            GoogleIdTokenVerifier(DisabledIdTokenVerifier),
-            AppleIdTokenVerifier(DisabledIdTokenVerifier),
+            signInProviders.googleVerifier,
+            signInProviders.appleVerifier,
             afterVerified,
           ),
         emailVerificationService = emailVerificationService,
       )
     }
+  }
+}
+
+/**
+ * The two provider blocks of `service.conf` (RFC 275), read ONCE and used for
+ * both halves of web sign-in: the verifiers, from the same
+ * [IdTokenVerifierFactory] `rest-server` builds its own with, and the buttons
+ * ([buttons]), from the same blocks' web IDs. The button reads a web ID and the
+ * verifier accepts it, so the two cannot disagree about it.
+ *
+ * Read before the pool opens, beside the other typed readers: building a
+ * verifier opens no connection, and a refusal here (an unknown provider, a real
+ * provider with no audience at all) must fail the boot with nothing to close.
+ */
+internal class WebSignInProviders(
+  val google: SsoProviderConfig,
+  val apple: SsoProviderConfig,
+) {
+  val googleVerifier: GoogleIdTokenVerifier = IdTokenVerifierFactory.googleFromConfig(google).getOrThrow()
+
+  val appleVerifier: AppleIdTokenVerifier = IdTokenVerifierFactory.appleFromConfig(apple).getOrThrow()
+
+  /** The buttons the configured web IDs turn on; Apple's return URL is derived from the site's own [origin]. */
+  fun buttons(origin: SiteOrigin): SsoButtons = SsoButtons.of(google.webClientId, apple.webClientId, origin)
+
+  companion object {
+    fun read(config: Config): WebSignInProviders =
+      WebSignInProviders(
+        google = SsoProviderConfig.from(config, "auth.google").getOrThrow(),
+        apple = SsoProviderConfig.from(config, "auth.apple").getOrThrow(),
+      )
   }
 }
 
@@ -397,6 +435,7 @@ fun Application.publicWebModule(
   vocabularyService: VocabularyService,
   collegeListService: CollegeListService,
   collegeSearchService: CollegeSearchService,
+  ssoButtons: SsoButtons,
 ) {
   // READ the bundle name while the module installs (RFC 225). WebAssets is an
   // `object`, so its manifest refusals run at class-init — and nothing touched
@@ -428,6 +467,7 @@ fun Application.publicWebModule(
     // same reason: a database fault must not replace the branded refusal.
     respondForbiddenPage(shellNavOrSignedOut(authService, publicWebConfig.session))
   }
+  logSsoButtons(ssoButtons)
   installSignedInLanding(authService, publicWebConfig.session)
   installWebAuthGate(authService, publicWebConfig.session, accountRoleService)
 
@@ -451,5 +491,32 @@ fun Application.publicWebModule(
     vocabularyService,
     collegeListService,
     collegeSearchService,
+    ssoButtons,
   )
+}
+
+/**
+ * One boot line per provider (RFC 275 §4), beside the same-origin guard's: an
+ * operator reading "buttons missing" can then tell an unset web ID from a
+ * provider-side misconfiguration, which fails inside the provider's popup and
+ * never reaches this process.
+ *
+ * The env keys are named literally: Typesafe Config does not expose which
+ * substitution a value came from, so these spell `service.conf`'s
+ * `webClientId = ${?…}` lines. Renaming a key there without touching this
+ * makes the hint wrong, not the behaviour.
+ */
+private fun logSsoButtons(buttons: SsoButtons) {
+  val google = buttons.google
+  if (google == null) {
+    publicWebLog.info("web sign-in with Google: off (GOOGLE_WEB_CLIENT_ID unset)")
+  } else {
+    publicWebLog.info("web sign-in with Google: on [{}]", google.clientId)
+  }
+  val apple = buttons.apple
+  if (apple == null) {
+    publicWebLog.info("web sign-in with Apple: off (APPLE_WEB_SERVICES_ID unset)")
+  } else {
+    publicWebLog.info("web sign-in with Apple: on [{}] return URL [{}]", apple.servicesId, apple.redirectUri)
+  }
 }

@@ -6,8 +6,10 @@ import ed.unicoach.web.common.http.REFERRER_POLICY_HEADER
 import ed.unicoach.web.common.http.REFERRER_POLICY_SAME_ORIGIN
 import ed.unicoach.web.common.http.ROBOTS_NOINDEX
 import ed.unicoach.web.common.http.X_ROBOTS_TAG_HEADER
+import ed.unicoach.web.render.ID_TOKEN_FIELD
 import ed.unicoach.web.render.INVITE_HEADING
 import ed.unicoach.web.render.INVITE_OWN_LINK_NOTICE
+import ed.unicoach.web.render.SsoDoor
 import io.ktor.client.request.get
 import io.ktor.client.request.header
 import io.ktor.client.statement.bodyAsText
@@ -389,6 +391,37 @@ class InviteRoutingTest {
             Parameters.build {
               append("email", parent.email.value)
               append("password", WebAuthTestSupport.DEFAULT_PASSWORD)
+              append("token", token)
+            },
+          client = noFollowClient(),
+        )
+
+      assertEquals(HttpStatusCode.SeeOther, response.status)
+      assertEquals("/account?notice=invite-accepted", response.headers[HttpHeaders.Location])
+      assertEquals(1, WebAuthTestSupport.supporterLinkCount(), "exactly one link is created")
+      assertEquals(1, WebAuthTestSupport.consumedInviteCount(), "the token is consumed exactly once")
+    }
+
+  /**
+   * The provider doors carry the invite exactly as the password door does (RFC
+   * 275): a parent whose account is an Apple one accepts by signing in with
+   * Apple, and lands where a password sign-in lands.
+   */
+  @Test
+  fun `signing in with Apple with an invite token creates the link`() =
+    testApplication {
+      application {
+        testPublicWebModule(ssoButtons = WebAuthTestSupport.bothSsoButtons)
+      }
+      val token = mintStudentInvite()
+      val email = WebAuthTestSupport.uniqueEmail()
+
+      val response =
+        formPost(
+          SsoDoor.APPLE.path,
+          form =
+            Parameters.build {
+              append(ID_TOKEN_FIELD, "stub:sub=apple-parent;email=$email;email_verified=true")
               append("token", token)
             },
           client = noFollowClient(),

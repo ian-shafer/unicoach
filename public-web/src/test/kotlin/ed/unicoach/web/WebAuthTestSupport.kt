@@ -2,13 +2,10 @@ package ed.unicoach.web
 
 import com.typesafe.config.ConfigFactory
 import com.typesafe.config.ConfigValueFactory
-import ed.unicoach.auth.AppleIdTokenVerifier
 import ed.unicoach.auth.AuthService
 import ed.unicoach.auth.AuthenticatedSession
-import ed.unicoach.auth.DisabledIdTokenVerifier
 import ed.unicoach.auth.EmailVerificationConfig
 import ed.unicoach.auth.EmailVerificationService
-import ed.unicoach.auth.GoogleIdTokenVerifier
 import ed.unicoach.auth.LoginResult
 import ed.unicoach.auth.SessionMetadataService
 import ed.unicoach.chat.ChatProvider
@@ -58,6 +55,7 @@ import ed.unicoach.util.TokenGenerator
 import ed.unicoach.vocabulary.VocabularyService
 import ed.unicoach.web.auth.CsrfToken
 import ed.unicoach.web.render.CSRF_FIELD
+import ed.unicoach.web.render.SsoButtons
 import io.ktor.client.HttpClient
 import io.ktor.client.request.HttpRequestBuilder
 import io.ktor.client.request.forms.FormDataContent
@@ -121,14 +119,37 @@ object WebAuthTestSupport {
       EmailVerificationConfig.from(config).getOrThrow(),
     )
 
+  /**
+   * The two provider blocks, read as the server reads them (RFC 275). The test
+   * environment selects the `stub` verifier for both (`.env.dev`'s
+   * `GOOGLE_AUTH_PROVIDER`/`APPLE_AUTH_PROVIDER`), so a suite signs in with a
+   * `stub:sub=…;email=…` token through the real `loginWithSso`.
+   */
+  internal val signInProviders: WebSignInProviders = WebSignInProviders.read(config)
+
+  /**
+   * The buttons the test configuration turns on — none, unless the environment
+   * sets a web ID. A suite about the buttons passes its own [SsoButtons] with
+   * placeholder IDs; one about their absence passes [SsoButtons.NONE].
+   */
+  val ssoButtons: SsoButtons get() = signInProviders.buttons(publicWebConfig.origin)
+
+  /** Buttons for both providers, with placeholder web IDs: what a suite about the provider doors renders. */
+  val bothSsoButtons: SsoButtons
+    get() = SsoButtons.of(TEST_GOOGLE_WEB_CLIENT_ID, TEST_APPLE_SERVICES_ID, publicWebConfig.origin)
+
+  const val TEST_GOOGLE_WEB_CLIENT_ID = "test-web-client.apps.googleusercontent.com"
+
+  const val TEST_APPLE_SERVICES_ID = "coach.uni.web.test"
+
   val authService =
     AuthService(
       database,
       argon2Hasher,
       tokenGenerator,
       emailVerificationService,
-      GoogleIdTokenVerifier(DisabledIdTokenVerifier),
-      AppleIdTokenVerifier(DisabledIdTokenVerifier),
+      signInProviders.googleVerifier,
+      signInProviders.appleVerifier,
       // A lambda, not a bound reference: the request service is declared below.
       { session, userId -> linkRequestService.releaseOnVerified(session, userId) },
     )
@@ -505,6 +526,20 @@ object WebAuthTestSupport {
   fun storedSessionMetadata(userId: UUID): List<String> =
     withConnection { connection ->
       RawSql.list(connection, "SELECT coalesce(metadata::text, '') FROM sessions WHERE user_id = ?", userId) { it.getString(1) }
+    }
+
+  /** The stored name of the one user at [email] — what a provider sign-in named the account (RFC 275). */
+  fun storedUserName(email: String): String =
+    withConnection { connection -> RawSql.single(connection, "SELECT name FROM users WHERE email = ?", email) { it.getString(1) } }
+
+  /** The `login_method` of each live session [userId] holds, oldest first (RFC 275). */
+  fun liveLoginMethods(userId: UUID): List<String> =
+    withConnection { connection ->
+      RawSql.list(
+        connection,
+        "SELECT login_method FROM sessions WHERE user_id = ? AND is_revoked = false ORDER BY created_at",
+        userId,
+      ) { it.getString(1) }
     }
 
   /** How many `sessions` rows exist at all — the D12 honesty test's whole assertion. */

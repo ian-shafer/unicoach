@@ -44,6 +44,10 @@ import ed.unicoach.web.render.NOTICE_CLASS
 import ed.unicoach.web.render.REPORT_CLAIM_CLASS
 import ed.unicoach.web.render.ROLE_BUTTON_CLASS
 import ed.unicoach.web.render.SIGN_OUT_FORM_CLASS
+import ed.unicoach.web.render.SSO_APPLE_BUTTON_CLASS
+import ed.unicoach.web.render.SSO_CLASS
+import ed.unicoach.web.render.SSO_DIVIDER_CLASS
+import ed.unicoach.web.render.SSO_STATUS_CLASS
 import ed.unicoach.web.render.STUDENT_MESSAGE_CLASSES
 import ed.unicoach.web.render.ShellWidth
 import ed.unicoach.web.render.TRANSCRIPT_CLASS
@@ -530,6 +534,10 @@ class ShellMechanismTest {
         CONVERSATION_LIST_CLASS,
         CONVERSATION_DATE_CLASS,
         CONVERSATION_ACTIONS_CLASS,
+        SSO_CLASS,
+        SSO_APPLE_BUTTON_CLASS,
+        SSO_STATUS_CLASS,
+        SSO_DIVIDER_CLASS,
       )) {
         assertTrue(
           Regex("""\.$stateClass\b""").containsMatchIn(css),

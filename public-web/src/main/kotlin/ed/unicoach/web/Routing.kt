@@ -7,6 +7,7 @@ import ed.unicoach.auth.EmailVerifier
 import ed.unicoach.auth.LoginResult
 import ed.unicoach.auth.RegisterResult
 import ed.unicoach.auth.SessionMetadataService
+import ed.unicoach.auth.SsoLoginResult
 import ed.unicoach.auth.VerifyEmailResult
 import ed.unicoach.coaching.CoachingService
 import ed.unicoach.coaching.budget.BudgetService
@@ -71,6 +72,7 @@ import ed.unicoach.web.render.ClaimOffer
 import ed.unicoach.web.render.CoachingMeter
 import ed.unicoach.web.render.EMAIL_FIELD
 import ed.unicoach.web.render.FAFSA_PATH
+import ed.unicoach.web.render.ID_TOKEN_FIELD
 import ed.unicoach.web.render.InviteViewer
 import ed.unicoach.web.render.NAME_FIELD
 import ed.unicoach.web.render.OwnNotFoundBody
@@ -81,6 +83,9 @@ import ed.unicoach.web.render.SIGNUP_DOOR_SECRET_PARAMS
 import ed.unicoach.web.render.SettingsCoaching
 import ed.unicoach.web.render.ShellNav
 import ed.unicoach.web.render.SignInFormState
+import ed.unicoach.web.render.SsoButtons
+import ed.unicoach.web.render.SsoDoor
+import ed.unicoach.web.render.SsoRefusal
 import ed.unicoach.web.render.TOKEN_FIELD
 import ed.unicoach.web.render.WHO_PAYS_PATH
 import ed.unicoach.web.render.WebNotice
@@ -316,6 +321,7 @@ fun Application.installPublicWebRouting(
   vocabularyService: VocabularyService,
   collegeListService: CollegeListService,
   collegeSearchService: CollegeSearchService,
+  ssoButtons: SsoButtons,
 ) {
   install(StatusPages) {
     status(HttpStatusCode.NotFound) { call, _ ->
@@ -418,6 +424,7 @@ fun Application.installPublicWebRouting(
       sessionMetadataService,
       accountRoleService,
       budgetService,
+      ssoButtons,
     )
 
     reportRoute(costReportSource, authService, sessionConfig, linkRequestService)
@@ -662,6 +669,184 @@ private fun claimLandingUrl(
 ): String = noticeUrl(if (verified) ACCOUNT_PATH else VERIFY_EMAIL_PATH, notice)
 
 /**
+ * What every successful sign-in does next, whichever door it came through —
+ * a password or a provider's token (RFC 275): set the web session cookie,
+ * accept the invite and claim the report the door carried, and answer `303` to
+ * where those leave the caller ([signInLandingUrl]).
+ *
+ * ONE home, because "an invite accepted by Apple lands where it lands for a
+ * password" is otherwise a promise three handlers each keep by hand. A user
+ * the provider door just created lands on the chat like anyone else, and the
+ * onboarding wall (RFC 268) takes them from there.
+ */
+private class SignInCompletion(
+  private val sessionConfig: WebSessionConfig,
+  private val supporterInviteService: SupporterInviteService,
+  private val linkRequestService: SupporterLinkRequestService,
+) {
+  /** Complete [user]'s sign-in on [call] with [sessionToken]; [door] names the route in the invite and claim logs. */
+  suspend fun complete(
+    call: ApplicationCall,
+    user: User,
+    sessionToken: String,
+    presentedInvite: PresentedToken,
+    presentedReport: PresentedToken,
+    door: String,
+  ) {
+    call.setWebSessionCookie(sessionConfig, sessionToken)
+    val inviteNotice = acceptPresentedInvite(supporterInviteService, presentedInvite, user.id, door)
+    val claimNotice = claimPresentedReport(linkRequestService, presentedReport, user.id, door)
+    call.respondSeeOther(signInLandingUrl(inviteNotice, claimNotice, user))
+  }
+}
+
+/**
+ * The headers the two signup doors carry: link-holder privacy (RFC 232) at the
+ * referrer policy [sso] needs, and — when a provider is configured — the
+ * widened content-security policy its buttons need (RFC 275 §6).
+ *
+ * The widened policy is a NESTED install of the root's plugin, and Ktor runs
+ * only the innermost one, so these routes carry exactly ONE policy header (two
+ * would be enforced as their intersection, re-blocking the providers). With no
+ * provider nothing is installed, and the root's default rides as before.
+ */
+private fun Route.setSignUpDoorHeaders(sso: SsoButtons) {
+  setLinkHolderPrivacyHeaders(sso.referrerPolicy)
+  if (sso.anyConfigured) setContentSecurityPolicy(sso.contentSecurityPolicy)
+}
+
+/**
+ * `POST /sign-in/google` and `POST /sign-in/apple` (RFC 275): the provider's
+ * ID token, through the SAME `AuthService.loginWithSso` the iPhone's
+ * `POST /auth/<provider>` calls, in-process (brief 0013 D13) — so the returning
+ * login, the email link, the name fallback and the session are the iPhone's
+ * code, not a copy.
+ *
+ * Every refusal re-renders the sign-in page at the refusal's status with its
+ * sentence (§4). The REASON is logged at this boundary, as `rest-server` logs
+ * it: INFO, and WARN for the provider being unreachable. A rejected token's
+ * outcome carries the verifier's exception, which names the audience the
+ * token carried — the diagnosable half of a misconfigured client. The token is
+ * never logged, and neither is the posted name, which is the family's own data.
+ */
+private suspend fun RoutingContext.signInWithProvider(
+  door: SsoDoor,
+  authService: AuthService,
+  sessionConfig: WebSessionConfig,
+  signIn: SignInCompletion,
+  sso: SsoButtons,
+) {
+  val posted = readProviderPost(door)
+
+  suspend fun refuse(refusal: SsoRefusal) = respondProviderRefused(door, posted, refusal, authService, sessionConfig, sso)
+
+  suspend fun refuseOutcome(
+    result: SsoLoginResult,
+    refusal: SsoRefusal,
+  ) {
+    logProviderRefusal(door, result)
+    refuse(refusal)
+  }
+
+  val idToken = posted.idToken
+  if (idToken == null) {
+    authLog.info("web sign-in refused: provider=[{}] outcome=[no single {} field posted]", door.label, ID_TOKEN_FIELD)
+    return refuse(SsoRefusal.TOKEN_MISSING)
+  }
+
+  // Exhaustive and without an `else`: a new `SsoLoginResult` must be given its
+  // own sentence here before it compiles.
+  when (val result = loginWithProvider(door, idToken, posted.appleName, authService, sessionConfig)) {
+    is SsoLoginResult.Success -> signIn.complete(call, result.user, result.token, posted.invite, posted.report, door.path)
+    is SsoLoginResult.InvalidToken -> refuseOutcome(result, SsoRefusal.TOKEN_REJECTED)
+    SsoLoginResult.EmailNotVerified -> refuseOutcome(result, SsoRefusal.EMAIL_NOT_VERIFIED)
+    SsoLoginResult.LinkBlockedUnverifiedEmail -> refuseOutcome(result, SsoRefusal.LINK_BLOCKED_UNVERIFIED_EMAIL)
+    SsoLoginResult.AccountDisabled -> refuseOutcome(result, SsoRefusal.ACCOUNT_CLOSED)
+    is SsoLoginResult.VerificationUnavailable -> refuseOutcome(result, SsoRefusal.UNAVAILABLE)
+  }
+}
+
+/**
+ * What a provider door's POST carried. [idToken] is `null` when no single
+ * non-blank one was posted; [appleName] is only ever read on Apple's door.
+ */
+private class ProviderPost(
+  val idToken: String?,
+  val appleName: String?,
+  val invite: PresentedToken,
+  val report: PresentedToken,
+)
+
+private suspend fun RoutingContext.readProviderPost(door: SsoDoor): ProviderPost {
+  val form = call.formParametersOrNull()
+  return ProviderPost(
+    idToken = form?.formField(ID_TOKEN_FIELD)?.takeIf { it.isNotBlank() },
+    // Apple's first-authorization name, joined by the bundle (§1). Only Apple
+    // sends one, and a blank one is no name: `loginWithSso` then falls back to
+    // the email's local part, so an account is never created with an empty name.
+    appleName = if (door == SsoDoor.APPLE) form?.formField(NAME_FIELD)?.trim()?.takeIf { it.isNotEmpty() } else null,
+    invite = presentedToken(form?.getAll(TOKEN_FIELD)),
+    report = presentedToken(form?.getAll(REPORT_FIELD)),
+  )
+}
+
+private suspend fun RoutingContext.loginWithProvider(
+  door: SsoDoor,
+  idToken: String,
+  appleName: String?,
+  authService: AuthService,
+  sessionConfig: WebSessionConfig,
+): SsoLoginResult =
+  authService
+    .loginWithSso(
+      provider = door.provider,
+      idToken = idToken,
+      clientProvidedName = appleName,
+      // As for the password door: `:service` revokes the row this cookie
+      // names in the same transaction that inserts the new one (fixation).
+      oldCookieToken = call.request.sessionCookieToken(sessionConfig),
+      sessionExpiration = sessionConfig.expiration,
+      userAgent = call.request.userAgent(),
+      // The socket peer, for the reason the password door gives.
+      initialIp = call.request.origin.remoteHost,
+    ).getOrThrow()
+
+/**
+ * Log why [door] refused, at the boundary as `rest-server` does: WARN, with
+ * the transport failure as the throwable so its cause chain is printed, when
+ * the provider was unreachable; INFO for every other refusal.
+ */
+private fun logProviderRefusal(
+  door: SsoDoor,
+  result: SsoLoginResult,
+) {
+  if (result is SsoLoginResult.VerificationUnavailable) {
+    authLog.warn("web sign-in refused: provider=[{}] outcome=[{}]", door.label, result, result.cause)
+  } else {
+    authLog.info("web sign-in refused: provider=[{}] outcome=[{}]", door.label, result)
+  }
+}
+
+/** Re-render the sign-in page with [door]'s [refusal] sentence, and Apple's posted name back in its form. */
+private suspend fun RoutingContext.respondProviderRefused(
+  door: SsoDoor,
+  posted: ProviderPost,
+  refusal: SsoRefusal,
+  authService: AuthService,
+  sessionConfig: WebSessionConfig,
+  sso: SsoButtons,
+) = call.respondSignInPage(
+  when (door) {
+    SsoDoor.GOOGLE -> SignInFormState.SsoRefused.Google(refusal)
+    SsoDoor.APPLE -> SignInFormState.SsoRefused.Apple(refusal, posted.appleName)
+  },
+  call.shellNav(authService, sessionConfig),
+  posted.invite.usableToken(),
+  posted.report.usableReportToken(),
+  sso = sso,
+)
+
+/**
  * Sign in, register, sign out, resend verification, the signed-in home and
  * change email (RFC 224).
  *
@@ -691,7 +876,10 @@ private fun Route.authRoutes(
   sessionMetadata: SessionMetadataService,
   accountRoles: AccountRoleService,
   budgetService: BudgetService,
+  ssoButtons: SsoButtons,
 ) {
+  val signIn = SignInCompletion(sessionConfig, supporterInviteService, linkRequestService)
+
   // `/invite` sends a signed-out recipient to these two doors with the RAW
   // invite token in the query string, so both scope it secret exactly as
   // `/invite` does (RFC 232). Redacting it on `/invite` alone kept the token
@@ -702,7 +890,7 @@ private fun Route.authRoutes(
   // rides the same two doors on its own key (RFC 254), and is as secret.
   route(SIGN_IN_PATH) {
     secretQueryParams(*SIGNUP_DOOR_SECRET_PARAMS.toTypedArray())
-    setLinkHolderPrivacyHeaders()
+    setSignUpDoorHeaders(ssoButtons)
 
     get {
       // Through the ONE reader, like every other token door in this file:
@@ -712,6 +900,7 @@ private fun Route.authRoutes(
         nav = call.shellNav(authService, sessionConfig),
         token = presentedToken(call.request.queryParameters.getAll(TOKEN_FIELD)).usableToken(),
         report = presentedToken(call.request.queryParameters.getAll(REPORT_FIELD)).usableReportToken(),
+        sso = ssoButtons,
       )
     }
 
@@ -720,6 +909,7 @@ private fun Route.authRoutes(
         call.formParametersOrNull() ?: return@post call.respondSignInPage(
           SignInFormState.Rejected(""),
           call.shellNav(authService, sessionConfig),
+          sso = ssoButtons,
         )
       val email = form.formField(EMAIL_FIELD)
       val password = form.formField(PASSWORD_FIELD)
@@ -731,6 +921,7 @@ private fun Route.authRoutes(
           call.shellNav(authService, sessionConfig),
           presentedInvite.usableToken(),
           presentedReport.usableReportToken(),
+          sso = ssoButtons,
         )
       }
 
@@ -756,11 +947,7 @@ private fun Route.authRoutes(
 
       when (result) {
         is LoginResult.Success -> {
-          call.setWebSessionCookie(sessionConfig, result.token)
-          val inviteNotice =
-            acceptPresentedInvite(supporterInviteService, presentedInvite, result.user.id, SIGN_IN_PATH)
-          val claimNotice = claimPresentedReport(linkRequestService, presentedReport, result.user.id, SIGN_IN_PATH)
-          call.respondSeeOther(signInLandingUrl(inviteNotice, claimNotice, result.user))
+          signIn.complete(call, result.user, result.token, presentedInvite, presentedReport, SIGN_IN_PATH)
         }
 
         // All FOUR failures, one answer. The branches are listed rather than
@@ -784,8 +971,21 @@ private fun Route.authRoutes(
             call.shellNav(authService, sessionConfig),
             presentedInvite.usableToken(),
             presentedReport.usableReportToken(),
+            sso = ssoButtons,
           )
         }
+      }
+    }
+
+    // The provider doors (RFC 275): the bundle posts a provider's ID token here,
+    // same-origin, so the same-origin guard covers them exactly as it covers the
+    // password POST above. Nested under `/sign-in` so they share its secret
+    // query keys, its privacy headers and its policy — a refusal re-renders the
+    // sign-in page, buttons and all. POST only: `GET /sign-in/apple` is no
+    // route and answers the site's 404.
+    for (door in SsoDoor.entries) {
+      post(door.segment) {
+        signInWithProvider(door, authService, sessionConfig, signIn, ssoButtons)
       }
     }
   }
@@ -794,7 +994,7 @@ private fun Route.authRoutes(
   // door above (RFC 232).
   route(REGISTER_PATH) {
     secretQueryParams(*SIGNUP_DOOR_SECRET_PARAMS.toTypedArray())
-    setLinkHolderPrivacyHeaders()
+    setSignUpDoorHeaders(ssoButtons)
 
     get {
       // The single-token rule, as on the sign-in door above.
@@ -802,6 +1002,7 @@ private fun Route.authRoutes(
         nav = call.shellNav(authService, sessionConfig),
         token = presentedToken(call.request.queryParameters.getAll(TOKEN_FIELD)).usableToken(),
         report = presentedToken(call.request.queryParameters.getAll(REPORT_FIELD)).usableReportToken(),
+        sso = ssoButtons,
       )
     }
 
@@ -810,6 +1011,7 @@ private fun Route.authRoutes(
         call.formParametersOrNull() ?: return@post call.respondRegisterPage(
           RegisterFormState.Invalid("", "", emptyList(), emptyList()),
           call.shellNav(authService, sessionConfig),
+          sso = ssoButtons,
         )
       val name = form.formField(NAME_FIELD)
       val email = form.formField(EMAIL_FIELD)
@@ -822,6 +1024,7 @@ private fun Route.authRoutes(
           call.shellNav(authService, sessionConfig),
           presentedInvite.usableToken(),
           presentedReport.usableReportToken(),
+          sso = ssoButtons,
         )
       }
 
@@ -861,6 +1064,7 @@ private fun Route.authRoutes(
             call.shellNav(authService, sessionConfig),
             presentedInvite.usableToken(),
             presentedReport.usableReportToken(),
+            sso = ssoButtons,
           )
         }
 
@@ -870,6 +1074,7 @@ private fun Route.authRoutes(
             call.shellNav(authService, sessionConfig),
             presentedInvite.usableToken(),
             presentedReport.usableReportToken(),
+            sso = ssoButtons,
           )
         }
       }

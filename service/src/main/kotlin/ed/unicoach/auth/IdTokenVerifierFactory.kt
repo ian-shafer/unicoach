@@ -15,6 +15,10 @@ import java.util.concurrent.TimeUnit
  * [AuthService]'s constructor. Missing required configuration (empty
  * `clientIds` under a real provider) fails fast here, matching the
  * chat-provider boot contract.
+ *
+ * A JWKS verifier accepts [SsoProviderConfig.acceptedAudiences], never
+ * `clientIds` alone (RFC 275): the website's client ID is accepted because it is
+ * configured as the website's, so both doors verify the same set of audiences.
  */
 object IdTokenVerifierFactory {
   // JwkProviderBuilder's own constructor defaults, pinned explicitly rather
@@ -57,7 +61,7 @@ object IdTokenVerifierFactory {
     config: SsoProviderConfig,
     provider: AuthProvider,
   ): Result<IdTokenVerifier> {
-    if (config.clientIds.isEmpty()) {
+    if (config.acceptedAudiences.isEmpty()) {
       // The env-var hint is reconstructed from the provider, not read from the
       // config: service.conf names every SSO override <PROVIDER>_<KEY>
       // (GOOGLE_CLIENT_IDS, APPLE_CLIENT_IDS), and Typesafe Config does not
@@ -80,7 +84,7 @@ object IdTokenVerifierFactory {
       JwksIdTokenVerifier(
         jwkProvider = jwkProvider,
         issuers = config.issuers,
-        clientIds = config.clientIds,
+        clientIds = config.acceptedAudiences,
         clockSkew = config.clockSkew,
       )
     }
