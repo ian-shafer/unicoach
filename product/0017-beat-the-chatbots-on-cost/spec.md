@@ -97,43 +97,60 @@ and `shape/09`.
 
 ---
 
-### `cost/01/the-scorecard-year`
+### `cost/01/the-latest-release`
 
 **Needs:** —
 
-**What and why.** Serve the College Scorecard release of 2026-11-02: tuition and
-fees, housing and food, books and other expenses move from 2024-25 to
-**2025-26**, and the published cost of attendance and every net price from
-2023-24 to **2024-25** — one year fresher on both, for every school we hold, by
-a fetch and a re-dated transcription. Serves D1 (fresher prices, two routes
-now): "the cheapest year we will ever buy".
+**What and why.** Every College Scorecard figure is served under the year the
+publisher's own dictionary states for it, read from the release that was fetched
+— never a year typed into Kotlin or hand-transcribed into a CSV. Moving to a
+newer release then costs a fetch and an ingest and nothing else, and the first
+such move is this slice's land: the newest release on the day it runs. Serves D1
+("the cheapest year we will ever buy") read under D15: the release D1 names by
+date was the newest on the day D1 was written; the decision is the newest
+release, every time.
 
-**Foundations.** DISCOVER 1–2: `bin/fetch-scorecard`,
-`db/seed/scorecard/dictionary-variable-sources.csv`, the two
-`CanonicalMoneyLoader` pins, `ScorecardDictionaryPinTest`, `price_figures` keyed
-on `academic_year`.
+**Foundations.** DISCOVER 1–2: `bin/fetch-scorecard` already discovers the
+release stamp rather than pinning it and records it in PROVENANCE; the
+publisher's `Most_Recent_Inst_Cohort_Map` sheet of
+`CollegeScorecardDataDictionary.xlsx` dates every variable. Today that sheet is
+hand-transcribed into `db/seed/scorecard/dictionary-variable-sources.csv` and
+pinned by two Kotlin constants and `ScorecardDictionaryPinTest` (RFC 183),
+because RFC 173 declined an xlsx reader. `price_figures` keys on
+`academic_year`, so two years coexist and a newer release adds no migration.
 
-**Decided here.** The transcription is re-read from the publisher's own cohort
-map and re-dated column by column, never by a shared offset (the loader's own
-comment). Both pins move only to the year the dictionary states. The served year
-label on every figure follows the pin automatically; no copy changes. Any
-Scorecard variable the new dictionary renames or drops is a located fault at
-ingest, not a silent blank. **Left to /work:** whether the IC_AY fallback rows
-for 2023-24 stay served where the new Scorecard row is incomplete (DISCOVER 2
-says the precedence already does this; confirm by test).
+**Decided here.** The year on a Scorecard figure has one home: the publisher's
+dictionary as fetched, from the same release as the data, with PROVENANCE
+recording both. The two constants and the hand transcription go, or become
+artefacts the fetch writes and no human edits. A variable the new dictionary
+renames, drops, or dates to an earlier year than the one served is a located
+fault at ingest naming the variable, never a silent blank or a silent back-date.
+The served year label on every figure follows the data; no copy changes. **Left
+to /work:** how the dictionary is read — the RFC either reverses RFC 173's
+no-xlsx-reader decision and says why, or finds the same sheet in a form the
+publisher ships that the JVM reads today; what guard replaces RFC 183's pin test
+(the thing to keep: a re-dating that moves a family's figure to another year
+shows in the diff of a fetched artefact, never only in a served answer); and
+whether the IC_AY fallback rows stay served where a new Scorecard row is
+incomplete (DISCOVER 2 says the precedence already does this; confirm by test).
 
 **Acceptance criteria.**
 
 - **Door:** the coach's `college_cost_profile` tool on iOS and the web chat, and
-  the Family Cost Report page — unchanged doors, fresher figures.
-- A cost answer for UW Seattle states tuition and fees for **2025-26** and a net
-  price for **2024-25**, by year label, and the two pin tests pass against the
-  re-dated transcription.
-- The ingest's PROVENANCE records the release stamp it served from.
+  the Family Cost Report page — unchanged doors, the newest figures.
+- Fetching and ingesting a newer release changes the year a family is told
+  without a code or seed edit — pinned by a test that ingests a dictionary
+  dating a served column to a later year and sees that year served.
+- A dictionary that renames, drops, or back-dates a variable we serve fails the
+  ingest, naming the variable.
+- No year literal for a Scorecard figure lives in `college/` or `service/`
+  Kotlin, main or test; the fetched dictionary is the one home, and PROVENANCE
+  records the release stamp and the dictionary's digest.
 - No new table, no migration, no prompt change.
 - **First-session test:** a Washington student with UW on their list asks what
-  it costs; the answer's year labels read 2025-26 and 2024-25 and the tuition
-  and fees figure matches the Scorecard's new row for UW to the dollar.
+  it costs; every year label in the answer equals the year the fetched
+  dictionary states for that column, and the tuition and fees figure matches the
+  fetched row for UW to the dollar.
 
 ---
 
@@ -141,17 +158,21 @@ says the precedence already does this; confirm by test).
 
 **Needs:**
 
-- PREFER cost/01/the-scorecard-year — a 2026-27 school figure beside a 2024-25
-  federal one widens the gap this slice exists to close; land the bump first so
-  the pair reads one year apart.
+- PREFER cost/01/the-latest-release — a school's figure sits a year or two ahead
+  of the federal one; land the latest release first so the pair reads one year
+  apart rather than two.
 
-**What and why.** Where a school's Common Data Set filing states next year's
-charges — the 2025-26 filing's section G gives **2026-27** tuition, required
-fees, food and housing, and the G5 estimates — show that figure beside the
-federal one, with the school as publisher, the year the filing asks for, and the
-read date. Serves D1's second route: the only structured source a year ahead,
-arriving through the publisher-kind-year seam we already have. Where no filing
-exists, nothing changes.
+**What and why.** Where a school's newest Common Data Set filing states charges
+for a year later than the federal figure's — section G asks, by the template's
+construction, for tuition, required fees, food and housing, and the G5 estimates
+for the academic year after the one the filing covers — show the filing's figure
+beside the federal one, with the school as publisher, the year the filing
+states, and the read date. The year is read from the filing (its template
+version says which year section G asks for), never typed. Serves D1's second
+route: the only structured source a year ahead, arriving through the
+publisher-kind-year seam we already have. Where no filing exists, nothing
+changes; where a newer filing arrives, the fetch takes it and the year label
+moves with it.
 
 **Foundations.** DISCOVER 3: `bin/fetch-cds-seed` fact groups and
 `schema_version` map, `MoneySource.COMMON_DATA_SET`, the figure seam (RFC 177
@@ -159,27 +180,31 @@ exists, nothing changes.
 `VOLUNTARY_SELF_REPORT`), `price_figures` keyed on year.
 
 **Decided here (D9).** The school's figure is a **labelled line beside** the
-federal figure, never a replacement: "the school's own 2026-27 tuition and fees,
-from its Common Data Set filing, read 2026-11-04". An arrangement total is built
-from section G **only when the filing fills every line of that arrangement**;
-otherwise the lines are shown and no total is. **Never a mixed-year total**: a
-total is one publisher and one year. Where the federal and the school's figures
-describe the same year and differ, both are shown (RFC 149's rule: "say both,
-never hide either"). The cost tool emits the new figures above
-`putVintageLabels` (DISCOVER 5). The report page shows the same line. **Left to
-/work:** the G5 living-arrangement mapping onto our three arrangements (G5 has
-commuter-at-home and commuter-not-at-home; our at-home arrangement counts no
-housing and food), and whether the fetcher's drift guard needs a per-group
-threshold for a group that is new.
+federal figure, never a replacement: "the school's own <year> tuition and fees,
+from its Common Data Set filing, read <date>", both read from the filing and the
+fetch, never typed. An arrangement total is built from section G **only when the
+filing fills every line of that arrangement**; otherwise the lines are shown and
+no total is. **Never a mixed-year total**: a total is one publisher and one
+year. Where the federal and the school's figures describe the same year and
+differ, both are shown (RFC 149's rule: "say both, never hide either"). The cost
+tool emits the new figures above `putVintageLabels` (DISCOVER 5). The report
+page shows the same line. **Left to /work:** the G5 living-arrangement mapping
+onto our three arrangements (G5 has commuter-at-home and commuter-not-at-home;
+our at-home arrangement counts no housing and food), and whether the fetcher's
+drift guard needs a per-group threshold for a group that is new.
 
 **Acceptance criteria.**
 
 - **Door:** the coach's cost tool (iOS and web chat) and the Family Cost Report
   page.
-- A school with a 2025-26 filing that states G1 shows its 2026-27 tuition and
-  fees as a labelled line beside the Scorecard's 2025-26 figure; the publisher
-  is the school, the kind is self-report, the year is 2026-27 and the read date
-  is said once per answer.
+- A school whose newest filing states G1 shows that tuition and fees as a
+  labelled line beside the Scorecard's figure, each under its own year; the
+  publisher is the school, the kind is self-report, the year is the one the
+  filing states, and the read date is said once per answer.
+- A newer filing (the next template year) moves the year label and the figure by
+  a fetch alone — pinned by a test over two template years; no year literal for
+  a CDS figure lives in Kotlin or the prompt, and the template-year map the
+  fetcher already keeps by `schema_version` is the one home.
 - A school with no filing, or a filing that leaves G1 blank or writes a date
   instead of a figure, shows nothing new and says nothing about it.
 - No total mixes years or publishers; a section-G total appears only when the
@@ -190,9 +215,10 @@ threshold for a group that is new.
   in-district tier is said — beside, never inside a total. Minted as a new
   prompt version at land.
 - **First-session test:** a student with Oregon State on their list asks what it
-  costs; the answer gives Oregon State's own 2026-27 out-of-state tuition and
-  fees from its filing beside the 2025-26 federal figure, each with its year and
-  publisher, and the on-campus total is from one publisher and one year.
+  costs; the answer gives Oregon State's own out-of-state tuition and fees for
+  the year its newest filing states, beside the federal figure for the year the
+  Scorecard states, each with its year and publisher, and the on-campus total is
+  from one publisher and one year.
 
 ---
 
@@ -232,6 +258,47 @@ a labelled possibility that never enters a total; a student from a state the
 roster does not list as eligible for that school is told nothing about the
 exchange (the eligible-states column decides, never the coach); DDL at the
 approval stop. **First-session test:** the Washington student above.
+
+---
+
+### `cost/06/the-newer-release`
+
+**Needs:**
+
+- PREFER cost/01/the-latest-release — "served release" is what this slice
+  compares against; after `cost/01` it is one fetched artefact, before it the
+  comparison also has to read two Kotlin pins.
+
+**What and why.** Nothing today tells anyone a newer College Scorecard release
+or a newer Common Data Set corpus exists; the fetchers compare the live stamp to
+PROVENANCE only when someone runs them. Under D15 staleness is a fact the system
+holds, not a thing an operator remembers: a periodic job discovers the newest
+release stamp of each source and records it beside the served one, and a newer
+one is visible where an operator looks. Ingest stays a human act (D16).
+
+**Foundations.** `bin/fetch-scorecard`'s discovery step and
+`bin/fetch-cds-seed`'s corpus read, each already separable from the download;
+`db/seed/*/PROVENANCE.json` as the served stamp; the `:cron` process and
+`periodic_jobs` table (RFC 97) for the job; the admin manual triggers (RFC 100)
+as the operator surface precedent.
+
+**Decided here.** Discovery only: the job reads one stamp per source and writes
+it; it downloads nothing and ingests nothing. The served stamp is read from the
+same PROVENANCE the fetchers write, never a copy. **Left to /work:** where the
+comparison is shown (the admin surface or the daily log — one place, named in
+the RFC), the cadence, and whether the two sources share one job.
+
+**Acceptance criteria.**
+
+- **Door:** operator-facing only; no user-visible change.
+- The job records, per source, the newest stamp the publisher offers and the
+  stamp served, and the two are readable in one place with a date.
+- A publisher that cannot be reached is a dated failure on that source, not a
+  stale "newest" that reads as current.
+- No table beyond what the job needs; DDL at the approval stop if any.
+- **First-session test:** with PROVENANCE at one release and the publisher at a
+  later one, the job's next run shows the two stamps and their dates in the
+  named place.
 
 ---
 
@@ -378,12 +445,13 @@ the measure is the length and the order, not the phrasing.
 
 Defaults pre-chosen. Approving costs one word; amending costs one line.
 
-- **D8 — the slice set, order and waves.** Five `cost/` slices plus `shape/09`
+- **D8 — the slice set, order and waves.** Six `cost/` slices plus `shape/09`
   unparked in brief 0006. Wave 1: `cost/01`, `cost/03`, `cost/04`, `shape/09`
   (all startable now; `cost/03` and `cost/04` rebase onto each other's prompt
-  line). Wave 2: `cost/02` after `cost/01`. Wave 3: `cost/05` last, one re-read
-  of the money section. The exchange tier is `shape/09`, not a new slice.
-  **DEFAULT: approve.**
+  line). Wave 2: `cost/02` and `cost/06` after `cost/01`. Wave 3: `cost/05`
+  last, one re-read of the money section. The exchange tier is `shape/09`, not a
+  new slice. _Amended 2026-11-05: `cost/06` added under D15–D16._ **DEFAULT:
+  approve.**
 - **D9 — the school's own figure is a labelled line beside the federal one,
   never a replacement, and a total is one publisher and one year.** A section-G
   total only when the filing fills every line of that arrangement; where the two
@@ -411,11 +479,30 @@ Defaults pre-chosen. Approving costs one word; amending costs one line.
   re-runs the six-school question, records the answer in the brief's LEARN
   section against the five criteria, and marks the slice's criterion met or not.
   /work is never asked to run it. **DEFAULT: yes; `standing` for this brief.**
+- **D15 — no year in a spec; the latest data, always.** Ian, at the gate on
+  2026-11-05, verbatim: "We should not be writing specs for specific years. We
+  should always strive to have the latest data". Applied: a slice names the
+  mechanism that serves the newest release or filing, with the year read from
+  the publisher, never a year; `cost/01` and `cost/02` as presented on
+  2026-11-04 named years and are rewritten above. The rule reaches every source:
+  `bin/fetch-ipeds` pins `SURVEY_YEAR` and the IPEDS charge file family has been
+  renamed, and the CDS corpus fetch takes a version — both are recorded in the
+  backlog as mechanism work under this rule; D1's deferral of buying the IPEDS
+  year stands. **`standing`, for every brief. Recorded, not asked.**
+- **D16 — how a newer release is noticed.** Today, only by running a fetch.
+  Option A: a periodic discovery job records the newest stamp per source beside
+  the served one, visible in one operator place; ingest stays a human act
+  (`cost/06`). Option B: no machinery — the coordinator's standing re-run (D7,
+  D14) begins with the fetchers' discovery step and reports staleness in the
+  brief. Option C: periodic fetch and ingest in prod, unattended. **DEFAULT:
+  A.** C is a later brief: an unattended ingest of a mid-cycle revision or a
+  renamed variable is the failure `cost/01`'s located faults exist to catch, and
+  it should catch them in front of a person first.
 
 ## Wave board (for the reader; `slice-board` is the answer)
 
 | Wave | Slices                                                   |
 | ---- | -------------------------------------------------------- |
 | 1    | `cost/01`, `cost/03`, `cost/04`, `shape/09` (brief 0006) |
-| 2    | `cost/02`                                                |
+| 2    | `cost/02`, `cost/06`                                     |
 | 3    | `cost/05`                                                |

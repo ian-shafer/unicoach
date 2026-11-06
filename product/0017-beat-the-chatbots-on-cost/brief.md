@@ -5,13 +5,17 @@
 ## Status
 
 - **Phase:** SPEC & SLICE — gate 1 passed 2026-11-04; DISCOVER done the same day
-  against `main@48018319`; `spec.md` written with five `cost/` slices plus brief
-  0006's `shape/09` unparked; **gate 2 presented 2026-11-04, awaiting Ian.**
+  against `main@48018319`; `spec.md` written with six `cost/` slices plus brief
+  0006's `shape/09` unparked; **gate 2 presented 2026-11-04, amended at the gate
+  2026-11-05 (D15, standing) and re-presented, awaiting Ian.**
 - **Gate 1 (prioritisation):** **PASSED 2026-11-04 — Ian approved all seven
   defaults, verbatim: "approve"**, after two questions recorded under "Gate 1
   outcome" below. D1–D7 stand as written. D7 is `standing` for this brief.
 - **Gate 2 (spec):** PRESENTED 2026-11-04 — D8–D14 in `spec.md`, defaults
-  pre-chosen. Not yet answered.
+  pre-chosen. **Amended 2026-11-05** on Ian's rule at the gate (recorded under
+  "Gate 2 amendment" below and as D15, `standing`): `cost/01` and `cost/02`
+  rewritten without years, `cost/06` added, D16 added. Re-presented; not yet
+  answered.
 - **Research:** 4 reports, 2,192 lines — `research/side-by-side-2026-11-04.md`
   (297 lines; the raw test, written by the coordinator from the browser
   session); `research/what-the-others-give.md` (643 lines, external, competitor
@@ -248,3 +252,30 @@ the spec:
    — For the parent only (RFC 261, `family/07`). The student's coach has no such
    tool and the Family Cost Report shows per-year figures only. D4 stands as the
    thin student tool over the same arithmetic.
+
+## Gate 2 amendment (2026-11-05)
+
+Ian, reading `cost/02`'s line "Where a school's filing states 2026-27 charges",
+verbatim:
+
+> We should not be writing specs for specific years. We should always strive to
+> have the latest data
+
+Recorded as **D15** in `spec.md`, `standing` for every brief. What it changed
+before gate 2 was answered:
+
+- `cost/01/the-scorecard-year` became `cost/01/the-latest-release`: the year on
+  every Scorecard figure is read from the publisher's dictionary as fetched, so
+  a newer release is a fetch and an ingest with no code or seed edit; the two
+  Kotlin year pins and the hand transcription (RFC 183) go. The release D1 names
+  by date was the newest on the day D1 was written; D1 is read as "the newest
+  release, every time".
+- `cost/02/the-schools-own-next-year` names no year: the school's figure is
+  labelled with the year its newest filing states, read from the filing's
+  template version, and a newer filing moves the label by a fetch alone.
+- `cost/06/the-newer-release` added, under **D16** (default A): a periodic
+  discovery job records the newest release stamp per source beside the served
+  one, in one operator place; ingest stays a human act.
+- The same rule reaches `bin/fetch-ipeds` (pins `SURVEY_YEAR`) and the CDS
+  corpus fetch; both go to the backlog as mechanism work. D1's deferral of
+  buying the IPEDS year stands.
