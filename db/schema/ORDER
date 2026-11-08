@@ -220,3 +220,6 @@ erasure-walk-leaves-jobs.sql
 schedule-erasure-of-closed-accounts.sql
 add-amount-usd-year-to-program-money-stats.sql
 create-account-tokens.sql
+create-tuition-exchanges.sql
+seed-parent-coach-system-prompt-v3.sql
+seed-coach-system-prompt-v52.sql

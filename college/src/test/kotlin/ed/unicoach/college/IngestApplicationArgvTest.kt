@@ -519,6 +519,15 @@ class IngestApplicationArgvTest {
     )
   }
 
+  @Test
+  fun `the tuition-exchange corpus is optional, carries its source, and joins the existence probe`() {
+    assertNull(ok().tuitionExchanges)
+    val parsed = ok("--tuition-exchanges=exchanges.csv", "--tuition-exchanges-source=s3://bucket/x.csv")
+    assertEquals("s3://bucket/x.csv", parsed.tuitionExchanges?.sourceArg)
+    assertEquals("tuition-exchanges", namedSources(parsed).last().first)
+    assertTrue(usage(*positional, codebooksFlag, "--tuition-exchanges-source=s3://bucket/x.csv").contains("not supplied"))
+  }
+
   // ---------------------------------------------------------------------------
   // The optional SFA group (RFC 162): the IPEDS group's shape, its own year
   // ---------------------------------------------------------------------------

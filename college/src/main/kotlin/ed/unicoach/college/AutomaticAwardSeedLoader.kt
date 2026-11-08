@@ -6,7 +6,6 @@ import ed.unicoach.common.util.AcademicYear
 import ed.unicoach.db.Database
 import ed.unicoach.db.dao.AutomaticAwardsDao
 import ed.unicoach.db.dao.BandWriteOutcome
-import ed.unicoach.db.dao.CollegesDao
 import ed.unicoach.db.dao.EmptyAwardPruneException
 import ed.unicoach.db.dao.ExternalDocumentsDao
 import ed.unicoach.db.dao.SqlSession
@@ -866,19 +865,16 @@ class AutomaticAwardSeedLoader(
     session: SqlSession,
     linkStatuses: Map<String, RecordedLinkStatus>,
   ) {
-    for ((url, recorded) in linkStatuses) {
+    writeLinkAnswers(
+      session,
+      linkStatuses,
       // NON-NULL BY CONSTRUCTION: this corpus reads its sidecar with
       // `dayAlwaysRequired`, so a verdict with no day was refused by file and
-      // line before this loop began. The check is here because the shared
-      // reader's type admits the corpus that legitimately has none.
-      val checkedOn =
-        checkNotNull(recorded.checkedOn) {
-          "[$url] reached the document write with no check date; the sidecar reader must refuse that by line"
-        }
-      ExternalDocumentsDao
-        .upsert(session, NewExternalDocument(url, recorded.status, checkedOn))
-        .getOrThrow()
-    }
+      // line before this write began.
+      datelessMessage = { url, _ ->
+        "[$url] reached the document write with no check date; the sidecar reader must refuse that by line"
+      },
+    ) { _, cause -> throw cause }
   }
 
   /**
@@ -909,7 +905,7 @@ class AutomaticAwardSeedLoader(
    * about a path the operator never typed.
    */
   private fun requireLinkStatusFile(file: File) {
-    if (!file.isFile) throw FormatException(Defect.MissingLinkStatusFile(file.path))
+    requireLinkStatusFile(file) { throw FormatException(Defect.MissingLinkStatusFile(file.path)) }
   }
 
   /** This corpus's sidecar rules, mapped onto this corpus's own located defects. */
@@ -1117,17 +1113,17 @@ class AutomaticAwardSeedLoader(
     record: CSVRecord,
     ipedsUnitId: Int,
     typedName: String,
-  ): CollegeId {
-    val college =
-      withRowLocation(Table.AWARDS, record, ipedsUnitId) { CollegesDao.findByIpedsUnitId(session, ipedsUnitId) }
-        ?: throw FormatException(Defect.UnknownCollege(Table.AWARDS, record.recordNumber, ipedsUnitId, typedName))
-    if (college.name.trim() != typedName) {
-      throw FormatException(
-        Defect.CollegeNameDisagreement(record.recordNumber, ipedsUnitId, typedName, college.name),
-      )
-    }
-    return college.id
-  }
+  ): CollegeId =
+    resolveCollegeNamed(
+      session,
+      ipedsUnitId,
+      typedName,
+      onLookupFailure = { cause -> throw LoadException(Table.AWARDS, record.recordNumber, ipedsUnitId, cause) },
+      onUnknown = { throw FormatException(Defect.UnknownCollege(Table.AWARDS, record.recordNumber, ipedsUnitId, typedName)) },
+      onNameDisagreement = { storedName ->
+        throw FormatException(Defect.CollegeNameDisagreement(record.recordNumber, ipedsUnitId, typedName, storedName))
+      },
+    )
 
   /**
    * One band row: read, refused where it repeats a key, written.

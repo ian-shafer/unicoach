@@ -12,6 +12,7 @@ import ed.unicoach.coaching.costs.ComparedLivingPlan
 import ed.unicoach.coaching.costs.ComparisonBasis
 import ed.unicoach.coaching.costs.CostBreakdown
 import ed.unicoach.coaching.costs.CostField
+import ed.unicoach.coaching.costs.ExchangePossibility
 import ed.unicoach.coaching.costs.MoneyProfileStatuses
 import ed.unicoach.coaching.costs.NetPrice
 import ed.unicoach.coaching.costs.ProgramFigureProvenance
@@ -376,6 +377,8 @@ fun costFixture(
    * whether its price is withheld, is that service's decision.
    */
   nationalMerit: List<NationalMeritPublishedAnswer> = emptyList(),
+  /** The ordinary school has none; a test hands the possibility it wants rendered (RFC 277). */
+  exchangePossibilities: List<ExchangePossibility> = emptyList(),
   /**
    * This school's id, nameable so a caller can build the answers that are KEYED
    * by it ([automaticAwards], [nationalMerit]) against the same school it is describing. A fresh
@@ -466,6 +469,7 @@ fun costFixture(
     // And its National Merit rows (RFC 247): the default is the ordinary school,
     // which we hold no row for and which prints no block.
     nationalMerit = nationalMerit,
+    exchangePossibilities = exchangePossibilities,
     chosen = ChosenLivingPlan.NotChosen,
   )
 }

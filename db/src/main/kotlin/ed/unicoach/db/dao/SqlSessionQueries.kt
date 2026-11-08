@@ -123,6 +123,25 @@ internal class IdList(
   ) = values.forEachIndexed { i, value -> stmt.setObject(firstIndex + i, value) }
 }
 
+/**
+ * Deletes every row of [table] except [keep], for a corpus re-load dropping what
+ * it no longer names. [table] is the DAO's own constant, never caller input.
+ *
+ * What an empty corpus means is the caller's to decide before it prunes, so an
+ * empty [keep] here is a programmer error and never a delete-all.
+ */
+internal fun SqlSession.deleteAllExcept(
+  table: String,
+  keep: Collection<UUID>,
+): Result<Int> {
+  val kept = IdList(keep)
+  require(!kept.isEmpty) { "[$table] refuses a prune with no surviving row: the caller must refuse an empty corpus first" }
+  return execute(
+    "DELETE FROM $table WHERE id NOT IN (${kept.placeholders})",
+    bind = { stmt -> kept.bindFrom(stmt, 1) },
+  )
+}
+
 /** SELECT yielding N rows mapped into a list. */
 internal fun <T> SqlSession.queryList(
   sql: String,

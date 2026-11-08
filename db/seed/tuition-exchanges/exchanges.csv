@@ -1,0 +1,3 @@
+unit_id,college_name,exchange,max_percent_of_resident_tuition,selection,separate_application,minimum_unweighted_gpa,percent_of_eligible_offered,apply_by,source_url,checked_on,expires_on
+209542,Oregon State University,wue,150,selective,not_required,,30,2027-02-03,https://admissions.oregonstate.edu/wue,2026-11-08,2027-07-31
+237011,Western Washington University,wue,150,selective,not_required,3.25,,,https://admissions.wwu.edu/cost/first-year-oos-scholarships,2026-11-04,2027-07-31

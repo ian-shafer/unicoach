@@ -1,0 +1,85 @@
+{
+  "corpus": "regional tuition exchanges at a named school (RFC 277, slice shape/09/exchange-participation)",
+  "method": "Each row was read from the school's own page. The sentences behind each value are recorded here for review in the diff; they are never loaded. unit_id was resolved against the College Scorecard institution file by exact INSTNM match and confirmed by STABBR. Link statuses were produced with `nix develop -c bin/check-link` (a HEAD pass and a -g GET pass) and mapped the way bin/cds-link-sweep does: 2xx in either pass is found.",
+  "source_of_quotes": "product/0017-beat-the-chatbots-on-cost/research/fresher-prices-and-exchanges.md, section B, the table 'The six schools under the compacts'; the wording is that table's, some of it in quotation marks there and some of it its summary of the page",
+  "refresh_instruction": "Re-read each school's own page, edit db/seed/tuition-exchanges/exchanges.csv and this file's matching rows entry, and re-run the loader. A correction is a re-read, so it carries a new checked_on. A deadline stated as a month and day is stored as its next occurrence after checked_on; expires_on is HandTypedReferenceData.CYCLE_EXPIRY following that deadline, or following checked_on when no deadline is held. Re-verify the urls with bin/check-link twice (HEAD, then -g for GET). The build fails HandTypedReferenceData.REFRESH_LEAD before expires_on.",
+  "rows": [
+    {
+      "unit_id": "209542",
+      "college_name": "Oregon State University",
+      "exchange": "wue",
+      "source_url": "https://admissions.oregonstate.edu/wue",
+      "read_on": "2026-11-08",
+      "reading_note": "Page re-read on 2026-11-08.",
+      "readings": {
+        "max_percent_of_resident_tuition": {
+          "value": 150,
+          "sentences": [
+            "pay no more than 150% of resident base tuition"
+          ]
+        },
+        "selection": {
+          "value": "selective",
+          "sentences": [
+            "OSU's WUE Scholarship is Oregon State's most competitive scholarship for new undergraduate students",
+            "not automatically awarded"
+          ]
+        },
+        "separate_application": {
+          "value": "not_required",
+          "sentences": [
+            "awarded based on a holistic review of your application for admission"
+          ],
+          "note": "Read from the school's page 2026-11-08: the application for admission is what is reviewed, and the page names no other."
+        },
+        "percent_of_eligible_offered": {
+          "value": 30,
+          "sentences": [
+            "about 30% of eligible students offered"
+          ]
+        },
+        "apply_by": {
+          "value": "2027-02-03",
+          "sentences": [
+            "apply by February 3"
+          ],
+          "note": "The page names no year; stored as the next occurrence after checked_on."
+        }
+      }
+    },
+    {
+      "unit_id": "237011",
+      "college_name": "Western Washington University",
+      "exchange": "wue",
+      "source_url": "https://admissions.wwu.edu/cost/first-year-oos-scholarships",
+      "read_on": "2026-11-04",
+      "reading_note": "Could not be re-read on 2026-11-08 (WebFetch rejected its certificate and the built-in browser would not open it), so this reading dates from 2026-11-04.",
+      "readings": {
+        "max_percent_of_resident_tuition": {
+          "value": 150,
+          "sentences": [
+            "reduces non-resident tuition to 150% of the in-state rate for up to four years"
+          ]
+        },
+        "selection": {
+          "value": "selective",
+          "sentences": [
+            "our most prestigious non-resident scholarship and is highly competitive"
+          ]
+        },
+        "separate_application": {
+          "value": "not_required",
+          "sentences": [
+            "Applicants are automatically considered"
+          ]
+        },
+        "minimum_unweighted_gpa": {
+          "value": 3.25,
+          "sentences": [
+            "minimum eligibility for the WUE is set at an unweighted GPA of 3.25"
+          ]
+        }
+      }
+    }
+  ]
+}

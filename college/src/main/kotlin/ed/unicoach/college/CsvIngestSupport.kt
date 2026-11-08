@@ -3,12 +3,16 @@ package ed.unicoach.college
 import ed.unicoach.common.util.AcademicYear
 import ed.unicoach.common.util.DataSize
 import ed.unicoach.common.util.isWebUrl
+import ed.unicoach.db.dao.CollegesDao
 import ed.unicoach.db.dao.ConstraintDiagnostics
 import ed.unicoach.db.dao.DaoException
+import ed.unicoach.db.dao.ExternalDocumentsDao
 import ed.unicoach.db.dao.SqlSession
 import ed.unicoach.db.dao.UpsertOutcome
 import ed.unicoach.db.models.AbsenceStatus
+import ed.unicoach.db.models.CollegeId
 import ed.unicoach.db.models.FigureReading
+import ed.unicoach.db.models.NewExternalDocument
 import ed.unicoach.db.models.SourceUrlStatus
 import ed.unicoach.db.models.ValueBearingStatus
 import ed.unicoach.error.PermanentError
@@ -1599,4 +1603,60 @@ internal class LinkStatusSidecar(
       }
     return RecordedLinkStatus(status, checkedOn)
   }
+}
+
+/**
+ * Refuses a corpus that commits its link answers beside its rows and has none
+ * there. For the corpora where an absent file is NOT legal ([LinkStatusSidecar]
+ * leaves that question to its caller); [refuse] is the corpus's own defect.
+ */
+internal fun requireLinkStatusFile(
+  file: File,
+  refuse: () -> Nothing,
+) {
+  if (!file.isFile) refuse()
+}
+
+/**
+ * Writes every committed link answer, so the citation each row then makes cannot
+ * record "we asked on the reading day" over the answer committed beside it.
+ *
+ * [linkStatuses] must come from a [LinkStatusSidecar] with `dayAlwaysRequired`,
+ * which refuses a dateless answer by line before this runs; [datelessMessage] is
+ * the corpus's own sentence for that reader having let one through.
+ */
+internal fun writeLinkAnswers(
+  session: SqlSession,
+  linkStatuses: Map<String, RecordedLinkStatus>,
+  datelessMessage: (url: String, recorded: RecordedLinkStatus) -> String,
+  refuse: (url: String, cause: Throwable) -> Nothing,
+) {
+  for ((url, recorded) in linkStatuses) {
+    val checkedOn = checkNotNull(recorded.checkedOn) { datelessMessage(url, recorded) }
+    ExternalDocumentsDao
+      .upsert(session, NewExternalDocument(url, recorded.status, checkedOn))
+      .getOrElse { cause -> refuse(url, cause) }
+  }
+}
+
+/**
+ * The college a hand-typed row names, by unit id and by the name typed beside it.
+ *
+ * Both must hold: a mis-keyed row is one school's terms under another school's
+ * name, so an unknown id and a name that disagrees with `colleges.name` are each
+ * refused through the corpus's own defect rather than skipped.
+ */
+internal fun resolveCollegeNamed(
+  session: SqlSession,
+  ipedsUnitId: Int,
+  typedName: String,
+  onLookupFailure: (cause: Throwable) -> Nothing,
+  onUnknown: () -> Nothing,
+  onNameDisagreement: (storedName: String) -> Nothing,
+): CollegeId {
+  val college =
+    CollegesDao.findByIpedsUnitId(session, ipedsUnitId).getOrElse { cause -> onLookupFailure(cause) }
+      ?: onUnknown()
+  if (college.name.trim() != typedName) onNameDisagreement(college.name)
+  return college.id
 }

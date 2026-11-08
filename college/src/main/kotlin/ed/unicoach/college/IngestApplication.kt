@@ -43,6 +43,7 @@ private const val USAGE =
     "[--subjects=subjects.json] [--subjects-source=ARG] " +
     "[--money-vocabulary=money-vocabulary.json] [--money-vocabulary-source=ARG] " +
     "[--national-merit-awards=awards.csv] [--national-merit-awards-source=ARG] " +
+    "[--tuition-exchanges=exchanges.csv] [--tuition-exchanges-source=ARG] " +
     "[$CDS_MERIT_FLAG <merit-aid.csv> $CDS_FACTORS_FLAG <admission-factors.csv> " +
     "$CDS_DEADLINES_FLAG <deadlines.csv> $CDS_AID_POLICY_FLAG <aid_policy.csv>] " +
     "[$AWARDS_FLAG <awards.csv> $AWARD_BANDS_FLAG <bands.csv>] " +
@@ -137,6 +138,9 @@ private const val MONEY_VOCABULARY_FLAG = "money-vocabulary"
  * rule every other optional group follows.
  */
 private const val NATIONAL_MERIT_AWARDS_FLAG = "national-merit-awards"
+
+/** The tuition-exchange corpus (RFC 277): one file, the [NATIONAL_MERIT_AWARDS_FLAG] shape. */
+private const val TUITION_EXCHANGES_FLAG = "tuition-exchanges"
 
 /**
  * The three CDS admissions seed files (RFC 140), passed as NAMED flags rather
@@ -240,7 +244,8 @@ private val KNOWN_FLAGS =
     CODEBOOKS_FLAG + "$CODEBOOKS_FLAG-source" + DICTIONARY_FLAGS + DICTIONARY_FLAGS.map { "$it-source" } +
     SUBJECTS_FLAG + "$SUBJECTS_FLAG-source" +
     MONEY_VOCABULARY_FLAG + "$MONEY_VOCABULARY_FLAG-source" +
-    NATIONAL_MERIT_AWARDS_FLAG + "$NATIONAL_MERIT_AWARDS_FLAG-source" + SFA_FLAGS + SFA_SOURCE_FLAG
+    NATIONAL_MERIT_AWARDS_FLAG + "$NATIONAL_MERIT_AWARDS_FLAG-source" +
+    TUITION_EXCHANGES_FLAG + "$TUITION_EXCHANGES_FLAG-source" + SFA_FLAGS + SFA_SOURCE_FLAG
 
 /**
  * The argv grammar's outcome (RFC 139, extended for the CDS group in RFC 140
@@ -273,6 +278,8 @@ internal sealed interface ArgvResult {
     val moneyVocabulary: SourceFile? = null,
     /** The National Merit award corpus (RFC 243), null when `--national-merit-awards` was omitted. */
     val nationalMeritAwards: SourceFile? = null,
+    /** The tuition-exchange corpus (RFC 277), null when `--tuition-exchanges` was omitted. */
+    val tuitionExchanges: SourceFile? = null,
   ) : ArgvResult
 
   /** A grammar violation: [message] is logged and the process exits 2. */
@@ -381,39 +388,16 @@ internal fun parseArgv(args: Array<String>): ArgvResult {
   // `--codebooks-source` refusal that used to live here — a provenance flag can
   // no longer name a codebook that was not supplied, because there is always
   // one.
-  val codebooksSourceFlag = "$CODEBOOKS_FLAG-source"
-  val codebooksPath =
-    flags[CODEBOOKS_FLAG]
+  val codebooks =
+    sourceFileOf(flags, CODEBOOKS_FLAG)
       ?: return ArgvResult.Usage(
         "Option [--$CODEBOOKS_FLAG] is required: `colleges.state` and `colleges.locale` reference the " +
           "published codebook tables, so an ingest without one can write no college row. $USAGE",
       )
-  // Same refusal, same reason, for the taxonomy (RFC 150).
-  val subjectsSourceFlag = "$SUBJECTS_FLAG-source"
-  if (subjectsSourceFlag in flags && SUBJECTS_FLAG !in flags) {
-    return ArgvResult.Usage(
-      "Option [--$subjectsSourceFlag] names a provenance source for a subject file that was not supplied. $USAGE",
-    )
-  }
-  // Same refusal for the money vocabulary (RFC 158): a provenance source with
-  // no file to describe is a caller mistake, never a defaulted load.
-  val moneyVocabularySourceFlag = "$MONEY_VOCABULARY_FLAG-source"
-  if (moneyVocabularySourceFlag in flags && MONEY_VOCABULARY_FLAG !in flags) {
-    return ArgvResult.Usage(
-      "Option [--$moneyVocabularySourceFlag] names a provenance source for a money vocabulary file " +
-        "that was not supplied. $USAGE",
-    )
-  }
-  // Same refusal for the National Merit award corpus (RFC 243), and for the
-  // same reason: a provenance source naming a file nobody supplied is a caller
-  // mistake, never a defaulted load.
-  val nationalMeritAwardsSourceFlag = "$NATIONAL_MERIT_AWARDS_FLAG-source"
-  if (nationalMeritAwardsSourceFlag in flags && NATIONAL_MERIT_AWARDS_FLAG !in flags) {
-    return ArgvResult.Usage(
-      "Option [--$nationalMeritAwardsSourceFlag] names a provenance source for a National Merit award " +
-        "corpus that was not supplied. $USAGE",
-    )
-  }
+  val subjects = optionalSourceFile(flags, SUBJECTS_FLAG, "a subject file") { return it }
+  val moneyVocabulary = optionalSourceFile(flags, MONEY_VOCABULARY_FLAG, "a money vocabulary file") { return it }
+  val nationalMeritAwards = optionalSourceFile(flags, NATIONAL_MERIT_AWARDS_FLAG, "a National Merit award corpus") { return it }
+  val tuitionExchanges = optionalSourceFile(flags, TUITION_EXCHANGES_FLAG, "a tuition-exchange corpus") { return it }
   // Required for the codebook's reason (see [DICTIONARY_FLAGS]): every
   // Scorecard money and field-of-study row is stamped with the year the
   // dictionary states. Each of the three is refused BY NAME, and checked LAST,
@@ -451,28 +435,42 @@ internal fun parseArgv(args: Array<String>): ArgvResult {
       },
     ipeds = ipeds,
     sfa = sfa,
-    codebooks =
-      File(codebooksPath).let { file ->
-        SourceFile(file = file, sourceArg = flags[codebooksSourceFlag] ?: file.path)
-      },
+    codebooks = codebooks,
     dictionary = dictionary,
-    subjects =
-      flags[SUBJECTS_FLAG]?.let { path ->
-        val file = File(path)
-        SourceFile(file = file, sourceArg = flags[subjectsSourceFlag] ?: file.path)
-      },
-    moneyVocabulary =
-      flags[MONEY_VOCABULARY_FLAG]?.let { path ->
-        val file = File(path)
-        SourceFile(file = file, sourceArg = flags[moneyVocabularySourceFlag] ?: file.path)
-      },
-    nationalMeritAwards =
-      flags[NATIONAL_MERIT_AWARDS_FLAG]?.let { path ->
-        val file = File(path)
-        SourceFile(file = file, sourceArg = flags[nationalMeritAwardsSourceFlag] ?: file.path)
-      },
+    subjects = subjects,
+    moneyVocabulary = moneyVocabulary,
+    nationalMeritAwards = nationalMeritAwards,
+    tuitionExchanges = tuitionExchanges,
   )
 }
+
+/**
+ * One optional single-file source, or null when its flag is absent. A
+ * `--*-source` naming a file nobody supplied is a caller mistake, never a
+ * defaulted load, so it goes to [refuse] as a usage error; [what] names the file
+ * in that message.
+ */
+private inline fun optionalSourceFile(
+  flags: Map<String, String>,
+  flag: String,
+  what: String,
+  refuse: (ArgvResult.Usage) -> Nothing,
+): SourceFile? {
+  if ("$flag-source" in flags && flag !in flags) {
+    refuse(ArgvResult.Usage("Option [--$flag-source] names a provenance source for $what that was not supplied. $USAGE"))
+  }
+  return sourceFileOf(flags, flag)
+}
+
+/** The file [flag] names, with `--<flag>-source` as its provenance, or the path itself where that is absent. */
+private fun sourceFileOf(
+  flags: Map<String, String>,
+  flag: String,
+): SourceFile? =
+  flags[flag]?.let { path ->
+    val file = File(path)
+    SourceFile(file = file, sourceArg = flags["$flag-source"] ?: file.path)
+  }
 
 /**
  * The three outcomes of reading ONE optional, all-or-nothing flag group out of
@@ -638,8 +636,9 @@ internal fun namedSources(parsed: ArgvResult.Ok): List<Pair<String, SourceFile>>
   // the first phase commits, like every other file.
   val nationalMeritAwards =
     parsed.nationalMeritAwards?.let { listOf(NATIONAL_MERIT_AWARDS_FLAG to it) } ?: emptyList()
+  val tuitionExchanges = parsed.tuitionExchanges?.let { listOf(TUITION_EXCHANGES_FLAG to it) } ?: emptyList()
   return scorecard + ipeds + sfa + cds + automaticAwards + codebooks + dictionary + subjects + moneyVocabulary +
-    nationalMeritAwards
+    nationalMeritAwards + tuitionExchanges
 }
 
 /** The filesystem probe, kept out of [parseArgv]: it exits the process, so it
@@ -732,6 +731,7 @@ fun main(args: Array<String>) {
           cds = parsed.cds?.sources,
           automaticAwards = parsed.automaticAwards?.sources,
           nationalMeritAwards = parsed.nationalMeritAwards,
+          tuitionExchanges = parsed.tuitionExchanges,
           codebooks = parsed.codebooks,
           dictionary = parsed.dictionary,
           subjects = parsed.subjects,
@@ -758,6 +758,7 @@ fun main(args: Array<String>) {
     report.automaticAwards?.let(::logAutomaticAwardRun)
     // And the corpus beside it (RFC 243), read back the same way.
     report.nationalMeritAwards?.let(::logNationalMeritAwardRun)
+    report.tuitionExchanges?.let(::logTuitionExchangeRun)
   } catch (e: MissingSourceColumnsException) {
     logger.error(
       "Ingest aborted before any write: source [{}] (from [{}]) is missing required column(s) [{}]",
@@ -800,6 +801,9 @@ fun main(args: Array<String>) {
     // The guard runs up front too, so a dropped, re-worded or back-dated
     // served column leaves every table as it was.
     logger.error("Ingest aborted before any write: {}", e.message, e)
+    kotlin.system.exitProcess(1)
+  } catch (e: TuitionExchangeSeedLoader.FormatException) {
+    logger.error("Ingest aborted before any write: tuition-exchange corpus defect [{}]", e.defect, e)
     kotlin.system.exitProcess(1)
   } catch (e: CodebookLoader.InvalidCodebookFileException) {
     logger.error(
@@ -1103,6 +1107,17 @@ private fun logNationalMeritAwardRun(result: NationalMeritAwardSeedLoader.LoadRe
     result.awards.upserted,
     result.awards.changed,
     result.awards.unchanged,
+  )
+}
+
+private fun logTuitionExchangeRun(result: TuitionExchangeSeedLoader.LoadResult) {
+  logger.info(
+    "Tuition-exchange corpus: [documents={}] [pruned={}] [upserted={}] [changed={}] [unchanged={}]",
+    result.documents,
+    result.pruned,
+    result.upserted,
+    result.changed,
+    result.unchanged,
   )
 }
 

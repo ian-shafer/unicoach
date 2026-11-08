@@ -251,12 +251,8 @@ object NationalMeritAwardsDao {
     session: SqlSession,
     keep: Collection<NationalMeritAwardId>,
   ): Result<Int> {
-    val kept = IdList(keep.map { it.value })
-    if (kept.isEmpty) return Result.failure(EmptyNationalMeritPruneException())
-    return session.execute(
-      "DELETE FROM $TABLE WHERE id NOT IN (${kept.placeholders})",
-      bind = { stmt -> kept.bindFrom(stmt, 1) },
-    )
+    if (keep.isEmpty()) return Result.failure(EmptyNationalMeritPruneException())
+    return session.deleteAllExcept(TABLE, keep.map { it.value })
   }
 
   /** How many slots [bindNaturalKey] fills, so the cursor advances past them without counting `setObject` calls. */

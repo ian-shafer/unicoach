@@ -59,6 +59,18 @@ class ParentCoachPromptTest {
     /** The opening words of the inversion paragraph (brief 0014 D3). */
     private const val INVERSION_OPENER = "When this person asks you to push the student toward a school"
 
+    /** How each regional-exchange line (RFC 277) begins, in the prompt's order. */
+    private val EXCHANGE_LINE_OPENERS =
+      listOf(
+        "When a college's result carries regional_exchanges, say each one beside the out-of-state tier",
+        "Selective means some eligible students do not get it",
+        "Name a tuition exchange only for a school whose result carries one",
+        "The capped figure is tuition only, before fees",
+        "Where selection or separate_application is unstated",
+        "Where there is no apply_by, say we do not hold a deadline",
+        "Where apply_by_passed is true",
+      )
+
     /** Words that would make a line an instruction to steer the student, unless the line forbids it. */
     private val STEERING_WORDS = Regex("""\b(persuade|pressure|convince|push)""", RegexOption.IGNORE_CASE)
   }
@@ -93,15 +105,23 @@ class ParentCoachPromptTest {
   private fun servedCoach(): String = served(coach.systemPromptName, coach.systemPromptVersion)
 
   @Test
-  fun `the pin resolves to the parent-coach v2 row`() {
+  fun `the pin resolves to the parent-coach v3 row`() {
     assertEquals("parent-coach", parent.systemPromptName)
-    assertEquals("v2", parent.systemPromptVersion)
+    assertEquals("v3", parent.systemPromptVersion)
     assertTrue(servedParent().isNotBlank())
   }
 
   @Test
-  fun `the served parent-coach v2 body equals the prompt file byte for byte`() {
-    assertEquals(authoredBody(), served("parent-coach", "v2"))
+  fun `the served parent-coach v3 body equals the prompt file byte for byte`() {
+    assertEquals(authoredBody(), served("parent-coach", "v3"))
+  }
+
+  /** RFC 277: the exchange rule rides on the parent coach's cost picture too, and v2 stays selectable without it. */
+  @Test
+  fun `the served parent-coach prompt carries the regional-exchange lines and v2 does not`() {
+    val exchangeLines = EXCHANGE_LINE_OPENERS.map { opener -> servedParent().lines().filter { it.startsWith(opener) } }
+    assertEquals(EXCHANGE_LINE_OPENERS.map { 1 }, exchangeLines.map { it.size }, "one line each: $exchangeLines")
+    assertTrue(served("parent-coach", "v2").lines().none { "regional_exchanges" in it })
   }
 
   /**
@@ -147,7 +167,7 @@ class ParentCoachPromptTest {
     assertTrue(shared[2].startsWith("Grants and scholarships"), shared[2])
     assertTrue(shared[3].startsWith("Every time you mention a loan"), shared[3])
 
-    listOf("v1", "v2").forEach { version ->
+    listOf("v1", "v2", "v3").forEach { version ->
       val parentLines = served(parent.systemPromptName, version).lines()
       shared.forEach { sentence ->
         assertTrue(sentence in parentLines, "parent-coach $version must carry, as a line of its own, byte for byte: [$sentence]")

@@ -2,6 +2,7 @@ package ed.unicoach.coaching.costs
 
 import ed.unicoach.chat.BareSourceCode
 import ed.unicoach.chat.BareSourceCodeGuard
+import ed.unicoach.coaching.COACH_ZONE
 import ed.unicoach.coaching.CoachingTestDb
 import ed.unicoach.coaching.MoneyProfileChatTool
 import ed.unicoach.coaching.StudentScopedChatTool
@@ -24,35 +25,44 @@ import ed.unicoach.coaching.costs.canonical.FilingLink
 import ed.unicoach.coaching.costs.canonical.MoneySourceCopy
 import ed.unicoach.college.ScorecardFieldOfStudyColumns
 import ed.unicoach.common.util.AcademicYear
+import ed.unicoach.db.dao.CollegeTuitionExchangesDao
 import ed.unicoach.db.dao.MoneyProfilesDao
 import ed.unicoach.db.models.AbsenceStatus
 import ed.unicoach.db.models.AidForm
 import ed.unicoach.db.models.AssuranceTier
 import ed.unicoach.db.models.CollegeId
+import ed.unicoach.db.models.ExchangeSelection
 import ed.unicoach.db.models.FigureReading
 import ed.unicoach.db.models.FigureStatus
 import ed.unicoach.db.models.IncomeBand
 import ed.unicoach.db.models.LivingArrangement
 import ed.unicoach.db.models.LoanType
 import ed.unicoach.db.models.MoneySource
+import ed.unicoach.db.models.NewCollegeTuitionExchange
 import ed.unicoach.db.models.PriceConcept
 import ed.unicoach.db.models.ProgramMoneyMeasure
 import ed.unicoach.db.models.ResidencyBasis
 import ed.unicoach.db.models.ResidencyTierBasis
+import ed.unicoach.db.models.SeparateApplication
 import ed.unicoach.db.models.StudentId
+import ed.unicoach.db.models.TuitionExchange
 import ed.unicoach.db.models.ValueBearingStatus
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.boolean
+import kotlinx.serialization.json.int
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
+import java.math.BigDecimal
+import java.time.LocalDate
 import java.util.UUID
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
@@ -908,6 +918,115 @@ class CollegeCostChatToolTest {
       description.contains("At most ${StudentScopedChatTool.MAX_COLLEGE_IDS}"),
       "the cap must be documented: [$description]",
     )
+  }
+
+  // ---------------------------------------------------------------------------
+  // Regional tuition exchanges (RFC 277)
+  // ---------------------------------------------------------------------------
+
+  private fun seedExchangeSchool(student: StudentId): CollegeId =
+    seedListedCollege(
+      student,
+      "Oregon Exchange U",
+      state = "OR",
+      tuitionAndFeesInStatePerYearUsd = 13000,
+      tuitionAndFeesOutOfStatePerYearUsd = 38000,
+      feesOnlyInStatePerYearUsd = 2000,
+      feesOnlyOutOfStatePerYearUsd = 3000,
+    )
+
+  private fun seedExchangeRow(
+    college: CollegeId,
+    applyBy: LocalDate?,
+  ) {
+    val today = LocalDate.now(COACH_ZONE)
+    CollegeTuitionExchangesDao
+      .upsert(
+        CostsTestDb.sqlSession,
+        NewCollegeTuitionExchange(
+          collegeId = college,
+          exchange = TuitionExchange.WUE,
+          maxPercentOfResidentTuition = 150,
+          selection = ExchangeSelection.SELECTIVE,
+          separateApplication = SeparateApplication.NOT_REQUIRED,
+          minimumUnweightedGpa = BigDecimal("3.25"),
+          percentOfEligibleOffered = 30,
+          applyBy = applyBy,
+          sourceUrl = "https://example.edu/wue",
+          checkedOn = today.minusDays(4),
+          expiresOn = today.plusDays(120),
+        ),
+      ).getOrThrow()
+  }
+
+  @Test
+  fun `a Washington student sees the exchange at an Oregon school, and nothing else in the answer moves`() {
+    val student = createStudent()
+    answerResidency(student, "WA")
+    val college = seedExchangeSchool(student)
+    val before = collegesOf(execute(student)).single()
+    val deadline = LocalDate.now(COACH_ZONE).plusDays(60)
+    seedExchangeRow(college, applyBy = deadline)
+
+    val after = collegesOf(execute(student)).single()
+
+    val exchange =
+      after
+        .getValue(CollegeCostChatTool.REGIONAL_EXCHANGES_KEY)
+        .jsonArray
+        .single()
+        .jsonObject
+    assertEquals("Western Undergraduate Exchange", exchange.getValue("exchange_name").jsonPrimitive.content)
+    assertEquals("WUE", exchange.getValue("exchange_short_name").jsonPrimitive.content)
+    assertEquals(150, exchange.getValue("max_percent_of_resident_tuition").jsonPrimitive.int)
+    assertEquals("selective", exchange.getValue("selection").jsonPrimitive.content)
+    assertEquals("not_required", exchange.getValue("separate_application").jsonPrimitive.content)
+    assertEquals("3.25", exchange.getValue("minimum_unweighted_gpa").jsonPrimitive.content)
+    assertTrue(exchange.getValue("minimum_unweighted_gpa").jsonPrimitive.isString, "a GPA reaches the coach as PublishedGpa prints it")
+    assertEquals(30, exchange.getValue("percent_of_eligible_offered").jsonPrimitive.int)
+    assertEquals(16500, exchange.getValue("capped_tuition_per_year_usd_derived").jsonPrimitive.int)
+    assertEquals(CostsTestDb.PRICE_YEAR.label, exchange.getValue("capped_tuition_academic_year").jsonPrimitive.content)
+    assertEquals(deadline.toString(), exchange.getValue("apply_by").jsonPrimitive.content)
+    assertEquals(false, exchange.getValue("apply_by_passed").jsonPrimitive.boolean)
+    assertEquals("https://example.edu/wue", exchange.getValue("source_url").jsonPrimitive.content)
+    assertEquals(LocalDate.now(COACH_ZONE).minusDays(4).toString(), exchange.getValue("checked_on").jsonPrimitive.content)
+    // Every total, tier, vintage label and availability line is byte-identical.
+    assertEquals(before, JsonObject(after - CollegeCostChatTool.REGIONAL_EXCHANGES_KEY))
+  }
+
+  @Test
+  fun `a held row with no deadline says so with explicit nulls`() {
+    val student = createStudent()
+    answerResidency(student, "WA")
+    seedExchangeRow(seedExchangeSchool(student), applyBy = null)
+
+    val exchange =
+      collegesOf(execute(student))
+        .single()
+        .getValue(CollegeCostChatTool.REGIONAL_EXCHANGES_KEY)
+        .jsonArray
+        .single()
+        .jsonObject
+
+    assertEquals(JsonNull, exchange["apply_by"], "the key is present, and null")
+    assertEquals(false, exchange.getValue("apply_by_passed").jsonPrimitive.boolean)
+  }
+
+  @Test
+  fun `a college an ineligible student has on their list carries no regional_exchanges key`() {
+    val outsider = createStudent()
+    answerResidency(outsider, "TX")
+    seedExchangeRow(seedExchangeSchool(outsider), applyBy = null)
+
+    assertNull(collegesOf(execute(outsider)).single()[CollegeCostChatTool.REGIONAL_EXCHANGES_KEY])
+  }
+
+  @Test
+  fun `a student with no state on file carries no regional_exchanges key`() {
+    val student = createStudent()
+    seedExchangeRow(seedExchangeSchool(student), applyBy = null)
+
+    assertNull(collegesOf(execute(student)).single()[CollegeCostChatTool.REGIONAL_EXCHANGES_KEY])
   }
 
   // ---------------------------------------------------------------------------

@@ -2,6 +2,7 @@ package ed.unicoach.coaching.costs
 
 import ed.unicoach.coaching.StudentCollegeSelection
 import ed.unicoach.coaching.admissions.MeritPractice
+import ed.unicoach.coaching.coachToday
 import ed.unicoach.coaching.costs.canonical.AssuranceTierCopy
 import ed.unicoach.coaching.costs.canonical.CanonicalCostReader
 import ed.unicoach.coaching.costs.canonical.CohortAddress
@@ -27,6 +28,7 @@ import ed.unicoach.db.dao.AidPolicyDao
 import ed.unicoach.db.dao.BorrowingDao
 import ed.unicoach.db.dao.CdsAdmissionsDao
 import ed.unicoach.db.dao.CollegeIpedsDao
+import ed.unicoach.db.dao.CollegeTuitionExchangesDao
 import ed.unicoach.db.dao.CorruptPersistedValueException
 import ed.unicoach.db.dao.IntendedSubjectsDao
 import ed.unicoach.db.dao.MoneyProfilesDao
@@ -45,6 +47,7 @@ import ed.unicoach.db.models.CollegeId
 import ed.unicoach.db.models.CollegeListEntry
 import ed.unicoach.db.models.CollegeListEntryStatus
 import ed.unicoach.db.models.CollegeMeritAid
+import ed.unicoach.db.models.CollegeTuitionExchange
 import ed.unicoach.db.models.FigureStatus
 import ed.unicoach.db.models.IncomeBand
 import ed.unicoach.db.models.InstitutionControl
@@ -57,6 +60,8 @@ import ed.unicoach.db.models.PublishedCell
 import ed.unicoach.db.models.ResidencyTierBasis
 import ed.unicoach.db.models.StudentId
 import org.slf4j.LoggerFactory
+import java.time.InstantSource
+import java.time.LocalDate
 
 /**
  * WHICH published net-price figure the family's own answer selected -- the label
@@ -460,6 +465,15 @@ data class CollegeCost(
    * read state that on our authority.
    */
   val nationalMerit: List<NationalMeritPublishedAnswer>,
+  /**
+   * The regional tuition exchanges this student could use here (RFC 277), each
+   * a labelled possibility beside the out-of-state tier and never a figure in
+   * any total.
+   *
+   * NOT DEFAULTED, for [automaticAwards]' reason: an empty list is an answer we
+   * reached, and a default would let an unwired read state it.
+   */
+  val exchangePossibilities: List<ExchangePossibility>,
   /**
    * The way of living this answer LEADS with, resolved once here from the
    * school's own override and the family's usual plan (RFC 152 D2a), rather
@@ -1342,6 +1356,8 @@ class CollegeCostService(
    * path at all. The arm rule stays in `NationalMeritService`.
    */
   private val nationalMeritReader: NationalMeritReportReader = NationalMeritService(database),
+  /** Whether an exchange reading is still current and a deadline has passed are clock questions (RFC 277). */
+  private val clock: InstantSource = InstantSource.system(),
 ) {
   suspend fun getForStudent(
     studentId: StudentId,
@@ -1449,6 +1465,15 @@ class CollegeCostService(
         .publishedAnswersInSession(session, selection.selected)
         .groupBy { it.collegeId }
 
+    // The tuition-exchange rows (RFC 277), batched the same way: one statement for
+    // the whole answer whatever the length of the list.
+    val exchangesByCollege =
+      CollegeTuitionExchangesDao
+        .listByColleges(session, selection.selected)
+        .getOrThrow()
+        .groupBy { it.collegeId }
+    val today = clock.coachToday()
+
     // The major answer (RFC 231), on the SAME connection: the intended-subjects
     // answer, and -- only when it is `answered` -- two batched reads over the
     // colleges and subjects already selected, one per question.
@@ -1474,6 +1499,8 @@ class CollegeCostService(
           figuresById.getValue(college.id),
           awardsByCollege[college.id].orEmpty(),
           nationalMeritByCollege[college.id].orEmpty(),
+          exchangesByCollege[college.id].orEmpty(),
+          today,
         )
       }
 
@@ -1676,6 +1703,8 @@ class CollegeCostService(
     figures: CollegeFigures,
     automaticAwards: List<AutomaticAwardAnswer>,
     nationalMerit: List<NationalMeritPublishedAnswer>,
+    exchanges: List<CollegeTuitionExchange>,
+    today: LocalDate,
   ): CollegeCost {
     // The family's own answer, resolved ONCE: it selects the net-price row, the
     // vintage label that dates it, and the status spoken beside it, and those
@@ -1750,6 +1779,8 @@ class CollegeCostService(
       // Handed straight through for the same reason: WHICH arm each row is was
       // decided once, by `NationalMeritPublishedAnswer.of`.
       nationalMerit = nationalMerit,
+      exchangePossibilities =
+        exchangePossibilitiesOf(exchanges, answeredResidencyOf(moneyProfile), college.state, served, today),
       // Two rules, two helpers, orchestrated here: WHICH plan applies (the
       // entry and the profile) is a different question from whether THIS
       // school prices it (the breakdown and the housing flag).
@@ -2031,13 +2062,17 @@ class CollegeCostService(
     college: College,
     moneyProfile: MoneyProfileStatuses,
   ): TuitionApplicable {
-    val residency = moneyProfile.residencyState.takeIf { moneyProfile.residencyStatus == AnswerStatus.ANSWERED }
+    val residency = answeredResidencyOf(moneyProfile)
     return when {
       residency == null -> TuitionApplicable.UNKNOWN
       residency == college.state -> TuitionApplicable.IN_STATE
       else -> TuitionApplicable.OUT_OF_STATE
     }
   }
+
+  /** The family's state, only where they answered with one. */
+  private fun answeredResidencyOf(moneyProfile: MoneyProfileStatuses): String? =
+    moneyProfile.residencyState.takeIf { moneyProfile.residencyStatus == AnswerStatus.ANSWERED }
 
   /** True when the canonical store serves any band net price for this college. */
   private fun reportsBandPricing(served: ServedFigures): Boolean =

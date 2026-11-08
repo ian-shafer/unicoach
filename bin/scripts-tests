@@ -2762,6 +2762,75 @@ test_ingest_colleges_without_national_merit_flag_forwards_neither() {
 assert_success "ingest-colleges forwards no National Merit flag when -N was not given" \
   test_ingest_colleges_without_national_merit_flag_forwards_neither
 
+# ── RFC 277: the tuition-exchange corpus option on ingest-colleges ────────────
+echo ""
+echo "==== Testing RFC 277 tuition-exchange corpus surfaces ===="
+
+assert_exit_code "$EXIT_OPTION_REQUIRES_VALUE" "ingest-colleges -E without a value exits 11" \
+  bin/ingest-colleges -E
+assert_exit_code "$EXIT_INVALID_ARG_VALUE" "ingest-colleges rejects an empty -E value (22)" \
+  bin/ingest-colleges -E "" a.csv b.csv
+assert_exit_code "$EXIT_INVALID_ARG_VALUE" "ingest-colleges rejects a repeated -E (22)" \
+  bin/ingest-colleges -E one.csv -E two.csv a.csv b.csv
+
+# The resolved path for the loader, the caller's own spelling for the provenance
+# row, and never the sidecar.
+test_ingest_colleges_tuition_exchange_flag() {
+  local root parent argv inst fields exchanges rc log resolved
+  parent="$(mktemp -d)"
+  root="$parent/unicoach-teflag"
+  argv="$parent/launcher-argv"
+  make_college_argv_stub_root "$root" "$argv"
+  inst="$parent/institution.csv"; fields="$parent/fields.csv"
+  exchanges="$parent/exchanges.csv"
+  : > "$inst"; : > "$fields"; : > "$exchanges"
+  log="$parent/ingest.log"
+  rc=0
+  "$root/bin/ingest-colleges" -D "$root/db/seed/scorecard/dictionary-institution-cohorts.csv" -O "$root/db/seed/scorecard/dictionary-institution-sources.csv" -F "$root/db/seed/scorecard/dictionary-field-of-study-cohorts.csv" -E "$exchanges" "$inst" "$fields" > "$log" 2>&1 || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    log-error "ingest-colleges exited [$rc], log [$(cat "$log")]"
+    rm -rf "$parent"
+    return "$rc"
+  fi
+  resolved="$(cd "$parent" && pwd -P)/exchanges.csv"
+  rc=0
+  grep -qxF -- "--tuition-exchanges=$resolved" "$argv" || rc=1
+  grep -qxF -- "--tuition-exchanges-source=$exchanges" "$argv" || rc=1
+  if grep -qF -- "link-status" "$argv"; then rc=1; fi
+  [ "$rc" -eq 0 ] || log-error "launcher argv was [$(cat "$argv")]"
+  rm -rf "$parent"
+  return "$rc"
+}
+assert_success "ingest-colleges forwards -E as --tuition-exchanges plus its -source partner, and no sidecar" \
+  test_ingest_colleges_tuition_exchange_flag
+
+test_ingest_colleges_without_tuition_exchange_flag_forwards_neither() {
+  local root parent argv inst fields rc log
+  parent="$(mktemp -d)"
+  root="$parent/unicoach-note"
+  argv="$parent/launcher-argv"
+  make_college_argv_stub_root "$root" "$argv"
+  inst="$parent/institution.csv"; fields="$parent/fields.csv"
+  : > "$inst"; : > "$fields"
+  log="$parent/ingest.log"
+  rc=0
+  "$root/bin/ingest-colleges" -D "$root/db/seed/scorecard/dictionary-institution-cohorts.csv" -O "$root/db/seed/scorecard/dictionary-institution-sources.csv" -F "$root/db/seed/scorecard/dictionary-field-of-study-cohorts.csv" "$inst" "$fields" > "$log" 2>&1 || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    log-error "ingest-colleges exited [$rc], log [$(cat "$log")]"
+    rm -rf "$parent"
+    return "$rc"
+  fi
+  if grep -qF -- "--tuition-exchanges" "$argv"; then
+    log-error "a run with no -E still forwarded a tuition-exchange flag; argv was [$(cat "$argv")]"
+    rm -rf "$parent"
+    return 1
+  fi
+  rm -rf "$parent"
+  return 0
+}
+assert_success "ingest-colleges forwards no tuition-exchange flag when -E was not given" \
+  test_ingest_colleges_without_tuition_exchange_flag_forwards_neither
+
 # Fetcher normalisation against recorded fixture JSON (-F: no network). Covers
 # the RFC 140 interpretation rules end to end: per-fact-group document
 # selection (newest doc that reports the group, with the fallback counted), the
@@ -8016,6 +8085,8 @@ make_external_stub_root() {
     dictionary-field-of-study-cohorts.csv; do
     ln -s "$PROJECT_ROOT/db/seed/scorecard/$entry" "$root/db/seed/scorecard/$entry"
   done
+  # And the tuition-exchange corpus (RFC 277), whose sidecar has no flag either.
+  ln -s "$PROJECT_ROOT/db/seed/tuition-exchanges" "$root/db/seed/tuition-exchanges"
   mkdir -p "$root/db/seed/ipeds"
 }
 
@@ -8186,6 +8257,7 @@ PY
     "-w $EXTERNAL_ROOT/db/seed/automatic-awards/awards.csv" \
     "-b $EXTERNAL_ROOT/db/seed/automatic-awards/bands.csv" \
     "-N $EXTERNAL_ROOT/db/seed/national-merit-awards/awards.csv" \
+    "-E $EXTERNAL_ROOT/db/seed/tuition-exchanges/exchanges.csv" \
     "-H $EXTERNAL_ROOT/db/seed/ipeds/HD2026.csv" \
     "-I $EXTERNAL_ROOT/db/seed/ipeds/IC2026.csv" \
     "-A $EXTERNAL_ROOT/db/seed/ipeds/adm2026.csv" \

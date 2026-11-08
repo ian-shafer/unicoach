@@ -16,6 +16,8 @@ import ed.unicoach.coaching.costs.ComparisonBasis
 import ed.unicoach.coaching.costs.ComponentRole
 import ed.unicoach.coaching.costs.CostField
 import ed.unicoach.coaching.costs.CostLine
+import ed.unicoach.coaching.costs.ExchangeDeadline
+import ed.unicoach.coaching.costs.ExchangePossibility
 import ed.unicoach.coaching.costs.LineOrigin
 import ed.unicoach.coaching.costs.LoanRow
 import ed.unicoach.coaching.costs.MoneyBasis
@@ -53,6 +55,7 @@ import ed.unicoach.db.models.AutomaticAwardBand
 import ed.unicoach.db.models.AwardGuarantee
 import ed.unicoach.db.models.BandScoreAxis
 import ed.unicoach.db.models.CollegeId
+import ed.unicoach.db.models.ExchangeSelection
 import ed.unicoach.db.models.FigureStatus
 import ed.unicoach.db.models.FirstChoiceRule
 import ed.unicoach.db.models.IncomeBand
@@ -62,6 +65,7 @@ import ed.unicoach.db.models.NationalMeritAward
 import ed.unicoach.db.models.NationalMeritClaim
 import ed.unicoach.db.models.QualifyingStanding
 import ed.unicoach.db.models.ResidencyTierBasis
+import ed.unicoach.db.models.SeparateApplication
 import ed.unicoach.family.ClaimView
 import ed.unicoach.web.REPORT_CONNECT_PATH
 import ed.unicoach.web.auth.CsrfToken
@@ -361,6 +365,11 @@ private const val TOTALS_ABOVE = "the totals above"
 
 /** The blank in the cross-school table, where this school's own totals are below rather than above. */
 private const val TOTALS_IN_SCHOOL_TABLE_BELOW = "the totals in this school's own table below"
+
+/** Said under every exchange: the figure beside it is a possibility, and no total counts it (RFC 277). */
+private const val EXCHANGE_NOT_IN_TOTALS = "This is not the published price and is not in $TOTALS_IN_SCHOOL_TABLE_BELOW."
+
+private const val EXCHANGE_PAGE_LINK = "The school's page"
 
 /**
  * The blank for a component that is not part of a way of living at all.
@@ -1056,6 +1065,7 @@ private fun FlowContent.schoolSection(
       p("report-school-residency") { +residency.statement }
     }
     tuitionTierLine(cost)
+    exchangeLines(cost)
     priceTable(cost, priceCaptionOf(placement, basisIsThisSchool), bandSaidAbove)
     // ...and the same fact says the hint here, because a one-school page has no
     // summary table above to have said it.
@@ -1171,6 +1181,70 @@ private fun FlowContent.tuitionTierLine(cost: CollegeCost) {
     }
   p("report-school-tuition-tiers") { +statement }
 }
+
+/**
+ * The regional tuition exchanges this family could use here (RFC 277), each a
+ * labelled possibility beside the out-of-state tier. A school with none prints
+ * nothing.
+ */
+private fun FlowContent.exchangeLines(cost: CollegeCost) {
+  cost.exchangePossibilities.forEach { possibility ->
+    div("report-school-exchange") {
+      p { +exchangeCeilingOf(possibility) }
+      p { +EXCHANGE_NOT_IN_TOTALS }
+      p { +exchangeTermsOf(possibility) }
+      p {
+        +"${exchangeDeadlineOf(possibility.deadline)} "
+        a(href = possibility.sourceUrl) {
+          // For [sourceLink]'s reason.
+          rel = "noreferrer"
+          +EXCHANGE_PAGE_LINK
+        }
+      }
+    }
+  }
+}
+
+/** The opening sentence: the capped tuition, or the percentage where no figure can be said. */
+private fun exchangeCeilingOf(possibility: ExchangePossibility): String {
+  val exchange = possibility.exchange
+  val named = "If admitted under the ${exchange.displayName} (${exchange.shortName})"
+  val percent = "${possibility.maxPercentOfResidentTuition}% of this school's resident tuition"
+  val capped = possibility.cappedTuition ?: return "$named, tuition would be no more than $percent, before fees."
+  return "$named, tuition would be no more than ${WholeDollars.spoken(capped.perYearUsd)} a year, before fees. " +
+    "That figure is our arithmetic: $percent, from what it published for ${capped.academicYear.label}."
+}
+
+/** How it is decided, in the page's own words. Every arm named, so a new one must say something here. */
+private fun exchangeTermsOf(possibility: ExchangePossibility): String {
+  val selection =
+    when (possibility.selection) {
+      ExchangeSelection.GUARANTEED -> "Students who meet the school's criteria get it."
+      ExchangeSelection.SELECTIVE -> "Some eligible students do not get it."
+      ExchangeSelection.UNSTATED -> "The school's page does not say whether every eligible student gets it."
+    }
+  val application =
+    when (possibility.separateApplication) {
+      SeparateApplication.REQUIRED -> "It takes its own application."
+      SeparateApplication.NOT_REQUIRED -> "It takes no separate application."
+      SeparateApplication.UNSTATED -> "The school's page does not say whether it takes its own application."
+    }
+  return listOfNotNull(
+    selection,
+    possibility.percentOfEligibleOffered?.let { "About $it% of eligible students are offered it." },
+    possibility.minimumUnweightedGpa?.let { "The minimum unweighted GPA is ${PublishedGpa.of(it)}." },
+    application,
+  ).joinToString(" ")
+}
+
+private fun exchangeDeadlineOf(deadline: ExchangeDeadline): String =
+  when (deadline) {
+    ExchangeDeadline.NotHeld -> "We do not hold a deadline for it."
+    is ExchangeDeadline.Upcoming -> applyBySentenceOf(deadline.applyBy)
+    is ExchangeDeadline.Passed -> "${applyBySentenceOf(deadline.applyBy)} That date has passed for this year's applicants."
+  }
+
+private fun applyBySentenceOf(applyBy: LocalDate): String = "Apply by ${UsDate.of(applyBy)}."
 
 /**
  * One school's price table: tuition and fees first (the stable block), then the

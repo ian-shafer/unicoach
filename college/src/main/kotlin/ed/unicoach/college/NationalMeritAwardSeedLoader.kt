@@ -2,7 +2,6 @@ package ed.unicoach.college
 
 import ed.unicoach.common.util.AcademicYear
 import ed.unicoach.db.Database
-import ed.unicoach.db.dao.CollegesDao
 import ed.unicoach.db.dao.EmptyNationalMeritPruneException
 import ed.unicoach.db.dao.ExternalDocumentsDao
 import ed.unicoach.db.dao.NationalMeritAwardsDao
@@ -11,7 +10,6 @@ import ed.unicoach.db.dao.UpsertOutcome
 import ed.unicoach.db.models.CollegeId
 import ed.unicoach.db.models.NationalMeritAwardId
 import ed.unicoach.db.models.NationalMeritAwardKind
-import ed.unicoach.db.models.NewExternalDocument
 import ed.unicoach.db.models.NewNationalMeritAward
 import ed.unicoach.db.models.QualifyingStanding
 import ed.unicoach.db.models.ResidencyBasis
@@ -654,22 +652,19 @@ class NationalMeritAwardSeedLoader(
     linkStatusCsv: File,
     linkStatuses: Map<String, RecordedLinkStatus>,
   ) {
-    for ((url, recorded) in linkStatuses) {
+    writeLinkAnswers(
+      session,
+      linkStatuses,
       // NON-NULL BY CONSTRUCTION: this corpus reads its sidecar with
       // `dayAlwaysRequired`, so a verdict with no day was refused by file and
-      // line before this loop began. The check is here because the shared
-      // reader's type admits the corpus that legitimately has none -- and it
-      // names the file and the verdict, because a check that fires is a bug in
-      // that reader and the next reader needs both.
-      val checkedOn =
-        checkNotNull(recorded.checkedOn) {
-          "[${linkStatusCsv.path}] gives [$url] the status [${recorded.status.value}] with no url_checked_on, " +
-            "and this corpus reads the sidecar with dayAlwaysRequired: that reader must refuse it by line"
-        }
-      ExternalDocumentsDao
-        .upsert(session, NewExternalDocument(url, recorded.status, checkedOn))
-        .getOrElse { cause -> throw DocumentException(linkStatusCsv.path, url, cause) }
-    }
+      // line before this write began. The sentence names the file and the
+      // verdict, because a check that fires is a bug in that reader and the
+      // next reader needs both.
+      datelessMessage = { url, recorded ->
+        "[${linkStatusCsv.path}] gives [$url] the status [${recorded.status.value}] with no url_checked_on, " +
+          "and this corpus reads the sidecar with dayAlwaysRequired: that reader must refuse it by line"
+      },
+    ) { url, cause -> throw DocumentException(linkStatusCsv.path, url, cause) }
   }
 
   /**
@@ -693,7 +688,7 @@ class NationalMeritAwardSeedLoader(
    * about a path the operator never typed.
    */
   private fun requireLinkStatusFile(file: File) {
-    if (!file.isFile) throw FormatException(Defect.MissingLinkStatusFile(file.path))
+    requireLinkStatusFile(file) { throw FormatException(Defect.MissingLinkStatusFile(file.path)) }
   }
 
   /** This corpus's sidecar rules, mapped onto this corpus's own located defects. */
@@ -959,27 +954,30 @@ class NationalMeritAwardSeedLoader(
     awardsCsv: File,
     record: CSVRecord,
     parsed: ParsedAward,
-  ): CollegeId {
-    val college =
-      withRowLocation(awardsCsv, record, parsed.ipedsUnitId) {
-        CollegesDao.findByIpedsUnitId(session, parsed.ipedsUnitId)
-      } ?: throw FormatException(
-        Defect.UnknownCollege(awardsCsv.path, record.recordNumber, "unit_id", parsed.ipedsUnitId, parsed.typedName),
-      )
-    if (college.name.trim() != parsed.typedName) {
-      throw FormatException(
-        Defect.CollegeNameDisagreement(
-          awardsCsv.path,
-          record.recordNumber,
-          "college_name",
-          parsed.ipedsUnitId,
-          parsed.typedName,
-          college.name,
-        ),
-      )
-    }
-    return college.id
-  }
+  ): CollegeId =
+    resolveCollegeNamed(
+      session,
+      parsed.ipedsUnitId,
+      parsed.typedName,
+      onLookupFailure = { cause -> throw LoadException(awardsCsv.path, record.recordNumber, parsed.ipedsUnitId, cause) },
+      onUnknown = {
+        throw FormatException(
+          Defect.UnknownCollege(awardsCsv.path, record.recordNumber, "unit_id", parsed.ipedsUnitId, parsed.typedName),
+        )
+      },
+      onNameDisagreement = { storedName ->
+        throw FormatException(
+          Defect.CollegeNameDisagreement(
+            awardsCsv.path,
+            record.recordNumber,
+            "college_name",
+            parsed.ipedsUnitId,
+            parsed.typedName,
+            storedName,
+          ),
+        )
+      },
+    )
 
   /**
    * The url, once it is known to have a committed answer.

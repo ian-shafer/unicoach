@@ -6,10 +6,13 @@ import ed.unicoach.coaching.costs.AT_HOME_ASSUMPTION_STATEMENT
 import ed.unicoach.coaching.costs.BorrowingCoverage
 import ed.unicoach.coaching.costs.BorrowingRows
 import ed.unicoach.coaching.costs.BorrowingWire
+import ed.unicoach.coaching.costs.CappedTuition
 import ed.unicoach.coaching.costs.CollegeControl
 import ed.unicoach.coaching.costs.CollegeCost
 import ed.unicoach.coaching.costs.CollegeCostProfile
 import ed.unicoach.coaching.costs.CostField
+import ed.unicoach.coaching.costs.ExchangeDeadline
+import ed.unicoach.coaching.costs.ExchangePossibility
 import ed.unicoach.coaching.costs.LoanRow
 import ed.unicoach.coaching.costs.MoneyBasis
 import ed.unicoach.coaching.costs.NetPrice
@@ -45,6 +48,7 @@ import ed.unicoach.db.models.BandScoreAxis
 import ed.unicoach.db.models.BorrowerCounts
 import ed.unicoach.db.models.CollegeBorrowing
 import ed.unicoach.db.models.CollegeId
+import ed.unicoach.db.models.ExchangeSelection
 import ed.unicoach.db.models.FigureStatus
 import ed.unicoach.db.models.FirstChoiceRule
 import ed.unicoach.db.models.IncomeBand
@@ -61,7 +65,9 @@ import ed.unicoach.db.models.ResidencyBasis
 import ed.unicoach.db.models.ResidencyTierBasis
 import ed.unicoach.db.models.ScholarshipSuperscoreRule
 import ed.unicoach.db.models.ScoreRequirement
+import ed.unicoach.db.models.SeparateApplication
 import ed.unicoach.db.models.SourceUrlStatus
+import ed.unicoach.db.models.TuitionExchange
 import ed.unicoach.web.render.BLENDED_IN_STATE_CLAUSE
 import ed.unicoach.web.render.NOT_IN_FILING
 import ed.unicoach.web.render.NOT_REPORTED
@@ -1091,6 +1097,139 @@ class CostReportPageTest {
     // And it IS said where a public school is on the page, mixed or alone.
     val mixed = renderedReportOf(costProfile(listOf(privateSchool(), stateSchool()), answeredMoney()))
     assertEquals(1, countOf(mixed, BLENDED_IN_STATE_CLAUSE), "one public school on the page is one clause")
+  }
+
+  // ---------------------------------------------------------------------------
+  // Regional tuition exchanges (RFC 277)
+  // ---------------------------------------------------------------------------
+
+  private val exchangeSchoolName = "Oregon Exchange University"
+
+  private fun exchangePossibility(
+    cappedTuition: CappedTuition? = CappedTuition(16500, AcademicYear(LocalDate.now().year - 1)),
+    selection: ExchangeSelection = ExchangeSelection.SELECTIVE,
+    separateApplication: SeparateApplication = SeparateApplication.NOT_REQUIRED,
+    minimumUnweightedGpa: BigDecimal? = BigDecimal("3.25"),
+    percentOfEligibleOffered: Int? = 30,
+    deadline: ExchangeDeadline = ExchangeDeadline.Upcoming(LocalDate.now().plusDays(60)),
+  ) = ExchangePossibility(
+    exchange = TuitionExchange.WUE,
+    maxPercentOfResidentTuition = 150,
+    selection = selection,
+    separateApplication = separateApplication,
+    minimumUnweightedGpa = minimumUnweightedGpa,
+    percentOfEligibleOffered = percentOfEligibleOffered,
+    cappedTuition = cappedTuition,
+    deadline = deadline,
+    sourceUrl = "https://example.edu/wue",
+    checkedOn = LocalDate.now().minusDays(4),
+  )
+
+  private fun exchangeSchool(possibilities: List<ExchangePossibility>): CollegeCost =
+    costFixture(
+      name = exchangeSchoolName,
+      state = "OR",
+      control = CollegeControl.Public(TuitionApplicable.OUT_OF_STATE),
+      tuitionInState = 13000,
+      tuitionOutOfState = 38000,
+      publishedPrice = 54000,
+      housingAndFoodOnCampus = 14000,
+      booksAndSupplies = 1200,
+      otherExpensesOnCampus = 2500,
+      offersOnCampusHousing = true,
+      exchangePossibilities = possibilities,
+    )
+
+  private fun exchangeBlocksOf(possibilities: List<ExchangePossibility>): List<Element> =
+    schoolSectionOf(
+      renderedReportOf(costProfile(listOf(exchangeSchool(possibilities)), answeredMoney())),
+      exchangeSchoolName,
+    ).select("div.report-school-exchange").toList()
+
+  @Test
+  fun `an exchange renders before the price table with the capped tuition and the not-in-totals sentence`() {
+    val section =
+      schoolSectionOf(
+        renderedReportOf(costProfile(listOf(exchangeSchool(listOf(exchangePossibility()))), answeredMoney())),
+        exchangeSchoolName,
+      )
+
+    val block = section.selectFirst("div.report-school-exchange")!!
+    val table = section.selectFirst("table.report-price-table")!!
+    assertTrue(block.siblingIndex() < table.siblingIndex(), "the block stands before the table: [$section]")
+    val text = block.text()
+    assertTrue(text.contains("If admitted under the Western Undergraduate Exchange (WUE)"), text)
+    assertTrue(text.contains("\$16,500 a year, before fees"), text)
+    assertTrue(text.contains("our arithmetic"), text)
+    assertTrue(text.contains("${LocalDate.now().year - 1}-"), "the served year travels with the figure: $text")
+    assertTrue(text.contains("is not the published price and is not in the totals"), text)
+    assertTrue(text.contains("Some eligible students do not get it."), text)
+    assertTrue(text.contains("About 30% of eligible students are offered it."), text)
+    assertTrue(text.contains("The minimum unweighted GPA is 3.25."), text)
+    val columnScaled = exchangeBlocksOf(listOf(exchangePossibility(minimumUnweightedGpa = BigDecimal("3.500")))).single().text()
+    assertTrue(columnScaled.contains("The minimum unweighted GPA is 3.50."), columnScaled)
+    assertTrue(text.contains("It takes no separate application."), text)
+    assertTrue(text.contains("Apply by"), text)
+    assertEquals("https://example.edu/wue", block.selectFirst("a")!!.attr("href"))
+    assertFalse(text.lowercase().contains("award"), "the page's vocabulary: $text")
+  }
+
+  @Test
+  fun `the price table is identical with and without an exchange`() {
+    val tableOf = { possibilities: List<ExchangePossibility> ->
+      schoolSectionOf(
+        renderedReportOf(costProfile(listOf(exchangeSchool(possibilities)), answeredMoney())),
+        exchangeSchoolName,
+      ).selectFirst("table.report-price-table")!!
+        .outerHtml()
+    }
+
+    assertEquals(tableOf(emptyList()), tableOf(listOf(exchangePossibility())))
+  }
+
+  @Test
+  fun `a school with no possibility renders no exchange block`() {
+    assertEquals(emptyList(), exchangeBlocksOf(emptyList()))
+  }
+
+  @Test
+  fun `with no figure the block states the percentage`() {
+    val text = exchangeBlocksOf(listOf(exchangePossibility(cappedTuition = null))).single().text()
+
+    assertTrue(text.contains("no more than 150% of this school's resident tuition, before fees."), text)
+    assertFalse(text.contains("our arithmetic"), text)
+  }
+
+  @Test
+  fun `an unstated page and no deadline are said as such`() {
+    val text =
+      exchangeBlocksOf(
+        listOf(
+          exchangePossibility(
+            selection = ExchangeSelection.UNSTATED,
+            separateApplication = SeparateApplication.UNSTATED,
+            minimumUnweightedGpa = null,
+            percentOfEligibleOffered = null,
+            deadline = ExchangeDeadline.NotHeld,
+          ),
+        ),
+      ).single().text()
+
+    assertTrue(text.contains("does not say whether every eligible student gets it."), text)
+    assertTrue(text.contains("does not say whether it takes its own application."), text)
+    assertTrue(text.contains("We do not hold a deadline for it."), text)
+    assertFalse(text.contains("GPA"), text)
+    assertFalse(text.contains("eligible students are offered"), text)
+  }
+
+  @Test
+  fun `a passed deadline says so`() {
+    val text =
+      exchangeBlocksOf(
+        listOf(exchangePossibility(deadline = ExchangeDeadline.Passed(LocalDate.now().minusDays(1)))),
+      ).single().text()
+
+    assertTrue(text.contains("That date has passed for this year's applicants."), text)
   }
 
   /** One school's section, found by its own heading, so a caption or sentence is asserted at the school it belongs to. */

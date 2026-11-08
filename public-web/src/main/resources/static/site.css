@@ -379,6 +379,10 @@ main {
   font-size: 0.9rem;
 }
 
+.report-school-exchange {
+  margin: 1rem 0;
+}
+
 /* What the report's table differs in, and nothing else: its spacing, and its
    figures. */
 .report-table {

@@ -78,6 +78,8 @@ class CollegeScorecardLoader(
   // than buried in an `ingest` local.
   private val nationalMeritAwardSeedLoader: NationalMeritAwardSeedLoader =
     NationalMeritAwardSeedLoader(database, ioDispatcher),
+  private val tuitionExchangeSeedLoader: TuitionExchangeSeedLoader =
+    TuitionExchangeSeedLoader(database, ioDispatcher),
   // The IPEDS SFA staging half (RFC 162), injected like every other phase
   // loader rather than constructed mid-`ingest`: whether the phase RUNS is
   // decided by the nullable `sfa` group, never by whether a loader exists.
@@ -502,6 +504,7 @@ class CollegeScorecardLoader(
      * draws.
      */
     val nationalMeritAwards: NationalMeritAwardSeedLoader.LoadResult? = null,
+    val tuitionExchanges: TuitionExchangeSeedLoader.LoadResult? = null,
     /**
      * The published-codebook load (RFC 147) and D46's unknown-code report, both
      * `null` when no codebook source was supplied — the same omit-vs-zero
@@ -732,6 +735,7 @@ class CollegeScorecardLoader(
     cds: CdsSources? = null,
     automaticAwards: AutomaticAwardSources? = null,
     nationalMeritAwards: SourceFile? = null,
+    tuitionExchanges: SourceFile? = null,
     codebooks: SourceFile? = null,
     dictionary: ScorecardDictionarySources,
     subjects: SourceFile? = null,
@@ -783,6 +787,7 @@ class CollegeScorecardLoader(
     // read from beside its awards CSV, so they are a file this run depends on
     // and cannot be validated by a flag nobody passes.
     nationalMeritAwards?.let { source -> nationalMeritAwardSeedLoader.assertHeaders(source) }
+    tuitionExchanges?.let { source -> tuitionExchangeSeedLoader.assertHeaders(source) }
     // The Scorecard data dictionary (RFC 274), read and GUARDED beside the
     // header assertions, before the first phase commits: a release that drops,
     // re-words or back-dates a column this run stamps a year on is refused
@@ -799,6 +804,7 @@ class CollegeScorecardLoader(
           (cds?.files?.map { digest(it) } ?: emptyList()) +
           (automaticAwards?.files?.map { digest(it) } ?: emptyList()) +
           (nationalMeritAwards?.let { listOf(digest(it)) } ?: emptyList()) +
+          (tuitionExchanges?.let { listOf(digest(it)) } ?: emptyList()) +
           (codebooks?.let { listOf(digest(it)) } ?: emptyList()) +
           // The dictionary this run stamped every Scorecard year from (RFC
           // 274), as read -- so the build row names the release's periods.
@@ -953,6 +959,14 @@ class CollegeScorecardLoader(
           nationalMeritAwardSeedLoader.load(source.file)
         }
       }
+    // Its own phase and transaction, before the derived phases for the reason the
+    // two corpora above are (RFC 277).
+    val tuitionExchangeResult =
+      tuitionExchanges?.let { source ->
+        phase("tuition-exchanges", committedPhases) {
+          tuitionExchangeSeedLoader.load(source.file)
+        }
+      }
     // Phase 2 of the two-phase ingest (RFC 146): rows first, derived state
     // second, never per-row triggers. It runs after EVERY row phase — the
     // aliases it splits words from, and the IPEDS phases beside them — and
@@ -1053,6 +1067,7 @@ class CollegeScorecardLoader(
       cds = cdsResult,
       automaticAwards = automaticAwardResult,
       nationalMeritAwards = nationalMeritAwardResult,
+      tuitionExchanges = tuitionExchangeResult,
       codebooks = codebookResult,
       subjects = subjectResult,
       moneyVocabulary = moneyVocabularyResult,

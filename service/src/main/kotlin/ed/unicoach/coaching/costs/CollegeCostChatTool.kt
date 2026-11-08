@@ -10,6 +10,7 @@ import ed.unicoach.coaching.costs.canonical.MoneySourceCopy
 import ed.unicoach.coaching.costs.canonical.figureGroup
 import ed.unicoach.coaching.putCollegeIdsSchema
 import ed.unicoach.college.ScorecardFieldOfStudyColumns
+import ed.unicoach.common.util.PublishedGpa
 import ed.unicoach.db.models.AssuranceTier
 import ed.unicoach.db.models.FigureStatus
 import ed.unicoach.db.models.IncomeBand
@@ -620,6 +621,7 @@ class CollegeCostChatTool(
         // type, no test -- would fail for it. The keys after it emit no CostField,
         // which is the only reason they may sit where they do.
         putVintageLabels(cost, emitted)
+        putRegionalExchanges(cost)
         // Purely additive (RFC 148 D7): present only when the school reports it,
         // and carrying its OWN citation, because merit aid is not a Scorecard
         // fact and must never fold into the payload's Scorecard `source` string.
@@ -669,6 +671,45 @@ class CollegeCostChatTool(
      */
     private fun JsonObjectBuilder.putTuitionTiers(cost: CollegeCost): Set<CostField> =
       cost.publishedTuitionTiers.flatMapTo(mutableSetOf()) { putFigure(it, cost.publishedAmountOf(it)) }
+
+    /**
+     * The regional tuition exchanges this student could use (RFC 277). Absent,
+     * never empty, so no key means nothing is said. Every entry key is present,
+     * as an explicit null where we hold nothing. Emits no [CostField]: the capped
+     * figure is our arithmetic, labelled as derived, and takes no part in any
+     * total or vintage label.
+     */
+    private fun JsonObjectBuilder.putRegionalExchanges(cost: CollegeCost) {
+      if (cost.exchangePossibilities.isEmpty()) return
+      putJsonArray(REGIONAL_EXCHANGES_KEY) { cost.exchangePossibilities.forEach { add(regionalExchangeObject(it)) } }
+    }
+
+    private fun regionalExchangeObject(possibility: ExchangePossibility): JsonObject =
+      buildJsonObject {
+        put("exchange_name", possibility.exchange.displayName)
+        put("exchange_short_name", possibility.exchange.shortName)
+        put("max_percent_of_resident_tuition", possibility.maxPercentOfResidentTuition)
+        put("selection", possibility.selection.value)
+        put("separate_application", possibility.separateApplication.value)
+        put("minimum_unweighted_gpa", possibility.minimumUnweightedGpa?.let { PublishedGpa.of(it) })
+        put("percent_of_eligible_offered", possibility.percentOfEligibleOffered)
+        put("capped_tuition_per_year_usd_derived", possibility.cappedTuitionPerYearUsd)
+        put("capped_tuition_academic_year", possibility.cappedTuition?.academicYear?.label)
+        putExchangeDeadline(possibility.deadline)
+        put("source_url", possibility.sourceUrl)
+        put("checked_on", possibility.checkedOn.toString())
+      }
+
+    private fun JsonObjectBuilder.putExchangeDeadline(deadline: ExchangeDeadline) {
+      val (applyBy, passed) =
+        when (deadline) {
+          ExchangeDeadline.NotHeld -> null to false
+          is ExchangeDeadline.Upcoming -> deadline.applyBy to false
+          is ExchangeDeadline.Passed -> deadline.applyBy to true
+        }
+      put("apply_by", applyBy?.toString())
+      put("apply_by_passed", passed)
+    }
 
     /**
      * The fees split (RFC 166 §5): the fees PART of the combined tuition figure,
@@ -1444,6 +1485,9 @@ class CollegeCostChatTool(
     }
 
     const val TOOL_NAME = "college_cost_profile"
+
+    /** The per-college key for a regional tuition exchange (RFC 277). Absent where nothing is said. */
+    const val REGIONAL_EXCHANGES_KEY = "regional_exchanges"
 
     /**
      * The two keys that IDENTIFY a college wherever this payload names one --

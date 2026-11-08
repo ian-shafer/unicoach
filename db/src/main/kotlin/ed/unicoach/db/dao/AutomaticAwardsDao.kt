@@ -599,14 +599,10 @@ object AutomaticAwardsDao {
     session: SqlSession,
     keep: Collection<AutomaticAwardId>,
   ): Result<Int> {
-    val kept = IdList(keep.map { it.value })
     // A TYPED REFUSAL, so the loader reads WHICH refusal this is rather than
     // re-deriving it from its own state or matching the sentence.
-    if (kept.isEmpty) return Result.failure(EmptyAwardPruneException())
-    return session.execute(
-      "DELETE FROM $TABLE WHERE id NOT IN (${kept.placeholders})",
-      bind = { stmt -> kept.bindFrom(stmt, 1) },
-    )
+    if (keep.isEmpty()) return Result.failure(EmptyAwardPruneException())
+    return session.deleteAllExcept(TABLE, keep.map { it.value })
   }
 
   /**

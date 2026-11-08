@@ -168,6 +168,7 @@ class ComparisonBasisTest {
       // basis is assembled from figures, so it is the right answer here.
       automaticAwards = emptyList(),
       nationalMerit = emptyList(),
+      exchangePossibilities = emptyList(),
       chosen = chosen,
     )
 
