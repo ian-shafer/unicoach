@@ -1223,9 +1223,15 @@ def print_ingest_command(outdir, sources):
     it would disagree by raising AFTER a successful 10 MB download. Every path is
     shell-quoted (shlex.quote, as bin/remote does), because -o may legitimately
     name "$HOME/Google Drive/ipeds" and an unquoted path there prints a command
-    bash splits into two arguments."""
+    bash splits into two arguments.
+
+    The three Scorecard dictionary options are required on every run; the
+    paths are bin/fetch-scorecard's committed output, as bin/load-external-data
+    defaults them."""
     log_info("Feed them to the ingest with:")
     log_info("  nix develop -c bin/ingest-colleges \\")
+    for option, name in SCORECARD_DICTIONARY_OPTIONS:
+        log_info(f"      {option} db/seed/scorecard/{name} \\")
     for artifact in ARTIFACTS:
         # An artifact with no ingest_option is pinned for its digest, not fed to
         # a loader (the SFA dictionary): naming it here would print a command
@@ -1237,6 +1243,14 @@ def print_ingest_command(outdir, sources):
     log_info(f"      -y {SURVEY_YEAR} -f {SFA_AID_YEAR} \\")
     log_info("      <institution.csv> <fields.csv>")
 
+
+# The Scorecard data dictionary options every bin/ingest-colleges run requires,
+# with the file names bin/fetch-scorecard writes them under.
+SCORECARD_DICTIONARY_OPTIONS = (
+    ("-D", "dictionary-institution-cohorts.csv"),
+    ("-O", "dictionary-institution-sources.csv"),
+    ("-F", "dictionary-field-of-study-cohorts.csv"),
+)
 
 # The name this script reports itself as; every refusal names it, because the
 # fetchers all run under one wrapper and a message must say which refused.

@@ -1,30 +1,55 @@
 {
-  "fetched_at": "2026-09-06T03:49:14+00:00",
+  "fetched_at": "2026-11-06T04:23:57+00:00",
   "source": "network",
   "fixture_derived": false,
-  "release": "06102026",
   "artifacts": {
     "Most-Recent-Cohorts-Institution": {
-      "url": "https://ed-public-download.scorecard.network/downloads/Most-Recent-Cohorts-Institution_06102026.zip",
-      "fetched_at": "2026-09-06T03:49:14+00:00",
-      "bytes": 23559465,
-      "sha256": "f56a181b000ca4914e924c16b6b81dcc656e25aeb2ac68ab7d271ac0f29ffd58",
+      "url": "https://ed-public-download.scorecard.network/downloads/Most-Recent-Cohorts-Institution_11022026.zip",
+      "release": "11022026",
+      "fetched_at": "2026-11-06T04:23:57+00:00",
+      "bytes": 24209950,
+      "sha256": "4c31be45bb6defc17a972a8084a88d3d7ba4a4044884ea9529c03c7570a7305d",
       "member": "Most-Recent-Cohorts-Institution.csv",
-      "member_bytes": 100102932,
-      "member_sha256": "89e8a35a6588dfb81a6ce78fa9df4cb99b36ef7aa4b28fb0157f9e3e1a7d81b5",
-      "rows": 6273,
+      "member_bytes": 101955673,
+      "member_sha256": "f6337c0038c0eee635d56d05ffb3e9a58105984af63c2e69b4230ced93a8c072",
+      "rows": 6272,
       "ingest_position": 1
     },
     "Most-Recent-Cohorts-Field-of-Study": {
-      "url": "https://ed-public-download.scorecard.network/downloads/Most-Recent-Cohorts-Field-of-Study_06102026.zip",
-      "fetched_at": "2026-09-06T03:49:14+00:00",
-      "bytes": 17188590,
-      "sha256": "9c4339d65f0699a60d6078fe54fc3bf03fded30a65079222d9221952b8578165",
+      "url": "https://ed-public-download.scorecard.network/downloads/Most-Recent-Cohorts-Field-of-Study_10152026.zip",
+      "release": "10152026",
+      "fetched_at": "2026-11-06T04:23:57+00:00",
+      "bytes": 33857926,
+      "sha256": "d42cd9ec5ffb4868e0f87f988fdbe10dc6c78adf427f9f6e5026a706d715be06",
       "member": "Most-Recent-Cohorts-Field-of-Study.csv",
-      "member_bytes": 153479459,
-      "member_sha256": "3184f634cea46a94a3e8dc73f6d2147ecaea5b3b648b26adbfdfdd9133ce8d35",
-      "rows": 227980,
+      "member_bytes": 197739166,
+      "member_sha256": "2559922449453b6cc137c65d1a4e84c3202c89617b955b60c34ea6cefb89c6cc",
+      "rows": 223587,
       "ingest_position": 2
+    },
+    "CollegeScorecardDataDictionary": {
+      "url": "https://collegescorecard.ed.gov/files/CollegeScorecardDataDictionary.xlsx",
+      "fetched_at": "2026-11-06T04:23:57+00:00",
+      "bytes": 769715,
+      "sha256": "8d258487f252aedc8c87bace61556446d49245bfe374734548bd861118e5cc4c",
+      "released": "Released October 15, 2026",
+      "sheets": {
+        "dictionary-institution-cohorts.csv": {
+          "sheet": "Most_Recent_Inst_Cohort_Map",
+          "rows": 3379,
+          "sha256": "bb3e2a1f9e31b6b64750a67eebc44570ec1c950d9a4c51c0ca0358362565581b"
+        },
+        "dictionary-institution-sources.csv": {
+          "sheet": "Institution_Data_Dictionary",
+          "rows": 3379,
+          "sha256": "92b62bfcd2cc202782168e798fc23c9294d1b0a0857341ff69bcee0b939945d9"
+        },
+        "dictionary-field-of-study-cohorts.csv": {
+          "sheet": "FieldOfStudy_Cohort_Map",
+          "rows": 230,
+          "sha256": "0bd3c117732c2b5cccb073625048a77b137894aa46be1ef1c21fc387c4823fa9"
+        }
+      }
     }
   }
 }

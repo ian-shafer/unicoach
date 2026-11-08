@@ -5,7 +5,7 @@ package ed.unicoach.common.util
  *
  * A TYPE rather than a bare `Int` for the reason [AcademicYear] is one: the two
  * facts share a representation and nothing else. While a publisher's dollar
- * base was an `Int`, `AcademicYear(provenance.inflationBaseYear!!)` type-checked
+ * base was an `Int`, `AcademicYear(provenance.amountUsdYear!!)` type-checked
  * -- stamping a figure's dollar base onto a cohort was legal Kotlin, which is
  * the one mistake [AcademicYear] exists to prevent. Constructing this type is
  * the place that says "this number names a calendar year".
@@ -29,9 +29,8 @@ package ed.unicoach.common.util
  * dollar base is transcribed out of a workbook cell or a CSV column, so a type
  * that only stops the year being MISNAMED still lets `CalendarYear(0)` be
  * spoken as "in 0 dollars". The bound is this type's own rather than the
- * `academic_year` SQL domain's, because no column stores one of these and a
- * publisher may legitimately state a dollar base older than that domain's first
- * year -- so the low end is set before any dollar base we could cite and above
+ * `academic_year` SQL domain's, because a publisher may legitimately state a
+ * dollar base older than that domain's first year -- so the low end is set before any dollar base we could cite and above
  * every value that is a sentinel, a sign slip or a two-digit year.
  */
 @JvmInline

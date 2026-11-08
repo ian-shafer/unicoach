@@ -733,6 +733,7 @@ class CollegeScorecardLoader(
     automaticAwards: AutomaticAwardSources? = null,
     nationalMeritAwards: SourceFile? = null,
     codebooks: SourceFile? = null,
+    dictionary: ScorecardDictionarySources,
     subjects: SourceFile? = null,
     moneyVocabulary: SourceFile? = null,
   ): IngestReport {
@@ -782,6 +783,14 @@ class CollegeScorecardLoader(
     // read from beside its awards CSV, so they are a file this run depends on
     // and cannot be validated by a flag nobody passes.
     nationalMeritAwards?.let { source -> nationalMeritAwardSeedLoader.assertHeaders(source) }
+    // The Scorecard data dictionary (RFC 274), read and GUARDED beside the
+    // header assertions, before the first phase commits: a release that drops,
+    // re-words or back-dates a column this run stamps a year on is refused
+    // here, naming it, with every table as it was. Each fill runs the same
+    // guard again in its own transaction, before its DELETE.
+    val scorecardDictionary = ScorecardDictionary.fromFiles(dictionary, ioDispatcher)
+    canonicalMoneyLoader.requireDictionaryServes(scorecardDictionary)
+    programMoneyLoader.requireDictionaryServes(scorecardDictionary)
     val sources =
       withContext(ioDispatcher) {
         listOf(digest(institution), digest(fields), digest(aliasesFile)) +
@@ -791,6 +800,9 @@ class CollegeScorecardLoader(
           (automaticAwards?.files?.map { digest(it) } ?: emptyList()) +
           (nationalMeritAwards?.let { listOf(digest(it)) } ?: emptyList()) +
           (codebooks?.let { listOf(digest(it)) } ?: emptyList()) +
+          // The dictionary this run stamped every Scorecard year from (RFC
+          // 274), as read -- so the build row names the release's periods.
+          scorecardDictionary.digests +
           (subjects?.let { listOf(digest(it)) } ?: emptyList()) +
           (moneyVocabulary?.let { listOf(digest(it)) } ?: emptyList())
       }
@@ -963,7 +975,10 @@ class CollegeScorecardLoader(
     // whole corpus as "no published price". The reproducibility pin in
     // `CollegeScorecardIngestTest` is what would catch a swap back: with the
     // old order, two identical ingests produced two different indexes.
-    val canonicalMoney = phase("canonical-money", committedPhases) { canonicalMoneyLoader.fill(institution.file, sfa) }
+    val canonicalMoney =
+      phase("canonical-money", committedPhases) {
+        canonicalMoneyLoader.fill(institution.file, sfa, scorecardDictionary)
+      }
     // The program-grained money rebuild (RFC 218), beside the institution one
     // and never inside it: a DELETE + batch re-insert of `program_money_stats`
     // from a second pass over the pinned field-of-study CSV, in its own
@@ -971,7 +986,7 @@ class CollegeScorecardLoader(
     // rows it points at, and is its write precondition -- and before
     // `search-index`, which reads none of it: nothing a family can see reads
     // this table yet, and the reader is a later slice's work.
-    val programMoney = phase("program-money", committedPhases) { programMoneyLoader.fill(fields.file) }
+    val programMoney = phase("program-money", committedPhases) { programMoneyLoader.fill(fields.file, scorecardDictionary) }
     // The third derived rebuild of phase 2 (RFC 150 D47), between
     // `canonical-money` and the read-only unknown-code report: it reads
     // `colleges`, `college_ipeds`, `college_programs_census`, `subjects` and now
@@ -1946,22 +1961,23 @@ class CollegeScorecardLoader(
     private const val COL_CONTROL = ScorecardInstitutionColumns.CONTROL
     private const val COL_UGDS = ScorecardInstitutionColumns.UGDS
     private const val COL_ADM_RATE = ScorecardInstitutionColumns.ADM_RATE
-    private const val COL_SAT_AVG = "SAT_AVG"
+    private const val COL_SAT_AVG = ScorecardScoreBandColumns.SAT_AVG
 
     // The six published percentile score bands (RFC 195). `SATVR*` is SAT
     // critical reading and `SATMT*` SAT math, per the dictionary's
     // `Institution_Data_Dictionary` sheet; `ACTCM*` is the ACT cumulative
-    // (composite). This loader's own constants, not
-    // [ScorecardInstitutionColumns] members: that home exists for columns the
+    // (composite). [ScorecardScoreBandColumns] members, not
+    // [ScorecardInstitutionColumns] ones: that home exists for columns the
     // money fill re-parses AND for the outcome columns RFC 226 dates, and a
-    // score band is neither -- it is dated by its own citation, not by
-    // `dictionary-variable-sources.csv`.
-    private const val COL_SATVR25 = "SATVR25"
-    private const val COL_SATVR75 = "SATVR75"
-    private const val COL_SATMT25 = "SATMT25"
-    private const val COL_SATMT75 = "SATMT75"
-    private const val COL_ACTCM25 = "ACTCM25"
-    private const val COL_ACTCM75 = "ACTCM75"
+    // score band is neither -- it is dated by its own citation,
+    // `ScoreBandCitation.COHORT_TERM`, pinned against the fetched data
+    // dictionary.
+    private const val COL_SATVR25 = ScorecardScoreBandColumns.SATVR25
+    private const val COL_SATVR75 = ScorecardScoreBandColumns.SATVR75
+    private const val COL_SATMT25 = ScorecardScoreBandColumns.SATMT25
+    private const val COL_SATMT75 = ScorecardScoreBandColumns.SATMT75
+    private const val COL_ACTCM25 = ScorecardScoreBandColumns.ACTCM25
+    private const val COL_ACTCM75 = ScorecardScoreBandColumns.ACTCM75
     private const val COL_COSTT4_A = ScorecardInstitutionColumns.COSTT4_A
     private const val COL_TUITIONFEE_IN = ScorecardInstitutionColumns.TUITIONFEE_IN
     private const val COL_TUITIONFEE_OUT = ScorecardInstitutionColumns.TUITIONFEE_OUT

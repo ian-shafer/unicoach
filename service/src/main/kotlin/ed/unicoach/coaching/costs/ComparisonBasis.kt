@@ -1205,9 +1205,9 @@ data class DatedCollege(
  * The subject is named because RFC 166 made the year a fact about ONE COLLEGE.
  * Before it, the year was a constant on [FigureGroup] and so a fact about the
  * whole call, and one subject-less sentence was true of every school. It is not
- * any more: a school served from the Scorecard serves 2024-25 beside an IC_AY
- * school's 2023-24 (RFC 183 -- the two publishers are one year apart, so both
- * years are live in one call), and two sentences claiming the SAME figures at
+ * any more: a school served from the Scorecard serves its newer year beside an
+ * IC_AY school's older one (RFC 183 -- the two publishers are years apart, so
+ * both years are live in one call), and two sentences claiming the SAME figures at
  * two different years,
  * naming no school, are each false about one of them -- rendered verbatim to a
  * parent, who has no way to attach either year to a column of dollars.

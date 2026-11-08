@@ -32,7 +32,15 @@ class ScorecardResidencyCollapseTest : CollegeScorecardTestBase() {
    * reason: it is real.
    */
   private fun ingest(): CollegeScorecardLoader.IngestReport =
-    runBlocking { loader.ingest(source(institutionCsv), source(fieldsCsv), source(aliasesJson), ipedsCorpusSources()) }
+    runBlocking {
+      loader.ingest(
+        source(institutionCsv),
+        source(fieldsCsv),
+        source(aliasesJson),
+        ipedsCorpusSources(),
+        dictionary = SeedScorecardDictionary.sources,
+      )
+    }
 
   @Test
   fun `Austin CC keeps its real 8580 in-state price, and no Scorecard in-state row is written`() {
@@ -42,7 +50,7 @@ class ScorecardResidencyCollapseTest : CollegeScorecardTestBase() {
     // in_state at the newer 2024-25 it would become the served price and
     // understate a Texas commuter's tuition by $6,030, so it is not written.
     assertNull(
-      figure(222992, "tuition_and_fees", "in_state", academicYear = CanonicalMoneyLoader.PUBLISHED_PRICE_YEAR),
+      figure(222992, "tuition_and_fees", "in_state", academicYear = SeedScorecardYears.PUBLISHED_CHARGE),
       "the Scorecard's in-district amount must not be stored as an in-state price at any year",
     )
     assertEquals(
@@ -75,7 +83,7 @@ class ScorecardResidencyCollapseTest : CollegeScorecardTestBase() {
     // everything would still pass the test above; it fails this one.
     val row =
       assertNotNull(
-        figure(110680, "tuition_and_fees", "in_state", academicYear = CanonicalMoneyLoader.PUBLISHED_PRICE_YEAR),
+        figure(110680, "tuition_and_fees", "in_state", academicYear = SeedScorecardYears.PUBLISHED_CHARGE),
       )
     assertEquals(15265, row.amountUsd)
     assertEquals("scorecard", row.source)
@@ -106,7 +114,7 @@ class ScorecardResidencyCollapseTest : CollegeScorecardTestBase() {
 
     val row =
       assertNotNull(
-        figure(133702, "tuition_and_fees", "in_state", academicYear = CanonicalMoneyLoader.PUBLISHED_PRICE_YEAR),
+        figure(133702, "tuition_and_fees", "in_state", academicYear = SeedScorecardYears.PUBLISHED_CHARGE),
         "the newest IC_AY year files equal tiers, so nothing is collapsed and the Scorecard's cell writes",
       )
     assertEquals(2878, row.amountUsd)
@@ -141,7 +149,7 @@ class ScorecardResidencyCollapseTest : CollegeScorecardTestBase() {
     assertEquals(1, fill.inStateTuitionWrittenUnmeasured)
     val row =
       assertNotNull(
-        figure(10236801, "tuition_and_fees", "in_state", academicYear = CanonicalMoneyLoader.PUBLISHED_PRICE_YEAR),
+        figure(10236801, "tuition_and_fees", "in_state", academicYear = SeedScorecardYears.PUBLISHED_CHARGE),
         "an unmeasured college keeps the Scorecard's newer figure -- that is the policy, and the count is its price",
       )
     assertEquals(9792, row.amountUsd)
@@ -167,6 +175,7 @@ class ScorecardResidencyCollapseTest : CollegeScorecardTestBase() {
           source(fieldsCsv),
           source(aliasesJson),
           ipedsCorpusSources("ipeds-ic2023-ay-in-district-absent-fixture.csv"),
+          dictionary = SeedScorecardDictionary.sources,
         )
       }.canonicalMoney
     assertEquals(
@@ -189,7 +198,7 @@ class ScorecardResidencyCollapseTest : CollegeScorecardTestBase() {
     // EXACTLY ONE cell is refused. Out-of-state carries no residency ambiguity
     // -- the Scorecard's own second tuition column -- and nothing else the
     // Scorecard publishes has a residency axis at all.
-    val year = CanonicalMoneyLoader.PUBLISHED_PRICE_YEAR
+    val year = SeedScorecardYears.PUBLISHED_CHARGE
     val outOfState = assertNotNull(figure(222992, "tuition_and_fees", "out_of_state", academicYear = year))
     assertEquals(10590, outOfState.amountUsd)
     assertEquals("scorecard", outOfState.source)
@@ -210,7 +219,7 @@ class ScorecardResidencyCollapseTest : CollegeScorecardTestBase() {
       query(
         "SELECT cms.value::int FROM cohort_money_stats cms JOIN colleges g ON g.id = cms.college_id " +
           "WHERE g.ipeds_unit_id = 222992 AND cms.measure = 'avg_net_price' AND cms.income_band = 'under_30k' " +
-          "AND cms.vintage = ${CanonicalMoneyLoader.BLENDED_AVERAGE_VINTAGE.firstCalendarYear}",
+          "AND cms.vintage = ${SeedScorecardYears.BLENDED_AVERAGE.firstCalendarYear}",
       ) { it.getInt(1) },
     )
   }
@@ -219,13 +228,13 @@ class ScorecardResidencyCollapseTest : CollegeScorecardTestBase() {
   fun `every Scorecard row is stored at the corrected year, and no row is left at the old one`() {
     ingest()
     assertEquals(
-      listOf(CanonicalMoneyLoader.PUBLISHED_PRICE_YEAR),
+      listOf(SeedScorecardYears.PUBLISHED_CHARGE),
       query("SELECT DISTINCT academic_year FROM price_figures WHERE source = 'scorecard'") {
         AcademicYear(it.getInt(1))
       },
     )
     assertEquals(
-      listOf(CanonicalMoneyLoader.BLENDED_AVERAGE_VINTAGE),
+      listOf(SeedScorecardYears.BLENDED_AVERAGE),
       query(
         "SELECT DISTINCT vintage FROM cohort_money_stats WHERE source = 'scorecard' AND vintage IS NOT NULL",
       ) { AcademicYear(it.getInt(1)) },

@@ -10,6 +10,8 @@ import ed.unicoach.coaching.costs.components
 import ed.unicoach.coaching.costs.isAssumedByUnicoach
 import ed.unicoach.coaching.costs.publishedPriceOf
 import ed.unicoach.coaching.costs.reportedComponentsOf
+import ed.unicoach.college.IpedsChargeVocabulary
+import ed.unicoach.college.SeedScorecardDictionary
 import ed.unicoach.common.util.AcademicYear
 import ed.unicoach.db.models.AbsenceStatus
 import ed.unicoach.db.models.CohortAidScope
@@ -87,6 +89,27 @@ class CollegeFiguresTest {
         price(CostField.HOUSING_AND_FOOD_ON_CAMPUS_PER_YEAR_USD, AcademicYear(2023), 9500),
       )
     assertEquals(AcademicYear(2022), chosenYearOf(figures))
+  }
+
+  @Test
+  fun `an arrangement the fetched Scorecard year prices incompletely is served at IC_AY's complete year`() {
+    // RFC 274: the fetched dictionary moves the Scorecard's charges ahead of
+    // IC_AY's staged window, and a school whose newest Scorecard row prices the
+    // family's arrangement incompletely keeps its labelled IPEDS answer -- the
+    // precedence does this already; this is the check that it still does at
+    // the years the committed seed actually holds, read rather than typed.
+    val scorecardYear = SeedScorecardDictionary.dictionary.academicYearOf("TUITIONFEE_IN")
+    val icAyYear = AcademicYear(IpedsChargeVocabulary.SURVEY_YEAR)
+    assertTrue(scorecardYear > icAyYear, "the Scorecard year is the newer one")
+    val figures =
+      figuresOf(
+        *completeYear(icAyYear),
+        price(CostField.TUITION_AND_FEES_IN_STATE_PER_YEAR_USD, scorecardYear, 13000, publisher = null),
+        price(CostField.BOOKS_AND_SUPPLIES_PER_YEAR_USD, scorecardYear, 1300, publisher = null),
+        // No housing and food at the Scorecard's year: the arrangement is incomplete there.
+        price(CostField.HOUSING_AND_FOOD_ON_CAMPUS_PER_YEAR_USD, scorecardYear, publisher = null),
+      )
+    assertEquals(icAyYear, chosenYearOf(figures))
   }
 
   @Test

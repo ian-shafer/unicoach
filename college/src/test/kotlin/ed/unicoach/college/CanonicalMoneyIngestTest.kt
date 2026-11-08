@@ -34,6 +34,7 @@ class CanonicalMoneyIngestTest : CollegeScorecardTestBase() {
         source(fieldsCsv),
         source(aliasesJson),
         moneyVocabulary = source(moneyVocabularyJson),
+        dictionary = SeedScorecardDictionary.sources,
       )
     }
 
@@ -107,7 +108,7 @@ class CanonicalMoneyIngestTest : CollegeScorecardTestBase() {
 
     // The vocabulary file is digested beside the other sources.
     assertTrue(report.sources.any { it.fileName == moneyVocabularyJson.name })
-    assertEquals(4, report.sources.size)
+    assertEquals(4 + SeedScorecardDictionary.sources.files.size, report.sources.size, "plus the three data dictionary CSVs")
 
     // Provenance (P11): both counts and the per-status summary, on the row.
     withSession { session ->
@@ -149,12 +150,23 @@ class CanonicalMoneyIngestTest : CollegeScorecardTestBase() {
     // Omit-vs-zero for the FILE; the TABLES are the precondition (P2). The
     // base fixture seeded them, standing in for any earlier run's load.
     val report =
-      runBlocking { loader.ingest(source(institutionCsv), source(fieldsCsv), source(aliasesJson)) }
+      runBlocking {
+        loader.ingest(
+          source(institutionCsv),
+          source(fieldsCsv),
+          source(aliasesJson),
+          dictionary = SeedScorecardDictionary.sources,
+        )
+      }
     assertEquals(null, report.moneyVocabulary, "no file, no money-vocabulary phase, no fabricated zeros")
     // 35, not 40: no IPEDS group, so the in-state tuition cell is withheld at
     // all five colleges (RFC 183 D1 fails closed).
     assertEquals(35, report.canonicalMoney.priceFigureRows)
-    assertEquals(3, report.sources.size, "no vocabulary digest was recorded for a file this run never read")
+    assertEquals(
+      3 + SeedScorecardDictionary.sources.files.size,
+      report.sources.size,
+      "no vocabulary digest was recorded for a file this run never read",
+    )
   }
 
   private fun scalar(sql: String): Int = withSession { session -> RawSql.single(session, sql) { rs -> rs.getInt(1) } }

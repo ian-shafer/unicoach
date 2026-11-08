@@ -319,10 +319,20 @@ internal fun corruptValue(
   raw: String,
   domain: String,
   location: String,
+  cause: Throwable? = null,
+) = corruptValueExpecting(raw, expected = "a known [$domain] value", location, cause)
+
+/** [corruptValue] for a cell whose fault is not an unknown value of one domain: [expected] says what the row required. */
+internal fun corruptValueExpecting(
+  raw: String,
+  expected: String,
+  location: String,
+  cause: Throwable? = null,
 ) = CorruptPersistedValueException(
   raw,
-  ValidationError.InvalidFormat(expected = "a known [$domain] value"),
+  ValidationError.InvalidFormat(expected = expected),
   location = location,
+  cause = cause,
 )
 
 /**

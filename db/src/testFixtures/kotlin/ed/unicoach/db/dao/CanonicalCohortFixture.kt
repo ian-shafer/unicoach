@@ -175,12 +175,12 @@ object CanonicalCohortFixture {
   /**
    * A vintage for the Scorecard blended averages, as a first calendar year.
    *
-   * A FIXTURE year and nothing more: `:db` cannot see
-   * `CanonicalMoneyLoader.BLENDED_AVERAGE_VINTAGE` (which RFC 183 corrected to
-   * 2023), and nothing here depends on the number -- only on the two
-   * net-price series being separable without it. It is deliberately not
-   * chased when the loader's constant moves, because a fixture that tracked it
-   * would be claiming to test a year it cannot read.
+   * A FIXTURE year and nothing more: the real year is the one the fetched
+   * Scorecard data dictionary states (RFC 274), which `:db` cannot read, and
+   * nothing here depends on the number -- only on the two net-price series
+   * being separable without it. It is deliberately not chased when a release
+   * moves, because a fixture that tracked it would be claiming to test a year
+   * it cannot read.
    */
   private const val SCORECARD_BLEND_VINTAGE = 2021
 }

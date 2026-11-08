@@ -45,6 +45,7 @@ import ed.unicoach.db.models.LivingArrangement
 import ed.unicoach.db.models.MoneyMeasure
 import ed.unicoach.db.models.MoneySource
 import ed.unicoach.db.models.PriceConcept
+import ed.unicoach.db.models.ProgramMoneyDollars
 import ed.unicoach.db.models.ProgramMoneyMeasure
 import ed.unicoach.db.models.PublishedCell
 import ed.unicoach.db.models.ResidencyTierBasis
@@ -3711,7 +3712,7 @@ class CollegeCostServiceTest {
     val earnings = assertIs<ProgramReturnFigure.Reported>(figures.first())
     assertEquals(CostsTestDb.PROGRAM_EARNINGS_USD, earnings.amountUsd)
     assertEquals(ScorecardFieldOfStudyColumns.EARNINGS.publisher, earnings.provenance.publisher)
-    assertEquals(CalendarYear(2024), earnings.provenance.inflationBaseYear)
+    assertEquals(CostsTestDb.PROGRAM_EARNINGS_AMOUNT_USD_YEAR, earnings.provenance.amountUsdYear)
     assertEquals(CostsTestDb.PROGRAM_EARNINGS_COHORT_FIRST_YEAR, earnings.provenance.cohortFirstYear)
     assertEquals(CostsTestDb.PROGRAM_EARNINGS_COHORT_LAST_YEAR, earnings.provenance.cohortLastYear)
     val debt =
@@ -3719,7 +3720,7 @@ class CollegeCostServiceTest {
         figures.single { it.measure == ProgramMoneyMeasure.MEDIAN_DEBT_AT_COMPLETION },
       )
     assertEquals(ScorecardFieldOfStudyColumns.DEBT.publisher, debt.provenance.publisher)
-    assertNull(debt.provenance.inflationBaseYear, "the publisher names no dollar base for debt")
+    assertNull(debt.provenance.amountUsdYear, "the publisher names no dollar base for debt")
     assertEquals(CostsTestDb.PROGRAM_DEBT_COHORT_FIRST_YEAR, debt.provenance.cohortFirstYear)
     assertEquals(CostsTestDb.PROGRAM_DEBT_COHORT_LAST_YEAR, debt.provenance.cohortLastYear)
     val payment =
@@ -3727,7 +3728,7 @@ class CollegeCostServiceTest {
         figures.single { it.measure == ProgramMoneyMeasure.MEDIAN_DEBT_10YR_MONTHLY_PAYMENT },
       )
     assertEquals(ScorecardFieldOfStudyColumns.DEBT_MONTHLY_PAYMENT.publisher, payment.provenance.publisher)
-    assertNull(payment.provenance.inflationBaseYear)
+    assertNull(payment.provenance.amountUsdYear)
 
     val physics = subjects.single { it.subjectSlug == "physics" }
     assertIs<ProgramReturnCollege.NoProgram>(physics.colleges.single { it.collegeId == a })
@@ -3927,82 +3928,48 @@ class CollegeCostServiceTest {
   }
 
   /**
-   * Q5: the cohort SENTENCE and the row's YEARS agree on the rows the ingest
-   * actually writes.
-   *
-   * The check the implementation stands on, asserted from the loader's own side:
-   * `ProgramMoneyLoader` writes `variable.cohortFirstYear` / `cohortLastYear`, so
-   * ordinary rows agree and take the normal path. If this ever failed, the
-   * agreement rule would be quietly routing EVERY figure into the no-row arm.
+   * The row is the only source of a figure's years (RFC 274): a stored row dated
+   * apart from the dictionary is spoken with the years it carries.
    */
   @Test
-  fun `the rows the ingest writes agree with the registry's own cohort sentence`() {
+  fun `a stored row is spoken with its own cohort years and its own dollar year`() {
     seedSubject("nursing", "Nursing", "51")
     val student = createStudent()
-    val collegeId = seedCollege("Agreeing Cohort U")
-    addToCollegeList(student, collegeId)
-    seedProgramMoney(seedProgram(collegeId, cipCode = "5101"))
-    answerIntendedSubjects(student, "nursing")
-
-    val figures = soleProgramFiguresOf(soleCollegeOf(assertNotNull(profileOf(student).programReturn)))
-    figures.forEach { figure ->
-      val held = assertIs<ProgramReturnFigure.Held>(figure, "an ordinary row must take the agreeing path: [${figure.measure.value}]")
-      // The provenance's years are the REGISTRY's by construction (the type reads
-      // them off the entry), so comparing the two here would assert nothing. The
-      // claim is the ARM: the row this fixture STORED -- with the years the loader
-      // writes -- was stamped rather than routed into the no-row arm, which only
-      // happens when the stored years and the registry's agree.
-      assertTrue(
-        held.provenance.cohortSentence == held.provenance.variable.publisherCohortCell,
-        "and the sentence is the registry's verbatim cell",
-      )
-    }
-    // Every variable the registry carries is exercised here, so the agreement is
-    // asserted for all three and not only for the earnings row.
-    assertEquals(
-      ScorecardFieldOfStudyColumns.VARIABLES.size,
-      figures.size,
-      "one figure per published variable",
-    )
-  }
-
-  /**
-   * Q5, the other side: a row whose cohort years the registry's sentence does NOT
-   * describe.
-   *
-   * A registry re-pin is OUR edit and must never make a stored row unreadable.
-   * The figure takes the no-row arm -- the only honest thing to say is that we
-   * hold nothing for it -- while every figure beside it still answers, and the
-   * read does not refuse.
-   */
-  @Test
-  fun `a row whose cohort the registry sentence does not describe takes the no-figure arm and never refuses`() {
-    seedSubject("nursing", "Nursing", "51")
-    val student = createStudent()
-    val collegeId = seedCollege("Re-pinned Cohort U")
+    val collegeId = seedCollege("Own Years U")
     addToCollegeList(student, collegeId)
     val programId = seedProgram(collegeId, cipCode = "5101")
     seedProgramMoney(programId)
-    // The state a registry re-pin leaves behind: a stored row still pooling the
-    // cohort it was ingested at, under a registry that now publishes another.
+    val rowDollars = CostsTestDb.PROGRAM_EARNINGS_AMOUNT_USD_YEAR.year + 1
+    val rowFirst = AcademicYear(CostsTestDb.PROGRAM_EARNINGS_COHORT_FIRST_YEAR.firstCalendarYear + 1)
+    val rowLast = AcademicYear(CostsTestDb.PROGRAM_EARNINGS_COHORT_LAST_YEAR.firstCalendarYear + 1)
     CoachingTestDb.connection
       .prepareStatement(
-        "UPDATE program_money_stats SET cohort_first_year = 2013, cohort_last_year = 2014 " +
+        "UPDATE program_money_stats SET amount_usd_year = ?, cohort_first_year = ?, cohort_last_year = ? " +
           "WHERE college_program_id = ? AND measure = ?",
       ).use { stmt ->
-        stmt.setObject(1, programId)
-        stmt.setString(2, ProgramMoneyMeasure.MEDIAN_EARNINGS_4YR_AFTER_ENTRY.value)
+        stmt.setInt(1, rowDollars)
+        stmt.setInt(2, rowFirst.firstCalendarYear)
+        stmt.setInt(3, rowLast.firstCalendarYear)
+        stmt.setObject(4, programId)
+        stmt.setString(5, ProgramMoneyMeasure.MEDIAN_EARNINGS_4YR_AFTER_ENTRY.value)
         stmt.executeUpdate()
       }
     answerIntendedSubjects(student, "nursing")
 
-    val figures = soleProgramFiguresOf(soleCollegeOf(assertNotNull(profileOf(student).programReturn)))
-    assertIs<ProgramReturnFigure.NoFigure>(
-      figures.single { it.measure == ProgramMoneyMeasure.MEDIAN_EARNINGS_4YR_AFTER_ENTRY },
-      "a sentence about another cohort beside this figure would contradict it in front of a family",
+    val college = soleCollegeOf(assertNotNull(profileOf(student).programReturn))
+    val earnings =
+      assertIs<ProgramReturnFigure.Reported>(
+        soleProgramFiguresOf(college).single { it.measure == ProgramMoneyMeasure.MEDIAN_EARNINGS_4YR_AFTER_ENTRY },
+      )
+    assertEquals(CalendarYear(rowDollars), earnings.provenance.amountUsdYear)
+    assertEquals(rowFirst, earnings.provenance.cohortFirstYear)
+    assertEquals(rowLast, earnings.provenance.cohortLastYear)
+    val sentence = assertNotNull(ProgramReturnCopy.cohortsSentenceOf(listOf(college)))
+    assertTrue(sentence.contains("in $rowDollars dollars"), "the row's own dollar year is the one said: [$sentence]")
+    assertTrue(
+      sentence.contains(rowFirst.label) && sentence.contains(rowLast.label),
+      "and the row's own cohort: [$sentence]",
     )
-    assertIs<ProgramReturnFigure.Reported>(figures.single { it.measure == ProgramMoneyMeasure.MEDIAN_DEBT_AT_COMPLETION })
-    assertIs<ProgramReturnFigure.Reported>(figures.single { it.measure == ProgramMoneyMeasure.MEDIAN_DEBT_10YR_MONTHLY_PAYMENT })
   }
 
   /**
@@ -4025,7 +3992,7 @@ class CollegeCostServiceTest {
     CoachingTestDb.connection
       .prepareStatement(
         "INSERT INTO program_money_stats (college_program_id, measure, cohort_first_year, cohort_last_year, " +
-          "amount_usd, status, source, source_variable) VALUES (?, ?, 2013, 2014, ?, ?, ?, ?)",
+          "amount_usd, status, source, source_variable, amount_usd_year) VALUES (?, ?, 2013, 2014, ?, ?, ?, ?, ?)",
       ).use { stmt ->
         stmt.setObject(1, programId)
         stmt.setString(2, ProgramMoneyMeasure.MEDIAN_EARNINGS_4YR_AFTER_ENTRY.value)
@@ -4033,6 +4000,7 @@ class CollegeCostServiceTest {
         stmt.setString(4, FigureStatus.REPORTED.value)
         stmt.setString(5, MoneySource.SCORECARD.value)
         stmt.setString(6, ScorecardFieldOfStudyColumns.EARN_MDN_4YR)
+        stmt.setInt(7, CostsTestDb.PROGRAM_EARNINGS_AMOUNT_USD_YEAR.year)
         stmt.executeUpdate()
       }
     answerIntendedSubjects(student, "nursing")
@@ -4204,7 +4172,7 @@ class CollegeCostServiceTest {
    * `create-program-money-stats.sql` adds no CHECK narrowing it here -- so a row
    * of another publisher's file stores cleanly. Stamping it from
    * `ScorecardFieldOfStudyColumns` would speak that publisher's variable to a
-   * family under the Scorecard's publisher, cohort sentence and dollar base.
+   * family under the Scorecard's publisher.
    * Written with raw SQL for the reason the `source_variable` test above is: a
    * test that could only produce this row through today's narrow loader would
    * be asserting the narrowness, not the behaviour.
@@ -4263,11 +4231,10 @@ class CollegeCostServiceTest {
    * A row whose stored `measure` is not the one its own `source_variable`
    * publishes -- the registry DISAGREEING with the store.
    *
-   * The publisher, the verbatim cohort cell and the dollar base are read off the
-   * VARIABLE, so serving this row would put a debt figure under the earnings
-   * publisher and the 2024 dollar base. It says nothing instead. A disagreement
-   * between the registry and a stored row is OUR edit exactly as a re-pin is,
-   * and the settled rule for those is the no-figure arm and never a refusal:
+   * The publisher is read off the VARIABLE, so serving this row would put an
+   * earnings figure under the debt publisher. It says nothing instead. A
+   * disagreement between the registry and a stored row is OUR edit, and the
+   * settled rule for those is the no-figure arm and never a refusal:
    * one row must not take a family's whole cost answer down.
    */
   @Test
@@ -4308,31 +4275,28 @@ class CollegeCostServiceTest {
   }
 
   /**
-   * The two DOORS that carry the section's ABSENT-never-empty claim (RFC 231),
-   * each driven on its own answer.
+   * The door that carries the section's ABSENT-never-empty claim (RFC 231).
    *
-   * There is no throw left to observe: both constructors are private, so a short
-   * `figures` array, an all-absent one and a provenance whose years the registry
-   * does not describe are states no call site can spell -- the compiler carries
-   * those three claims, exactly as it carries the empty `programs` list that
-   * [ProgramReturnCollege.WithPrograms]'s head parameter forbids. What is still
-   * worth asserting is what each factory ANSWERS, because the assembly only ever
-   * hands them legal input: a factory that totalled the measures wrongly, or one
-   * that stamped a disagreeing cohort instead of answering null, would pass every
-   * other test in this file.
+   * There is no throw left to observe: the constructor is private, so a short
+   * `figures` array and an all-absent one are states no call site can spell --
+   * the compiler carries those claims, exactly as it carries the empty
+   * `programs` list that [ProgramReturnCollege.WithPrograms]'s head parameter
+   * forbids. What is still worth asserting is what the factory ANSWERS, because
+   * the assembly only ever hands it legal input: a factory that totalled the
+   * measures wrongly would pass every other test in this file.
    */
   @Test
-  fun `the two doors total the measure set, choose the no-figures arm, and refuse a disagreeing cohort`() {
-    val agreeing =
+  fun `the door totals the measure set and chooses the no-figures arm`() {
+    val provenance =
       assertNotNull(
-        ProgramFigureProvenance.ofAgreeingCohort(
+        ProgramFigureProvenance.ofOrNull(
           ScorecardFieldOfStudyColumns.EARNINGS,
-          ScorecardFieldOfStudyColumns.EARNINGS.cohortFirstYear,
-          ScorecardFieldOfStudyColumns.EARNINGS.cohortLastYear,
+          CostsTestDb.PROGRAM_EARNINGS_COHORT_FIRST_YEAR,
+          CostsTestDb.PROGRAM_EARNINGS_COHORT_LAST_YEAR,
+          ProgramMoneyDollars.MedianEarnings4YrAfterEntry(CostsTestDb.PROGRAM_EARNINGS_AMOUNT_USD_YEAR),
         ),
-        "the registry's own years must take the agreeing path, or this test proves nothing",
       )
-    val earnings = ProgramReturnFigure.Reported(CostsTestDb.PROGRAM_EARNINGS_USD, agreeing)
+    val earnings = ProgramReturnFigure.Reported(CostsTestDb.PROGRAM_EARNINGS_USD, provenance)
 
     val fromOneFigure =
       assertIs<ProgramReturnProgram.WithFigures>(
@@ -4356,15 +4320,6 @@ class CollegeCostServiceTest {
         "a program we could stamp nothing for is [NoPublishedFigures], never an all-absent figure list",
       )
     assertEquals("5101", fromNothing.cipCode.value, "and it still names the program it is about")
-
-    assertNull(
-      ProgramFigureProvenance.ofAgreeingCohort(
-        ScorecardFieldOfStudyColumns.EARNINGS,
-        AcademicYear(2013),
-        AcademicYear(2014),
-      ),
-      "a cohort the registry's own cell does not describe is never stamped",
-    )
   }
 }
 

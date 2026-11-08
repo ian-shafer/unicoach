@@ -1,10 +1,9 @@
 package ed.unicoach.coaching.admissions
 
-import kotlinx.serialization.json.Json
-import kotlinx.serialization.json.jsonObject
-import kotlinx.serialization.json.jsonPrimitive
+import ed.unicoach.college.ScorecardDictionary
+import ed.unicoach.college.ScorecardScoreBandColumns
+import ed.unicoach.college.SeedScorecardDictionary
 import org.junit.jupiter.api.Test
-import java.io.File
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertIs
@@ -225,7 +224,6 @@ class ScoreBandCopyTest {
     // D-B: one constant, quoting the publisher's own dictionary cell. A
     // sentence that typed the term would be a second place for the date to
     // live, and the two would drift the first time a snapshot moved.
-    assertEquals("autumn 2024", ScoreBandCitation.COHORT_TERM)
     assertTrue(ScoreBandCopy.MIDDLE_HALF_OF_ADMITTED.contains(ScoreBandCitation.COHORT_TERM))
     assertTrue(ScoreBandCopy.AVERAGE_LABEL.contains(ScoreBandCitation.COHORT_TERM))
     assertTrue(ScoreBandCitation.citedAs.contains(ScoreBandCitation.COHORT_TERM))
@@ -302,38 +300,26 @@ class ScoreBandCopyTest {
   ): ScoreBandResult.Malformed = assertIs<ScoreBandResult.Malformed>(ScoreBand.of(test, lower, upper))
 
   @Test
-  fun `the cohort is pinned to the snapshot it was transcribed from`() {
-    // D-B, and the thing a literal cannot say on its own: `bin/fetch-scorecard`
-    // discovers the CURRENT release, so the seed directory can move under this
-    // constant with no Kotlin change -- leaving every band sentence dated to a
-    // cohort nobody re-read. Read the committed provenance the way
-    // `ScorecardDictionaryPinTest` reads its committed CSV.
-    // Located by walking UP for the seed directory, `ScorecardDictionaryPinTest`'s
-    // own idiom: a module-relative literal breaks the moment this suite is run
-    // from a different working directory, and the failure would read as a
-    // missing snapshot rather than a missing path.
-    val provenance =
-      generateSequence(File(".").absoluteFile) { it.parentFile }
-        .map { File(it, "db/seed/scorecard/PROVENANCE.json") }
-        .firstOrNull { it.isFile }
-    assertNotNull(
-      provenance,
-      "no db/seed/scorecard/PROVENANCE.json on the walk UP from [${File(".").absoluteFile}]: it is a COMMITTED " +
-        "record (the two CSVs beside it are gitignored), so a checkout without it cannot pin the cohort",
-    )
-    val release =
-      Json
-        .parseToJsonElement(provenance.readText())
-        .jsonObject
-        .getValue("release")
-        .jsonPrimitive.content
+  fun `the cohort term is the one the fetched data dictionary states for every band variable`() {
+    // D-B, re-pointed by RFC 274: the term is a literal only until the bands
+    // move onto rows that carry their own period, and the fetched dictionary
+    // is what holds it to the publisher. All seven band variables must read as
+    // ONE entering term -- a release that splits them is a decision, not a
+    // re-dating -- and COHORT_TERM must speak that term.
+    val dictionary = SeedScorecardDictionary.dictionary
+    val terms =
+      ScorecardScoreBandColumns.VARIABLES.associateWith { variable ->
+        assertIs<ScorecardDictionary.Cohort.StatedTerm>(
+          dictionary.enteringPeriodOf(variable),
+          "[$variable] is dated [${dictionary.institutionCellOf(variable)}], which is not an entering term",
+        )
+      }
+    val autumnYears = terms.values.map { it.autumnYear }.toSet()
+    assertEquals(1, autumnYears.size, "the seven band variables are dated to one term by the publisher: $terms")
     assertEquals(
-      release,
-      ScoreBandCitation.COHORT_SNAPSHOT_RELEASE,
-      "the cohort term [${ScoreBandCitation.COHORT_TERM}] was transcribed from release " +
-        "[${ScoreBandCitation.COHORT_SNAPSHOT_RELEASE}] and the seed is now release [$release]: re-read " +
-        "CollegeScorecardDataDictionary.xlsx sheet Most_Recent_Inst_Cohort_Map for SATVR/SATMT/ACTCM, then update " +
-        "COHORT_TERM, COHORT_SNAPSHOT_RELEASE and db/seed/scorecard/FETCH-NOTES.md together",
+      "autumn ${autumnYears.single()}",
+      ScoreBandCitation.COHORT_TERM,
+      "the fetched dictionary dates the bands [${terms.values.first().term}]: update ScoreBandCitation.COHORT_TERM",
     )
   }
 

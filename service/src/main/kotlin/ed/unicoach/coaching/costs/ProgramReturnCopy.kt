@@ -436,7 +436,7 @@ object ProgramReturnCopy {
   /** "students who finished in 2017-18 and 2018-19, in 2024 dollars" -- the cohort, and the dollar base where one is named. */
   private fun cohortOf(provenance: ProgramFigureProvenance): String {
     val years = spokenYearsOf(provenance.cohortFirstYear, provenance.cohortLastYear)
-    val base = provenance.inflationBaseYear?.let { ", in ${it.year} dollars" }.orEmpty()
+    val base = provenance.amountUsdYear?.let { ", in ${it.year} dollars" }.orEmpty()
     return "students who finished in $years$base"
   }
 

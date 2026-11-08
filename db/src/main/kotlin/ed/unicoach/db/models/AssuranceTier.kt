@@ -84,7 +84,8 @@ enum class AssuranceTier(
      *
      * Written as DATA and not as a `when`, because that is what it is: a
      * transcription of another publisher's own `SOURCE` column, pinned against
-     * the committed `db/seed/scorecard/dictionary-variable-sources.csv`.
+     * the fetched `db/seed/scorecard/dictionary-institution-sources.csv` (RFC
+     * 274).
      *
      * `DEBT_MDN` is deliberately absent: this corpus does not load that column
      * ([ed.unicoach.college.ScorecardInstitutionColumns]), and a tier for a

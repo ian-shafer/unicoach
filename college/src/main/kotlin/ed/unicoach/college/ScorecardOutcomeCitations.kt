@@ -4,7 +4,15 @@ import ed.unicoach.common.util.AcademicYear
 import ed.unicoach.db.models.CollegeMatch
 import kotlin.reflect.KProperty1
 
-// The seven citations' periods, as VALUES. Top-level and private rather than
+// The seven citations' periods, as VALUES -- literals only until the outcome
+// figures move onto rows that carry their own period (brief 0017 slice
+// `cost/07/the-figures-carry-their-year`). Each is the period the FETCHED data
+// dictionary states for its variable (`db/seed/scorecard/
+// dictionary-institution-cohorts.csv`, RFC 274), and `ScorecardDictionaryPinTest`
+// reads that file through `ScorecardDictionary` and fails, naming the variable
+// and the publisher's cell, the day a fetched release states another.
+//
+// Top-level and private rather than
 // members of [ScorecardOutcomeCitations], deliberately: the object's own
 // `byWireKey` reads `Citation.entries`, so a period read off the object from an
 // enum entry's constructor would be a class-initialisation cycle -- the enum
@@ -14,12 +22,12 @@ import kotlin.reflect.KProperty1
 // see them.
 
 /** The entering cohort `C150_4` describes. */
-private val COMPLETION_COHORT = ScorecardOutcomeCitations.CohortPeriod.EnteringTerm(2018)
+private val COMPLETION_COHORT = ScorecardOutcomeCitations.CohortPeriod.EnteringTerm(2019)
 
 // ONE value per dictionary cell, never one per distinct PERIOD. The pairs
 // below hold the same period today only because the publisher happens to date
-// both figures alike; they are separate cells of
-// `dictionary-variable-sources.csv` and a snapshot may re-date one alone.
+// both figures alike; they are separate cells of the dictionary and a release
+// may re-date one alone.
 // Folded into a single value the fold would look like a tidy-up and would
 // still pass `ScorecardOutcomeCitationsTest` -- until that snapshot lands, and
 // then it would silently re-date a figure nobody edited.
@@ -31,7 +39,7 @@ private val ADMISSION_COHORT = ScorecardOutcomeCitations.CohortPeriod.EnteringTe
 private val ENROLLMENT_COHORT = ScorecardOutcomeCitations.CohortPeriod.EnteringTerm(2024)
 
 // RFC 242's four cells. The publisher dates the three `OMAWDP8_*` variables to
-// an ENTERING ACADEMIC YEAR ("AY 2016-17 cohort"), not to a fall term, so their
+// an ENTERING ACADEMIC YEAR ("AY <label> cohort"), not to a fall term, so their
 // spoken form is the academic year and not an autumn. Saying "autumn 2016" for
 // a cohort that entered across a July-June year would misstate the population,
 // which is the exact class of error RFC 183 exists to prevent. That difference
@@ -41,21 +49,21 @@ private val ENROLLMENT_COHORT = ScorecardOutcomeCitations.CohortPeriod.EnteringT
 // compares periods as values instead of scraping years out of finished prose.
 
 /** The entering cohort `OMAWDP8_ALL` describes. */
-private val COMPLETION_8YR_COHORT = ScorecardOutcomeCitations.CohortPeriod.EnteringAcademicYear(AcademicYear(2016))
+private val COMPLETION_8YR_COHORT = ScorecardOutcomeCitations.CohortPeriod.EnteringAcademicYear(AcademicYear(2017))
 
 /** The entering cohort `OMAWDP8_PELL_ALL` describes, on [COMPLETION_8YR_COHORT]'s terms. */
-private val COMPLETION_8YR_PELL_COHORT = ScorecardOutcomeCitations.CohortPeriod.EnteringAcademicYear(AcademicYear(2016))
+private val COMPLETION_8YR_PELL_COHORT = ScorecardOutcomeCitations.CohortPeriod.EnteringAcademicYear(AcademicYear(2017))
 
 /** The entering cohort `OMAWDP8_NOPELL_ALL` describes, on [COMPLETION_8YR_COHORT]'s terms. */
 private val COMPLETION_8YR_NON_PELL_COHORT =
-  ScorecardOutcomeCitations.CohortPeriod.EnteringAcademicYear(AcademicYear(2016))
+  ScorecardOutcomeCitations.CohortPeriod.EnteringAcademicYear(AcademicYear(2017))
 
 /**
  * The entering cohort `TRANS_4` describes. Its dictionary cell is `C150_4`'s
  * own, because it counts that same six-year cohort -- and it is still its own
  * value, because it is its own cell.
  */
-private val TRANSFER_OUT_COHORT = ScorecardOutcomeCitations.CohortPeriod.EnteringTerm(2018)
+private val TRANSFER_OUT_COHORT = ScorecardOutcomeCitations.CohortPeriod.EnteringTerm(2019)
 
 /**
  * The sentence a coach says for each OUTCOME figure a search row carries, once
@@ -83,8 +91,9 @@ private val TRANSFER_OUT_COHORT = ScorecardOutcomeCitations.CohortPeriod.Enterin
  * source text is not committed beside it cannot be reviewed. The population in
  * each sentence is the publisher's own, from sheet `Institution_Data_Dictionary`
  * of `CollegeScorecardDataDictionary.xlsx`, columns `NAME OF DATA ELEMENT` and
- * `NOTES`, verbatim (the download itself -- URL, date, byte count -- is
- * recorded once in `db/seed/scorecard/FETCH-NOTES.md`, not a second time here):
+ * `NOTES`, verbatim (the download itself -- URL, date, byte count, digest -- is
+ * recorded once in `db/seed/scorecard/PROVENANCE.json`, and the sheet is
+ * committed beside it as `dictionary-institution-sources.csv`):
  *
  * - `ADM_RATE` -- "Admission rate". The dictionary states no population note:
  *   it is one overall rate for the entering class, with no split by

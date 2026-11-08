@@ -2311,7 +2311,7 @@ assert_exit_code "$EXIT_MISSING_REQUIRED_ARG" "ingest-colleges with no args exit
 assert_exit_code "$EXIT_MISSING_REQUIRED_ARG" "ingest-colleges with one arg exits 21" bin/ingest-colleges only.csv
 assert_exit_code "$EXIT_MISSING_REQUIRED_ARG" "ingest-colleges with four args exits 21" bin/ingest-colleges a.csv b.csv c.json d.csv
 test_ingest_colleges_missing_file() {
-  bin/ingest-colleges "/no/such/$$-institution.csv" "/no/such/$$-fields.csv" >/dev/null 2>&1
+  bin/ingest-colleges -D "$PROJECT_ROOT/db/seed/scorecard/dictionary-institution-cohorts.csv" -O "$PROJECT_ROOT/db/seed/scorecard/dictionary-institution-sources.csv" -F "$PROJECT_ROOT/db/seed/scorecard/dictionary-field-of-study-cohorts.csv" "/no/such/$$-institution.csv" "/no/such/$$-fields.csv" >/dev/null 2>&1
 }
 assert_failure "ingest-colleges fatals on a nonexistent local CSV path" test_ingest_colleges_missing_file
 
@@ -2358,7 +2358,7 @@ test_ingest_colleges_source_flags() {
   # there $? is the NEGATION's status (always 0), so the failure path would
   # return success and this test would pass vacuously on a broken ingest.
   rc=0
-  "$root/bin/ingest-colleges" "$inst" "$fields" > "$log" 2>&1 || rc=$?
+  "$root/bin/ingest-colleges" -D "$root/db/seed/scorecard/dictionary-institution-cohorts.csv" -O "$root/db/seed/scorecard/dictionary-institution-sources.csv" -F "$root/db/seed/scorecard/dictionary-field-of-study-cohorts.csv" "$inst" "$fields" > "$log" 2>&1 || rc=$?
   if [ "$rc" -ne 0 ]; then
     echo "ingest-colleges exited [$rc]:" >&2
     cat "$log" >&2
@@ -2376,6 +2376,112 @@ test_ingest_colleges_source_flags() {
 }
 assert_success "ingest-colleges passes original source args to the launcher as --*-source flags" test_ingest_colleges_source_flags
 
+# The data dictionary (RFC 274): three files, three REQUIRED options -- -D, -O,
+# -F -- each forwarded as its own --dictionary-*= flag with a -source partner
+# carrying the caller's ORIGINAL argument. Three, not one file with siblings
+# beside it, because bin/remote uploads every -f file under its own prefix.
+DICTIONARY_OPTIONS=(D:dictionary-cohorts:dictionary-institution-cohorts.csv
+  O:dictionary-sources:dictionary-institution-sources.csv
+  F:dictionary-fields:dictionary-field-of-study-cohorts.csv)
+
+test_ingest_colleges_forwards_the_dictionary() {
+  local root parent argv inst fields rc spec letter flag file
+  parent="$(mktemp -d)"
+  root="$parent/unicoach-ingestdictionary"
+  argv="$parent/launcher-argv"
+  make_college_argv_stub_root "$root" "$argv"
+  inst="$parent/institution.csv"; fields="$parent/fields.csv"
+  : > "$inst"; : > "$fields"
+  rc=0
+  "$root/bin/ingest-colleges" -D "$root/db/seed/scorecard/dictionary-institution-cohorts.csv" \
+    -O "$root/db/seed/scorecard/dictionary-institution-sources.csv" \
+    -F "$root/db/seed/scorecard/dictionary-field-of-study-cohorts.csv" "$inst" "$fields" \
+    > "$parent/log" 2>&1 || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    log-error "ingest-colleges exited [$rc]: [$(cat "$parent/log")]"; rm -rf "$parent"; return 1
+  fi
+  for spec in "${DICTIONARY_OPTIONS[@]}"; do
+    IFS=: read -r letter flag file <<< "$spec"
+    grep -qxF -- "--$flag-source=$root/db/seed/scorecard/$file" "$argv" &&
+      grep -qE -- "^--$flag=.*/${file//./\\.}\$" "$argv" ||
+      { log-error "-$letter was not forwarded as --$flag: launcher argv [$(cat "$argv")]"; rm -rf "$parent"; return 1; }
+  done
+  rm -rf "$parent"
+  return 0
+}
+assert_success "ingest-colleges forwards -D, -O and -F as their own --dictionary-* flags with --*-source partners" \
+  test_ingest_colleges_forwards_the_dictionary
+
+# Each of the three, left off, is refused BY NAME before the launcher starts:
+# "the dictionary is required" would not say which file is missing.
+test_ingest_colleges_refuses_each_missing_dictionary_option() {
+  local root parent argv inst fields rc out spec letter flag file other args
+  parent="$(mktemp -d)"
+  root="$parent/unicoach-ingestnodictionary"
+  argv="$parent/launcher-argv"
+  make_college_argv_stub_root "$root" "$argv"
+  inst="$parent/institution.csv"; fields="$parent/fields.csv"
+  : > "$inst"; : > "$fields"
+  for spec in "${DICTIONARY_OPTIONS[@]}"; do
+    IFS=: read -r letter flag file <<< "$spec"
+    args=()
+    for other in "${DICTIONARY_OPTIONS[@]}"; do
+      [ "$other" = "$spec" ] && continue
+      args+=("-${other%%:*}" "$root/db/seed/scorecard/${other##*:}")
+    done
+    rc=0
+    out="$("$root/bin/ingest-colleges" "${args[@]}" "$inst" "$fields" 2>&1)" || rc=$?
+    if [ "$rc" -ne "$EXIT_MISSING_REQUIRED_ARG" ] || [ -f "$argv" ]; then
+      log-error "without -$letter: exit [$rc], launcher ran [$([ -f "$argv" ] && echo yes || echo no)]: [$out]"
+      rm -rf "$parent"; return 1
+    fi
+    case "$out" in
+      *"[-$letter <$file>] is required"*) ;;
+      *) log-error "the refusal without -$letter does not name it: [$out]"; rm -rf "$parent"; return 1 ;;
+    esac
+  done
+  rm -rf "$parent"
+  return 0
+}
+assert_success "ingest-colleges refuses each of -D, -O and -F by name before the launcher starts" \
+  test_ingest_colleges_refuses_each_missing_dictionary_option
+
+# An s3:// dictionary argument goes through resolve_file_arg like every other
+# input -- the shape bin/remote hands the host. A stub `aws` on PATH serves the
+# object from the committed seed, so the s3 branch runs with no AWS at all; the
+# launcher must be handed the DOWNLOADED path and the s3 URI as the source.
+test_ingest_colleges_resolves_an_s3_dictionary_argument() {
+  local root parent argv inst fields rc stubbin uri
+  parent="$(mktemp -d)"
+  root="$parent/unicoach-ingests3dictionary"
+  argv="$parent/launcher-argv"
+  make_college_argv_stub_root "$root" "$argv"
+  inst="$parent/institution.csv"; fields="$parent/fields.csv"
+  : > "$inst"; : > "$fields"
+  stubbin="$parent/stub-bin"
+  mkdir -p "$stubbin"
+  printf '#!/usr/bin/env bash\n[ "$1 $2" = "s3 cp" ] || exit 9\ncp %q "$4"\n' \
+    "$PROJECT_ROOT/db/seed/scorecard/dictionary-institution-sources.csv" > "$stubbin/aws"
+  chmod +x "$stubbin/aws"
+  uri="s3://ops-inputs/run-1/4/dictionary-institution-sources.csv"
+  rc=0
+  PATH="$stubbin:$PATH" "$root/bin/ingest-colleges" -D "$root/db/seed/scorecard/dictionary-institution-cohorts.csv" \
+    -O "$uri" -F "$root/db/seed/scorecard/dictionary-field-of-study-cohorts.csv" "$inst" "$fields" \
+    > "$parent/log" 2>&1 || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    log-error "ingest-colleges exited [$rc]: [$(cat "$parent/log")]"; rm -rf "$parent"; return 1
+  fi
+  grep -qxF -- "--dictionary-sources-source=$uri" "$argv" &&
+    grep -qE -- '^--dictionary-sources=/.*/dictionary-institution-sources\.csv$' "$argv" &&
+    ! grep -qxF -- "--dictionary-sources=$uri" "$argv"
+  rc=$?
+  [ "$rc" -eq 0 ] || log-error "the s3 argument was not resolved: launcher argv [$(cat "$argv")]"
+  rm -rf "$parent"
+  return "$rc"
+}
+assert_success "an s3:// dictionary argument is downloaded by resolve_file_arg, its URI kept as the source" \
+  test_ingest_colleges_resolves_an_s3_dictionary_argument
+
 # Channel discipline (RFC 158 / bin conventions): on a normal run the wrapper
 # writes NOTHING of its own to stdout -- every diagnostic, including the final
 # summary, is stderr traffic. Exercised with the same stub-launcher fixture as
@@ -2390,7 +2496,7 @@ test_ingest_colleges_stdout_stays_empty() {
   : > "$inst"; : > "$fields"
   stdout="$parent/stdout"; stderr="$parent/stderr"
   rc=0
-  "$root/bin/ingest-colleges" "$inst" "$fields" > "$stdout" 2> "$stderr" || rc=$?
+  "$root/bin/ingest-colleges" -D "$root/db/seed/scorecard/dictionary-institution-cohorts.csv" -O "$root/db/seed/scorecard/dictionary-institution-sources.csv" -F "$root/db/seed/scorecard/dictionary-field-of-study-cohorts.csv" "$inst" "$fields" > "$stdout" 2> "$stderr" || rc=$?
   if [ "$rc" -ne 0 ]; then
     log-error "ingest-colleges exited [$rc], stderr [$(cat "$stderr")]"
     rm -rf "$parent"
@@ -2429,7 +2535,7 @@ assert_exit_code "$EXIT_OPTION_REQUIRES_VALUE" "ingest-colleges -m without a val
 assert_exit_code "$EXIT_UNKNOWN_OPTION" "ingest-colleges rejects an unknown option (10)" \
   bin/ingest-colleges -z a.csv b.csv
 test_ingest_colleges_missing_cds_file() {
-  bin/ingest-colleges -m "/no/such/$$-m.csv" -a "/no/such/$$-a.csv" -d "/no/such/$$-d.csv" \
+  bin/ingest-colleges -D "$PROJECT_ROOT/db/seed/scorecard/dictionary-institution-cohorts.csv" -O "$PROJECT_ROOT/db/seed/scorecard/dictionary-institution-sources.csv" -F "$PROJECT_ROOT/db/seed/scorecard/dictionary-field-of-study-cohorts.csv" -m "/no/such/$$-m.csv" -a "/no/such/$$-a.csv" -d "/no/such/$$-d.csv" \
     -p "/no/such/$$-p.csv" bin/functions bin/functions >/dev/null 2>&1
 }
 assert_failure "ingest-colleges fatals on a nonexistent CDS seed path" test_ingest_colleges_missing_cds_file
@@ -2476,7 +2582,7 @@ test_ingest_colleges_award_flags() {
   : > "$inst"; : > "$fields"; : > "$awards"; : > "$bands"
   log="$parent/ingest.log"
   rc=0
-  "$root/bin/ingest-colleges" -w "$awards" -b "$bands" "$inst" "$fields" > "$log" 2>&1 || rc=$?
+  "$root/bin/ingest-colleges" -D "$root/db/seed/scorecard/dictionary-institution-cohorts.csv" -O "$root/db/seed/scorecard/dictionary-institution-sources.csv" -F "$root/db/seed/scorecard/dictionary-field-of-study-cohorts.csv" -w "$awards" -b "$bands" "$inst" "$fields" > "$log" 2>&1 || rc=$?
   if [ "$rc" -ne 0 ]; then
     log-error "ingest-colleges exited [$rc], log [$(cat "$log")]"
     rm -rf "$parent"
@@ -2516,7 +2622,7 @@ test_ingest_colleges_without_award_flags_forwards_neither() {
   : > "$inst"; : > "$fields"
   log="$parent/ingest.log"
   rc=0
-  "$root/bin/ingest-colleges" "$inst" "$fields" > "$log" 2>&1 || rc=$?
+  "$root/bin/ingest-colleges" -D "$root/db/seed/scorecard/dictionary-institution-cohorts.csv" -O "$root/db/seed/scorecard/dictionary-institution-sources.csv" -F "$root/db/seed/scorecard/dictionary-field-of-study-cohorts.csv" "$inst" "$fields" > "$log" 2>&1 || rc=$?
   if [ "$rc" -ne 0 ]; then
     log-error "ingest-colleges exited [$rc], log [$(cat "$log")]"
     rm -rf "$parent"
@@ -2570,7 +2676,7 @@ test_ingest_colleges_national_merit_award_flag() {
   : > "$inst"; : > "$fields"; : > "$awards"
   log="$parent/ingest.log"
   rc=0
-  "$root/bin/ingest-colleges" -N "$awards" "$inst" "$fields" > "$log" 2>&1 || rc=$?
+  "$root/bin/ingest-colleges" -D "$root/db/seed/scorecard/dictionary-institution-cohorts.csv" -O "$root/db/seed/scorecard/dictionary-institution-sources.csv" -F "$root/db/seed/scorecard/dictionary-field-of-study-cohorts.csv" -N "$awards" "$inst" "$fields" > "$log" 2>&1 || rc=$?
   if [ "$rc" -ne 0 ]; then
     log-error "ingest-colleges exited [$rc], log [$(cat "$log")]"
     rm -rf "$parent"
@@ -2608,7 +2714,7 @@ test_ingest_colleges_forwards_no_national_merit_sidecar_flag() {
   : > "$inst"; : > "$fields"; : > "$awards"
   log="$parent/ingest.log"
   rc=0
-  "$root/bin/ingest-colleges" -N "$awards" "$inst" "$fields" > "$log" 2>&1 || rc=$?
+  "$root/bin/ingest-colleges" -D "$root/db/seed/scorecard/dictionary-institution-cohorts.csv" -O "$root/db/seed/scorecard/dictionary-institution-sources.csv" -F "$root/db/seed/scorecard/dictionary-field-of-study-cohorts.csv" -N "$awards" "$inst" "$fields" > "$log" 2>&1 || rc=$?
   if [ "$rc" -ne 0 ]; then
     log-error "ingest-colleges exited [$rc], log [$(cat "$log")]"
     rm -rf "$parent"
@@ -2639,7 +2745,7 @@ test_ingest_colleges_without_national_merit_flag_forwards_neither() {
   : > "$inst"; : > "$fields"
   log="$parent/ingest.log"
   rc=0
-  "$root/bin/ingest-colleges" "$inst" "$fields" > "$log" 2>&1 || rc=$?
+  "$root/bin/ingest-colleges" -D "$root/db/seed/scorecard/dictionary-institution-cohorts.csv" -O "$root/db/seed/scorecard/dictionary-institution-sources.csv" -F "$root/db/seed/scorecard/dictionary-field-of-study-cohorts.csv" "$inst" "$fields" > "$log" 2>&1 || rc=$?
   if [ "$rc" -ne 0 ]; then
     log-error "ingest-colleges exited [$rc], log [$(cat "$log")]"
     rm -rf "$parent"
@@ -5417,7 +5523,7 @@ test_ingest_colleges_ipeds_source_flags() {
   : > "$inst"; : > "$fields"; : > "$hd"; : > "$ic"; : > "$adm"; : > "$ca"; : > "$icay"
   log="$parent/ingest.log"
   rc=0
-  "$root/bin/ingest-colleges" \
+  "$root/bin/ingest-colleges" -D "$root/db/seed/scorecard/dictionary-institution-cohorts.csv" -O "$root/db/seed/scorecard/dictionary-institution-sources.csv" -F "$root/db/seed/scorecard/dictionary-field-of-study-cohorts.csv" \
     -H "$hd" -I "$ic" -A "$adm" -C "$ca" -Y "$icay" -y 2023 \
     "$inst" "$fields" > "$log" 2>&1 || rc=$?
   if [ "$rc" -ne 0 ]; then
@@ -5451,7 +5557,7 @@ test_ingest_colleges_no_ipeds_argv() {
   : > "$inst"; : > "$fields"
   log="$parent/ingest.log"
   rc=0
-  "$root/bin/ingest-colleges" "$inst" "$fields" > "$log" 2>&1 || rc=$?
+  "$root/bin/ingest-colleges" -D "$root/db/seed/scorecard/dictionary-institution-cohorts.csv" -O "$root/db/seed/scorecard/dictionary-institution-sources.csv" -F "$root/db/seed/scorecard/dictionary-field-of-study-cohorts.csv" "$inst" "$fields" > "$log" 2>&1 || rc=$?
   if [ "$rc" -ne 0 ]; then
     log-error "ingest-colleges exited [$rc]:"
     cat "$log" >&2
@@ -5566,7 +5672,7 @@ test_ingest_colleges_sfa_source_flags() {
   : > "$inst"; : > "$fields"; : > "$sfa"
   log="$parent/ingest.log"
   rc=0
-  "$root/bin/ingest-colleges" -S "$sfa" -f 2022 "$inst" "$fields" > "$log" 2>&1 || rc=$?
+  "$root/bin/ingest-colleges" -D "$root/db/seed/scorecard/dictionary-institution-cohorts.csv" -O "$root/db/seed/scorecard/dictionary-institution-sources.csv" -F "$root/db/seed/scorecard/dictionary-field-of-study-cohorts.csv" -S "$sfa" -f 2022 "$inst" "$fields" > "$log" 2>&1 || rc=$?
   if [ "$rc" -ne 0 ]; then
     log-error "ingest-colleges exited [$rc]:"
     cat "$log" >&2
@@ -5599,7 +5705,7 @@ test_ingest_colleges_no_sfa_argv() {
   : > "$inst"; : > "$fields"
   log="$parent/ingest.log"
   rc=0
-  "$root/bin/ingest-colleges" "$inst" "$fields" > "$log" 2>&1 || rc=$?
+  "$root/bin/ingest-colleges" -D "$root/db/seed/scorecard/dictionary-institution-cohorts.csv" -O "$root/db/seed/scorecard/dictionary-institution-sources.csv" -F "$root/db/seed/scorecard/dictionary-field-of-study-cohorts.csv" "$inst" "$fields" > "$log" 2>&1 || rc=$?
   if [ "$rc" -ne 0 ]; then
     log-error "ingest-colleges exited [$rc]:"
     cat "$log" >&2
@@ -6731,6 +6837,9 @@ test_ipeds_logs_to_stderr_and_stdout_stays_empty() {
     "Checking every artifact produced data rows" \
     "Writing [8] files" \
     "IPEDS survey files written to" \
+    "-D db/seed/scorecard/dictionary-institution-cohorts.csv" \
+    "-O db/seed/scorecard/dictionary-institution-sources.csv" \
+    "-F db/seed/scorecard/dictionary-field-of-study-cohorts.csv" \
     "-y 2023" \
     "-f 2022"; do
     grep -qF -- "$phrase" "$stderr" \
@@ -6814,7 +6923,7 @@ test_ingest_colleges_codebooks_default() {
   : > "$inst"; : > "$fields"
   log="$parent/ingest.log"
   rc=0
-  "$root/bin/ingest-colleges" "$inst" "$fields" > "$log" 2>&1 || rc=$?
+  "$root/bin/ingest-colleges" -D "$root/db/seed/scorecard/dictionary-institution-cohorts.csv" -O "$root/db/seed/scorecard/dictionary-institution-sources.csv" -F "$root/db/seed/scorecard/dictionary-field-of-study-cohorts.csv" "$inst" "$fields" > "$log" 2>&1 || rc=$?
   if [ "$rc" -ne 0 ]; then
     log-error "ingest-colleges exited [$rc]:"
     cat "$log" >&2
@@ -6845,7 +6954,7 @@ test_ingest_colleges_codebooks_override() {
   : > "$inst"; : > "$fields"; : > "$codebooks"
   log="$parent/ingest.log"
   rc=0
-  "$root/bin/ingest-colleges" -k "$codebooks" "$inst" "$fields" > "$log" 2>&1 || rc=$?
+  "$root/bin/ingest-colleges" -D "$root/db/seed/scorecard/dictionary-institution-cohorts.csv" -O "$root/db/seed/scorecard/dictionary-institution-sources.csv" -F "$root/db/seed/scorecard/dictionary-field-of-study-cohorts.csv" -k "$codebooks" "$inst" "$fields" > "$log" 2>&1 || rc=$?
   if [ "$rc" -ne 0 ]; then
     log-error "ingest-colleges exited [$rc]:"
     cat "$log" >&2
@@ -6868,7 +6977,7 @@ assert_exit_code "$EXIT_INVALID_ARG_VALUE" "ingest-colleges rejects an empty -k 
   bin/ingest-colleges -k "" a.csv b.csv
 # A nonexistent codebook path fatals in resolve_file_arg, before the launcher.
 test_ingest_colleges_missing_codebooks() {
-  bin/ingest-colleges -k "/no/such/$$-codebooks.json" bin/functions bin/functions \
+  bin/ingest-colleges -D "$PROJECT_ROOT/db/seed/scorecard/dictionary-institution-cohorts.csv" -O "$PROJECT_ROOT/db/seed/scorecard/dictionary-institution-sources.csv" -F "$PROJECT_ROOT/db/seed/scorecard/dictionary-field-of-study-cohorts.csv" -k "/no/such/$$-codebooks.json" bin/functions bin/functions \
     > /dev/null 2>&1
 }
 assert_failure "ingest-colleges fatals on a nonexistent codebook path" test_ingest_colleges_missing_codebooks
@@ -6888,7 +6997,7 @@ test_ingest_colleges_subjects_default() {
   : > "$inst"; : > "$fields"
   log="$parent/ingest.log"
   rc=0
-  "$root/bin/ingest-colleges" "$inst" "$fields" > "$log" 2>&1 || rc=$?
+  "$root/bin/ingest-colleges" -D "$root/db/seed/scorecard/dictionary-institution-cohorts.csv" -O "$root/db/seed/scorecard/dictionary-institution-sources.csv" -F "$root/db/seed/scorecard/dictionary-field-of-study-cohorts.csv" "$inst" "$fields" > "$log" 2>&1 || rc=$?
   if [ "$rc" -ne 0 ]; then
     log-error "ingest-colleges exited [$rc]:"
     cat "$log" >&2
@@ -6916,7 +7025,7 @@ test_ingest_colleges_subjects_override() {
   : > "$inst"; : > "$fields"; : > "$subjects"
   log="$parent/ingest.log"
   rc=0
-  "$root/bin/ingest-colleges" -s "$subjects" "$inst" "$fields" > "$log" 2>&1 || rc=$?
+  "$root/bin/ingest-colleges" -D "$root/db/seed/scorecard/dictionary-institution-cohorts.csv" -O "$root/db/seed/scorecard/dictionary-institution-sources.csv" -F "$root/db/seed/scorecard/dictionary-field-of-study-cohorts.csv" -s "$subjects" "$inst" "$fields" > "$log" 2>&1 || rc=$?
   if [ "$rc" -ne 0 ]; then
     log-error "ingest-colleges exited [$rc]:"
     cat "$log" >&2
@@ -6936,7 +7045,7 @@ assert_success "ingest-colleges -s replaces the repo default subject taxonomy en
 assert_exit_code "$EXIT_INVALID_ARG_VALUE" "ingest-colleges rejects an empty -s subject taxonomy value" \
   bin/ingest-colleges -s "" a.csv b.csv
 test_ingest_colleges_missing_subjects() {
-  bin/ingest-colleges -s "/no/such/$$-subjects.json" bin/functions bin/functions \
+  bin/ingest-colleges -D "$PROJECT_ROOT/db/seed/scorecard/dictionary-institution-cohorts.csv" -O "$PROJECT_ROOT/db/seed/scorecard/dictionary-institution-sources.csv" -F "$PROJECT_ROOT/db/seed/scorecard/dictionary-field-of-study-cohorts.csv" -s "/no/such/$$-subjects.json" bin/functions bin/functions \
     > /dev/null 2>&1
 }
 assert_failure "ingest-colleges fatals on a nonexistent subject taxonomy path" test_ingest_colleges_missing_subjects
@@ -7736,7 +7845,8 @@ for fixture in \
   ipeds-c2023-a-fixture.csv ipeds-ic2023-ay-fixture.csv ipeds-sfa2223-fixture.csv \
   ipeds-sfa2223-dict-fixture.xlsx \
   scorecard-data-page-fixture.html scorecard-institution-zip-fixture.zip \
-  scorecard-field-of-study-zip-fixture.zip; do
+  scorecard-field-of-study-zip-fixture.zip scorecard-documentation-page-fixture.html \
+  scorecard-data-dictionary-fixture.xlsx; do
   ln -s "$PROJECT_ROOT/college/src/test/resources/$fixture" "$EXTERNAL_FIXTURES/$fixture"
 done
 write_cds_fixtures "$EXTERNAL_FIXTURES"
@@ -7772,7 +7882,7 @@ assert_success "fetch-external-data writes nothing to stdout on a normal run" \
 test_fetch_external_data_writes_four_sources() {
   local name
   for name in scorecard/PROVENANCE.json scorecard/Most-Recent-Cohorts-Institution.csv \
-    scorecard/Most-Recent-Cohorts-Field-of-Study.csv \
+    scorecard/Most-Recent-Cohorts-Field-of-Study.csv scorecard/dictionary-institution-cohorts.csv \
     codebooks/PROVENANCE.json codebooks/codebooks.json ipeds/PROVENANCE.json \
     ipeds/HD2023.csv ipeds/ic2023_ay.csv ipeds/sfa2223.csv cds/PROVENANCE.json cds/merit-aid.csv; do
     [ -s "$EXTERNAL_OUT/$name" ] || { log-error "offline run did not write [$name]"; return 1; }
@@ -7899,6 +8009,13 @@ make_external_stub_root() {
   # root carrying only awards.csv would let a wrapper that forgot to check for
   # the sidecar look correct here.
   ln -s "$PROJECT_ROOT/db/seed/national-merit-awards" "$root/db/seed/national-merit-awards"
+  # The Scorecard data dictionary (RFC 274): its three committed CSVs, each
+  # linked by name, so a test can take one away and see the wrapper name it.
+  mkdir -p "$root/db/seed/scorecard"
+  for entry in dictionary-institution-cohorts.csv dictionary-institution-sources.csv \
+    dictionary-field-of-study-cohorts.csv; do
+    ln -s "$PROJECT_ROOT/db/seed/scorecard/$entry" "$root/db/seed/scorecard/$entry"
+  done
   mkdir -p "$root/db/seed/ipeds"
 }
 
@@ -8822,6 +8939,18 @@ test_load_external_data_refuses_a_missing_codebook() {
 assert_success "a missing db/data/codebooks.json is refused by name, and names bin/fetch-codebooks" \
   test_load_external_data_refuses_a_missing_codebook
 
+# The data dictionary's three files are defaulted here (RFC 274), so this wrapper
+# names a missing one before the JVM starts, with the fetcher that writes it.
+test_load_external_data_refuses_a_missing_dictionary_sibling() {
+  local rc=0 sibling="$EXTERNAL_ROOT/db/seed/scorecard/dictionary-field-of-study-cohorts.csv"
+  rm -f "$sibling"
+  external_load_refuses "dictionary-field-of-study-cohorts.csv] does not exist -- the Scorecard data dictionary's field-of-study cohort sheet" || rc=1
+  ln -s "$PROJECT_ROOT/db/seed/scorecard/dictionary-field-of-study-cohorts.csv" "$sibling"
+  return "$rc"
+}
+assert_success "a missing data dictionary sibling CSV is refused by name, and names bin/fetch-scorecard" \
+  test_load_external_data_refuses_a_missing_dictionary_sibling
+
 # The Scorecard pair DOES have a fetcher now (bin/fetch-scorecard, RFC 173), but
 # it is still typed by hand HERE: bin/load-external-data does not read
 # db/seed/scorecard/PROVENANCE.json the way it reads the IPEDS manifest, so the
@@ -9287,22 +9416,72 @@ SCORECARD_OUT="$(mktemp -d)"
 assert_success "fetch-scorecard runs offline from the recorded page and zip fixtures" \
   bin/fetch-scorecard -F "$SCORECARD_FIXTURES" -o "$SCORECARD_OUT" > /dev/null 2>&1
 
-# EXACTLY three files, compared as a whole LISTING rather than probed one name at
-# a time: this fetcher's product is the two positionals bin/ingest-colleges takes
-# plus the manifest, and a per-name existence check would pass over a fourth file
-# it had no business writing.
-test_scorecard_writes_exactly_its_three_files() {
+# EXACTLY seven files, compared as a whole LISTING rather than probed one name at
+# a time: this fetcher's product is the two positionals bin/ingest-colleges takes,
+# the data dictionary as its three CSVs and the workbook they were read from
+# (RFC 274), plus the manifest -- and a per-name existence check would pass over
+# an eighth file it had no business writing.
+test_scorecard_writes_exactly_its_seven_files() {
   local listing expected name
   listing="$(ls -A "$SCORECARD_OUT" | sort | tr '\n' ' ')"
-  expected="Most-Recent-Cohorts-Field-of-Study.csv Most-Recent-Cohorts-Institution.csv PROVENANCE.json "
+  expected="CollegeScorecardDataDictionary.xlsx Most-Recent-Cohorts-Field-of-Study.csv "
+  expected+="Most-Recent-Cohorts-Institution.csv PROVENANCE.json dictionary-field-of-study-cohorts.csv "
+  expected+="dictionary-institution-cohorts.csv dictionary-institution-sources.csv "
   [ "$listing" = "$expected" ] || { log-error "wrote [$listing], expected [$expected]"; return 1; }
-  for name in Most-Recent-Cohorts-Institution.csv Most-Recent-Cohorts-Field-of-Study.csv; do
+  for name in $expected; do
     [ -s "$SCORECARD_OUT/$name" ] || { log-error "[$name] was written empty"; return 1; }
   done
   return 0
 }
-assert_success "both members are written under the names the ingest takes as positionals, and nothing else" \
-  test_scorecard_writes_exactly_its_three_files
+assert_success "the members, the three dictionary CSVs, the workbook and the manifest are written, and nothing else" \
+  test_scorecard_writes_exactly_its_seven_files
+
+# The three CSVs are the publisher's sheets, CELLS VERBATIM: the committed copy is
+# what the ingest dates every Scorecard figure from, so the extraction is pinned
+# against the synthesised workbook cell by cell -- a quoted header, a cell with a
+# comma, rich text without its phonetic hint, a numeric enumeration row DROPPED
+# from the sources sheet and a blank row dropped from the field-of-study sheet.
+test_scorecard_dictionary_csvs_are_the_sheets_verbatim() {
+  logged_python - "$SCORECARD_OUT" << 'PY'
+import csv, sys
+from pathlib import Path
+
+out = Path(sys.argv[1])
+
+
+def read(name):
+    with open(out / name, newline="", encoding="utf-8") as handle:
+        return list(csv.reader(handle))
+
+
+expected = {
+    "dictionary-institution-cohorts.csv": [
+        ["variable", 'Cohort/Measure in "Most Recent" Datafile', "Merged file Drawn From (MergedXXXX_YY_PP.csv)"],
+        ["UNITID", "AcadYr 2000-01, reported in IPEDS DCY2000-01", "2000_01"],
+        ["TUITIONFEE_IN", "AcadYr 2000-01, reported in IPEDS DCY2000-01", "2000_01"],
+        ["C150_4", "Fall 1994 or AcadYr 1994-95 cohort (differs by institutional calendar), reported in IPEDS DCY2000-01",
+         "2000_01"],
+    ],
+    "dictionary-institution-sources.csv": [
+        ["VARIABLE NAME", "SOURCE", "NAME OF DATA ELEMENT", "NOTES"],
+        ["UNITID", "IPEDS", "Unit ID for institution", ""],
+        ["CONTROL", "IPEDS", "Control of institution", ""],
+        ["TUITIONFEE_IN", "IPEDS", "In-state tuition and fees", "Reported, for the academic year"],
+    ],
+    "dictionary-field-of-study-cohorts.csv": [
+        ["Variable Name", "FieldOfStudyMostRecent datafile"],
+        ["UNITID", "AcadYr 2000-01"],
+        ["EARN_MDN_4YR", "Treasury AY1994-1995, AY1995-1996 pooled earnings cohort"],
+        ["DEBT_ALL_STGP_EVAL_MDN", "NSLDS pooled AY1998-99, AY1999-00 cohort"],
+    ],
+}
+for name, rows in expected.items():
+    if read(name) != rows:
+        sys.exit(f"{name} is {read(name)}, expected {rows}")
+PY
+}
+assert_success "each dictionary CSV is its sheet's named columns, cells verbatim, blank and enumeration rows dropped" \
+  test_scorecard_dictionary_csvs_are_the_sheets_verbatim
 
 # The manifest is read as JSON, not grepped, for the reason the RFC 144 section
 # states: `rows` is the shrink baseline and `member` is the trap this fetcher
@@ -9317,13 +9496,55 @@ assert_success "both members are written under the names the ingest takes as pos
 # The timestamp is asserted for its SHAPE too -- ONE caller-supplied value at
 # both levels -- so the top-level field can never be later than the artifacts by
 # the whole download.
-assert_success "PROVENANCE records the offline route, a null release and one timestamp at both levels" \
+#
+# There is NO top-level release (RFC 274 D3): each data artifact records the stamp
+# in its own URL, because the publisher may offer the two under different stamps.
+assert_success "PROVENANCE records the offline route, null per-artifact releases and one timestamp at both levels" \
   provenance_assert "$SCORECARD_OUT/PROVENANCE.json" \
     'provenance["source"] == "fixtures"
      and provenance["fixture_derived"] is True
-     and provenance["release"] is None
+     and "release" not in provenance
+     and artifacts["Most-Recent-Cohorts-Institution"]["release"] is None
+     and artifacts["Most-Recent-Cohorts-Field-of-Study"]["release"] is None
      and provenance["fetched_at"] is None
      and all(a["fetched_at"] == provenance["fetched_at"] for a in artifacts.values())'
+
+# The workbook is the third artifact: its README's "Released" line verbatim, its
+# own digest, and per written sheet the CSV's data-row count and the digest of
+# the file that landed -- the digest the Kotlin pin tests compare the committed
+# CSVs against.
+test_scorecard_records_the_workbook() {
+  logged_python - "$SCORECARD_OUT" << 'PY'
+import hashlib, json, sys
+from pathlib import Path
+
+out = Path(sys.argv[1])
+workbook = json.loads((out / "PROVENANCE.json").read_text())["artifacts"]["CollegeScorecardDataDictionary"]
+if workbook["released"] != "Released March 3, 2001":
+    sys.exit(f"released is {workbook['released']!r}")
+if workbook["url"] is not None:
+    sys.exit("an offline replay recorded a workbook url")
+body = (out / "CollegeScorecardDataDictionary.xlsx").read_bytes()
+if workbook["sha256"] != hashlib.sha256(body).hexdigest() or workbook["bytes"] != len(body):
+    sys.exit("the recorded workbook digest is not the written workbook's")
+sheets = {
+    "dictionary-institution-cohorts.csv": "Most_Recent_Inst_Cohort_Map",
+    "dictionary-institution-sources.csv": "Institution_Data_Dictionary",
+    "dictionary-field-of-study-cohorts.csv": "FieldOfStudy_Cohort_Map",
+}
+if set(workbook["sheets"]) != set(sheets):
+    sys.exit(f"sheets recorded are {sorted(workbook['sheets'])}")
+for name, sheet in sheets.items():
+    recorded = workbook["sheets"][name]
+    written = (out / name).read_bytes()
+    if recorded["sheet"] != sheet or recorded["rows"] != 3:
+        sys.exit(f"{name}: recorded {recorded}")
+    if recorded["sha256"] != hashlib.sha256(written).hexdigest():
+        sys.exit(f"{name}: the recorded digest is not the written file's")
+PY
+}
+assert_success "PROVENANCE records the workbook: its Released line, its digest, and each sheet's rows and digest" \
+  test_scorecard_records_the_workbook
 
 # The pair, keyed by the url_name each artifact declares, with the POSITION each
 # becomes. ingest_position is a declaration a later reader must not re-derive
@@ -9331,7 +9552,8 @@ assert_success "PROVENANCE records the offline route, a null release and one tim
 # interchangeable to bin/ingest-colleges.
 assert_success "PROVENANCE records both artifacts, the member taken, its row count and its ingest position" \
   provenance_assert "$SCORECARD_OUT/PROVENANCE.json" \
-    'sorted(artifacts) == ["Most-Recent-Cohorts-Field-of-Study",
+    'sorted(artifacts) == ["CollegeScorecardDataDictionary",
+                           "Most-Recent-Cohorts-Field-of-Study",
                            "Most-Recent-Cohorts-Institution"]
      and artifacts["Most-Recent-Cohorts-Institution"]["member"] == "Most-Recent-Cohorts-Institution.csv"
      and artifacts["Most-Recent-Cohorts-Field-of-Study"]["member"] == "Most-Recent-Cohorts-Field-of-Study.csv"
@@ -9408,8 +9630,8 @@ def write_page(damage):
         # A publisher change: the page renders, and names neither file.
         hrefs = []
     elif damage == "stamp-mismatch":
-        # The pair offered from two different releases. bin/ingest-colleges
-        # cross-reads them by UNITID, so this loads without error and is wrong.
+        # The pair offered under two different stamps -- what the publisher
+        # served on 2026-11-05. Warned and recorded, never refused (RFC 274 D3).
         hrefs = [download("Institution", RELEASE), download("Field-of-Study", "05012026")]
     elif damage == "two-institutions":
         # Two releases of ONE artifact: which is current is a reading of the page.
@@ -9471,6 +9693,155 @@ write_page(damage)
 archive("Institution", institution_members(damage))
 archive("Field-of-Study", fields_members(damage))
 PY
+  write_scorecard_dictionary_fixtures "$1" "${2:-}"
+}
+
+# The data dictionary half of a fixture set (RFC 274): the documentation page the
+# workbook is discovered from, and a WORKBOOK synthesised as SpreadsheetML with
+# the standard library -- shared strings AND inline strings, a numeric cell, rich
+# text, a header widened by styled empty cells, a blank row and an enumeration
+# row -- so every reading rule the fetcher states is exercised by every replay.
+# One writer: the committed fixture in college/src/test/resources is this
+# writer's output, and a damaged set differs from the good one in one way.
+write_scorecard_dictionary_fixtures() {
+  python3 - "$1" "${2:-}" << 'PY'
+import sys
+import zipfile
+from pathlib import Path
+from xml.sax.saxutils import escape
+
+out, damage = Path(sys.argv[1]), sys.argv[2]
+PAGE = "scorecard-documentation-page-fixture.html"
+WORKBOOK = "scorecard-data-dictionary-fixture.xlsx"
+MAIN = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
+
+# Each cell is a str (shared string), ("inline", str), ("number", str) or
+# ("rich", [run, ...]); None is a styled cell with no value.
+SOURCES_HEADER = ["NAME OF DATA ELEMENT", "dev-category", "developer-friendly name", "API data type",
+                  "INDEX", "VARIABLE NAME", "VALUE", "LABEL", "SOURCE", "SHOWN/USE ON SITE", "NOTES"]
+if damage == "workbook-missing-column":
+    SOURCES_HEADER[SOURCES_HEADER.index("SOURCE")] = "SOURCES"
+SHEETS = {
+    "README": [
+        ["COLLEGE SCORECARD"],
+        [("inline", "Released March 3, 2001")],
+        ["Background on the data"],
+    ],
+    "Institution_Data_Dictionary": [
+        SOURCES_HEADER,
+        ["Unit ID for institution", "root", "id", "integer", "", "UNITID", "", "", "IPEDS", "Yes", ""],
+        ["Control of institution", "school", "ownership", "integer", "", "CONTROL", "", "", "IPEDS", "Yes", ""],
+        # An enumeration VALUE row: no variable name, a numeric value. Dropped.
+        ["", "", "", "", "", "", ("number", "1"), "Public", "", "", ""],
+        ["In-state tuition and fees", "cost", "tuition.in_state", "integer", "", "TUITIONFEE_IN", "", "",
+         "IPEDS", "Yes", ("rich", ["Reported, ", "for the academic year"])],
+    ],
+    "Most_Recent_Inst_Cohort_Map": [
+        ["variable", 'Cohort/Measure in "Most Recent" Datafile', "Merged file Drawn From (MergedXXXX_YY_PP.csv)",
+         None, None],
+        ["UNITID", "AcadYr 2000-01, reported in IPEDS DCY2000-01", "2000_01"],
+        ["TUITIONFEE_IN", ("inline", "AcadYr 2000-01, reported in IPEDS DCY2000-01"), "2000_01"],
+        ["C150_4", "Fall 1994 or AcadYr 1994-95 cohort (differs by institutional calendar), reported in IPEDS DCY2000-01",
+         "2000_01"],
+    ],
+    "FieldOfStudy_Cohort_Map": [
+        ["Variable Name", "FieldOfStudyData9899_9900 datafile", "FieldOfStudyMostRecent datafile", None],
+        ["UNITID", "AcadYr 1999-00", "AcadYr 2000-01"],
+        [None, None, None],
+        ["EARN_MDN_4YR", "Treasury AY1993-1994, AY1994-1995 pooled earnings cohort",
+         "Treasury AY1994-1995, AY1995-1996 pooled earnings cohort"],
+        ["DEBT_ALL_STGP_EVAL_MDN", "NSLDS pooled AY1997-98, AY1998-99 cohort", "NSLDS pooled AY1998-99, AY1999-00 cohort"],
+    ],
+}
+if damage == "workbook-missing-sheet":
+    del SHEETS["FieldOfStudy_Cohort_Map"]
+
+shared = []
+
+
+def shared_index(text):
+    if text not in shared:
+        shared.append(text)
+    return shared.index(text)
+
+
+def column(index):
+    letters = ""
+    index += 1
+    while index:
+        index, remainder = divmod(index - 1, 26)
+        letters = chr(ord("A") + remainder) + letters
+    return letters
+
+
+def cell_xml(value, reference):
+    if value is None:
+        return f'<c r="{reference}" s="1"/>'
+    if isinstance(value, str):
+        return f'<c r="{reference}" t="s"><v>{shared_index(value)}</v></c>'
+    kind, payload = value
+    if kind == "inline":
+        return f'<c r="{reference}" t="inlineStr"><is><t>{escape(payload)}</t></is></c>'
+    if kind == "number":
+        return f'<c r="{reference}"><v>{payload}</v></c>'
+    runs = "".join(f'<r><t xml:space="preserve">{escape(run)}</t></r>' for run in payload)
+    # A phonetic hint beside the runs: not text the cell holds.
+    return f'<c r="{reference}" t="inlineStr"><is>{runs}<rPh sb="0" eb="1"><t>HINT</t></rPh></is></c>'
+
+
+def sheet_xml(rows):
+    body = "".join(
+        f'<row r="{number}">'
+        + "".join(cell_xml(value, f"{column(index)}{number}") for index, value in enumerate(row))
+        + "</row>"
+        for number, row in enumerate(rows, start=1)
+    )
+    return f'<?xml version="1.0" encoding="UTF-8"?><worksheet xmlns="{MAIN}"><sheetData>{body}</sheetData></worksheet>'
+
+
+names = list(SHEETS)
+sheets = {f"xl/worksheets/sheet{index}.xml": sheet_xml(SHEETS[name]) for index, name in enumerate(names, start=1)}
+workbook = (
+    f'<?xml version="1.0" encoding="UTF-8"?><workbook xmlns="{MAIN}" '
+    'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets>'
+    + "".join(f'<sheet name="{name}" sheetId="{index}" r:id="rId{index}"/>' for index, name in enumerate(names, start=1))
+    + "</sheets></workbook>"
+)
+if damage == "workbook-no-sheets-element":
+    workbook = f'<?xml version="1.0" encoding="UTF-8"?><workbook xmlns="{MAIN}"/>'
+relationships = (
+    '<?xml version="1.0" encoding="UTF-8"?>'
+    '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+    + "".join(
+        f'<Relationship Id="rId{index}" '
+        'Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" '
+        f'Target="worksheets/sheet{index}.xml"/>'
+        for index in range(1, len(names) + 1)
+    )
+    + "</Relationships>"
+)
+strings = (
+    f'<?xml version="1.0" encoding="UTF-8"?><sst xmlns="{MAIN}" count="{len(shared)}" uniqueCount="{len(shared)}">'
+    + "".join(f"<si><t>{escape(text)}</t></si>" for text in shared)
+    + "</sst>"
+)
+with zipfile.ZipFile(out / WORKBOOK, "w", zipfile.ZIP_DEFLATED) as zipped:
+    zipped.writestr("[Content_Types].xml", '<?xml version="1.0" encoding="UTF-8"?><Types '
+                    'xmlns="http://schemas.openxmlformats.org/package/2006/content-types"/>')
+    zipped.writestr("xl/workbook.xml", workbook)
+    zipped.writestr("xl/_rels/workbook.xml.rels", relationships)
+    for path, xml in sheets.items():
+        zipped.writestr(path, xml)
+    # Written LAST: the shared-string table is built while the sheets are.
+    zipped.writestr("xl/sharedStrings.xml", strings)
+
+href = '<a href="/files/CollegeScorecardDataDictionary.xlsx">Data Dictionary</a>\n'
+if damage == "no-workbook-href":
+    href = ""
+(out / PAGE).write_text(
+    "<html><body>\n" + href + '<a href="/files/InstitutionDataDocumentation.pdf">Documentation</a>\n</body></html>\n'
+)
+PY
 }
 
 SCORECARD_ZIPS="$(mktemp -d)"
@@ -9524,10 +9895,101 @@ assert_success "a page naming no download is refused, writing nothing" \
 # which is the one construction the whole discovery exists to prevent.
 assert_success "an href carrying a query string is refused, never truncated to the .zip" \
   scorecard_variant_refused query-string "names no download for [Most-Recent-Cohorts-Institution]"
-assert_success "two disagreeing release stamps are refused: the pair is cross-read by UNITID" \
-  scorecard_variant_refused stamp-mismatch "the release stamps disagree"
+
+# Two stamps are the publisher's own "most recent" pair when it re-issues one file
+# without the other, so the fetch PROCEEDS: the disagreement is warned naming
+# both, and each stamp is recorded on its own artifact (RFC 274 D3). On a replay
+# the recorded releases are null, so the claim is read off the warning and the
+# fact that everything was written.
+test_scorecard_two_stamps_are_warned_and_fetched() {
+  local fixtures out output status
+  fixtures="$(mktemp -d)"; out="$(mktemp -d)"
+  write_scorecard_fixtures "$fixtures" stamp-mismatch
+  output="$(bin/fetch-scorecard -F "$fixtures" -o "$out" 2>&1)"
+  status=$?
+  local written
+  written="$(ls -A "$out" | wc -l | tr -d ' ')"
+  rm -rf "$fixtures" "$out"
+  [ "$status" -eq 0 ] || { log-error "exit [$status]: [$output]"; return 1; }
+  case "$output" in
+    *"[WARNING]"*"different release stamps"*"[Most-Recent-Cohorts-Institution] is [06102026]"*"[Most-Recent-Cohorts-Field-of-Study] is [05012026]"*) ;;
+    *) log-error "no warning naming both stamps: [$output]"; return 1 ;;
+  esac
+  [ "$written" -eq 7 ] || { log-error "wrote [$written] files, expected 7"; return 1; }
+  return 0
+}
+assert_success "two disagreeing release stamps are warned, naming both, and the pair is fetched" \
+  test_scorecard_two_stamps_are_warned_and_fetched
+
+# And per artifact on the record: the stamp each artifact's own URL carries.
+test_scorecard_records_each_artifacts_own_stamp() {
+  fetcher_python - "$PROJECT_ROOT/bin/fetch-scorecard" << 'PY'
+import sys
+
+from fetcher_loader import load
+
+module = load(sys.argv[1], "fetch_scorecard")
+downloads = "https://ed-public-download.scorecard.network/downloads"
+page = (
+    f'<a href="{downloads}/Most-Recent-Cohorts-Institution_11022026.zip">x</a>\n'
+    f'<a href="{downloads}/Most-Recent-Cohorts-Field-of-Study_10152026.zip">x</a>\n'
+)
+stamps, urls = module.discover_release(page, "page")
+if stamps != {"Most-Recent-Cohorts-Institution": "11022026", "Most-Recent-Cohorts-Field-of-Study": "10152026"}:
+    sys.exit(f"discovered {stamps}")
+if not urls["Most-Recent-Cohorts-Field-of-Study"].endswith("_10152026.zip"):
+    sys.exit(f"urls {urls}")
+PY
+}
+assert_success "discovery yields each artifact's OWN stamp beside its URL" \
+  test_scorecard_records_each_artifacts_own_stamp
 assert_success "two downloads offered for one artifact are refused, never chosen between" \
   scorecard_variant_refused two-institutions "names [2] downloads for [Most-Recent-Cohorts-Institution]"
+
+# The workbook (RFC 274). Its URL is unversioned and overwritten, so it is read off
+# the documentation page like the data hrefs, and a page naming none is a
+# publisher change. A workbook missing a sheet the ingest reads, or a sheet
+# missing a column, is refused NAMING it -- before the 250 MB of data, and with
+# nothing written.
+assert_success "a documentation page with no workbook href is refused, writing nothing" \
+  scorecard_variant_refused no-workbook-href "names [0] links to the data dictionary workbook"
+assert_success "a workbook missing a sheet the ingest reads is refused naming the sheet, writing nothing" \
+  scorecard_variant_refused workbook-missing-sheet "has no sheet [FieldOfStudy_Cohort_Map]"
+assert_success "a workbook with no <sheets> element is refused by name, writing nothing" \
+  scorecard_variant_refused workbook-no-sheets-element "xl/workbook.xml has no <sheets> element"
+assert_success "a sheet missing a column the ingest reads is refused naming the sheet and column, writing nothing" \
+  scorecard_variant_refused workbook-missing-column "sheet [Institution_Data_Dictionary]: [SOURCE] appears [0] times"
+
+# The cell-change report: a second replay against a predecessor whose cell for
+# one variable differs NAMES that variable on stderr, and proceeds. Information
+# only -- a new release is the point -- but it is the line that says what moved.
+test_scorecard_reports_changed_dictionary_cells() {
+  local fixtures out output status
+  fixtures="$(mktemp -d)"; out="$(mktemp -d)"
+  write_scorecard_fixtures "$fixtures"
+  bin/fetch-scorecard -F "$fixtures" -o "$out" > /dev/null 2>&1 || { log-error "first replay failed"; return 1; }
+  python3 - "$out/dictionary-institution-cohorts.csv" << 'PY'
+import sys
+from pathlib import Path
+path = Path(sys.argv[1])
+path.write_text(path.read_text().replace("TUITIONFEE_IN,\"AcadYr 2000-01", "TUITIONFEE_IN,\"AcadYr 1999-00"))
+PY
+  output="$(bin/fetch-scorecard -F "$fixtures" -o "$out" 2>&1)"
+  status=$?
+  rm -rf "$fixtures" "$out"
+  [ "$status" -eq 0 ] || { log-error "exit [$status]: [$output]"; return 1; }
+  case "$output" in
+    *"[dictionary-institution-cohorts.csv] against"*"[1] variable(s) changed [TUITIONFEE_IN]"*) ;;
+    *) log-error "the change report did not name TUITIONFEE_IN: [$output]"; return 1 ;;
+  esac
+  case "$output" in
+    *"[dictionary-field-of-study-cohorts.csv] against"*"[0] variable(s) changed"*) return 0 ;;
+  esac
+  log-error "an unchanged sheet was not reported as unchanged: [$output]"
+  return 1
+}
+assert_success "a replay over an edited predecessor names the changed variable, and proceeds" \
+  test_scorecard_reports_changed_dictionary_cells
 
 # The unversioned names are the trap this fetcher is built around: they answer
 # HTTP 200 with a 2024 release, so a script that can SPELL one is a script that
@@ -9711,7 +10173,8 @@ from fetcher_loader import load
 # this script may reflow or comment, and an unmatched pattern is an
 # AttributeError on None rather than a readable failure.
 floor = load(sys.argv[1], "fetch_scorecard").SEED_SHRINK_FLOOR
-rows = max(a["rows"] for a in json.load(open(sys.argv[2]))["artifacts"].values())
+# The DATA artifacts only: the workbook records sheets, not a member's rows.
+rows = max(a["rows"] for a in json.load(open(sys.argv[2]))["artifacts"].values() if "member" in a)
 # Strictly above rows/floor, so `rows < floor * baseline` holds for both artifacts.
 print(int(rows / floor) + 1)
 PY
@@ -9734,7 +10197,8 @@ test_scorecard_shrink_refused() {
   before="$(cat "$out"/*.csv | shasum -a 256)"
   provenance_rewrite "$out/PROVENANCE.json" "
 for artifact in provenance['artifacts'].values():
-    artifact['rows'] = $collapsed
+    if 'member' in artifact:
+        artifact['rows'] = $collapsed
 "
   output="$(bin/fetch-scorecard -F "$fixtures" -o "$out" 2>&1)"
   status=$?
@@ -9883,19 +10347,21 @@ outdir = Path("db/seed/scorecard")
 captured = io.StringIO()
 # A SystemExit here is the failure this asserts against: refusing a new release
 # is the one thing this branch must never do, and it would leave python non-zero.
+# Per ARTIFACT (RFC 274 D3): each records its own stamp, so one may move alone.
+NAME = "Most-Recent-Cohorts-Institution"
 with redirect_stderr(captured):
-    module.report_release_change(outdir, {"release": "05012026"}, "06102026", False)
+    module.report_release_change(outdir, {"artifacts": {NAME: {"release": "05012026"}}}, {NAME: "06102026"}, False)
 moved = captured.getvalue()
-if "The release moved: [06102026] now, [05012026] recorded" not in moved:
+if f"[{NAME}] release moved: [06102026] now, [05012026] recorded" not in moved:
     sys.exit(f"a moved release was not reported: {moved!r}")
 if "[FATAL]" in moved or "[ERROR]" in moved:
     sys.exit(f"a moved release was treated as a fault: {moved!r}")
 
 captured = io.StringIO()
 with redirect_stderr(captured):
-    module.report_release_change(outdir, {"release": "06102026"}, "06102026", False)
+    module.report_release_change(outdir, {"artifacts": {NAME: {"release": "06102026"}}}, {NAME: "06102026"}, False)
 same = captured.getvalue()
-if "The release [06102026] is the one" not in same or "moved" in same:
+if f"[{NAME}] release [06102026] is the one" not in same or "moved" in same:
     sys.exit(f"an unchanged release was reported as {same!r}")
 
 # The OFFLINE route reports nothing, whatever the manifest records: the replay
@@ -9903,7 +10369,7 @@ if "The release [06102026] is the one" not in same or "moved" in same:
 # would report a move that did not happen.
 captured = io.StringIO()
 with redirect_stderr(captured):
-    module.report_release_change(outdir, {"release": "05012026"}, "06102026", True)
+    module.report_release_change(outdir, {"artifacts": {NAME: {"release": "05012026"}}}, {NAME: "06102026"}, True)
 offline = captured.getvalue()
 if offline != "":
     sys.exit(f"an offline replay reported a release change: {offline!r}")
@@ -9921,7 +10387,8 @@ assert_success "a discovered release that is not the recorded one is reported, a
 assert_success "a row count recorded as a string names the value and its type, and disarms only the shrink guard" \
   fetcher_unarmed_warns fetch-scorecard "$SCORECARD_OUT" "$SCORECARD_FIXTURES" '
 for artifact in provenance["artifacts"].values():
-    artifact["rows"] = str(artifact["rows"])
+    if "member" in artifact:
+        artifact["rows"] = str(artifact["rows"])
 ' "records row count [2], a [str]" "guards [shrink: NOT armed, member: armed]"
 assert_success "a baseline with rows but no member warns, and the summary says which guard is armed" \
   fetcher_unarmed_warns fetch-scorecard "$SCORECARD_OUT" "$SCORECARD_FIXTURES" '
@@ -9965,8 +10432,14 @@ from pathlib import Path
 provenance = json.loads(Path(sys.argv[1]).read_text())
 if provenance.get("source") != "network" or provenance.get("fixture_derived"):
     sys.exit("db/seed/scorecard/PROVENANCE.json is not a network fetch record")
-if provenance.get("release") != "06102026":
-    sys.exit(f"release {provenance.get('release')!r} is not the fetched 06102026")
+# Per artifact (RFC 274 D3): the publisher offered the two files under two stamps.
+RELEASES = {"Most-Recent-Cohorts-Institution": "11022026", "Most-Recent-Cohorts-Field-of-Study": "10152026"}
+if "release" in provenance:
+    sys.exit("the manifest carries a top-level release; each artifact records its own")
+for name, release in RELEASES.items():
+    recorded = provenance["artifacts"][name].get("release")
+    if recorded != release:
+        sys.exit(f"{name}: release {recorded!r} is not the fetched {release}")
 
 def iso(value, where):
     if not value:
@@ -9984,7 +10457,7 @@ for name, artifact in provenance["artifacts"].items():
     iso(artifact.get("fetched_at"), name)
 PY
 }
-assert_success "the committed db/seed/scorecard manifest records a real network fetch of release 06102026" \
+assert_success "the committed db/seed/scorecard manifest records a real network fetch, each artifact's own release" \
   test_scorecard_committed_is_a_network_record
 
 # 2. Neither the archives nor the extracted members are committed, so these
@@ -9999,22 +10472,29 @@ from pathlib import Path
 provenance = json.loads(Path(sys.argv[1]).read_text())
 VERIFIED = {
     "Most-Recent-Cohorts-Institution": {
-        "bytes": 23559465,
-        "sha256": "f56a181b000ca4914e924c16b6b81dcc656e25aeb2ac68ab7d271ac0f29ffd58",
+        "bytes": 24209950,
+        "sha256": "4c31be45bb6defc17a972a8084a88d3d7ba4a4044884ea9529c03c7570a7305d",
         "member": "Most-Recent-Cohorts-Institution.csv",
-        "member_bytes": 100102932,
-        "member_sha256": "89e8a35a6588dfb81a6ce78fa9df4cb99b36ef7aa4b28fb0157f9e3e1a7d81b5",
-        "rows": 6273,
+        "member_bytes": 101955673,
+        "member_sha256": "f6337c0038c0eee635d56d05ffb3e9a58105984af63c2e69b4230ced93a8c072",
+        "rows": 6272,
         "ingest_position": 1,
     },
     "Most-Recent-Cohorts-Field-of-Study": {
-        "bytes": 17188590,
-        "sha256": "9c4339d65f0699a60d6078fe54fc3bf03fded30a65079222d9221952b8578165",
+        "bytes": 33857926,
+        "sha256": "d42cd9ec5ffb4868e0f87f988fdbe10dc6c78adf427f9f6e5026a706d715be06",
         "member": "Most-Recent-Cohorts-Field-of-Study.csv",
-        "member_bytes": 153479459,
-        "member_sha256": "3184f634cea46a94a3e8dc73f6d2147ecaea5b3b648b26adbfdfdd9133ce8d35",
-        "rows": 227980,
+        "member_bytes": 197739166,
+        "member_sha256": "2559922449453b6cc137c65d1a4e84c3202c89617b955b60c34ea6cefb89c6cc",
+        "rows": 223587,
         "ingest_position": 2,
+    },
+    # RFC 274: the workbook is committed beside its manifest entry, so its
+    # digest is checked against the FILE as well as pinned here.
+    "CollegeScorecardDataDictionary": {
+        "bytes": 769715,
+        "sha256": "8d258487f252aedc8c87bace61556446d49245bfe374734548bd861118e5cc4c",
+        "released": "Released October 15, 2026",
     },
 }
 if set(provenance["artifacts"]) != set(VERIFIED):
@@ -10024,10 +10504,20 @@ for name, verified in VERIFIED.items():
     for field, value in verified.items():
         if artifact[field] != value:
             sys.exit(f"{name}: {field} is {artifact[field]!r}, not the verified {value!r}")
-    # The URL is the href the /data/ page served, and it carries the release the
-    # top level records -- never the unversioned name, which is a live 2024 file.
-    if not artifact["url"].endswith(f"/{name}_{provenance['release']}.zip"):
+    if name == "CollegeScorecardDataDictionary":
+        continue
+    # The URL is the href the /data/ page served, and it carries the release
+    # this artifact records -- never the unversioned name, a live 2024 file.
+    if not artifact["url"].endswith(f"/{name}_{artifact['release']}.zip"):
         sys.exit(f"{name}: url {artifact['url']} is not the stamped download of this release")
+import hashlib
+seed = Path(sys.argv[1]).parent
+workbook = provenance["artifacts"]["CollegeScorecardDataDictionary"]
+if hashlib.sha256((seed / "CollegeScorecardDataDictionary.xlsx").read_bytes()).hexdigest() != workbook["sha256"]:
+    sys.exit("the committed workbook is not the one the manifest records")
+for name, sheet in workbook["sheets"].items():
+    if hashlib.sha256((seed / name).read_bytes()).hexdigest() != sheet["sha256"]:
+        sys.exit(f"the committed {name} is not the one the manifest records")
 PY
 }
 assert_success "the committed manifest pins the operator-verified archive and member digests" \
@@ -10040,7 +10530,7 @@ test_scorecard_members_are_gitignored() {
   local members member
   members="$(python3 -c 'import json,sys
 provenance = json.load(open(sys.argv[1]))
-print("\n".join(a["member"] for a in provenance["artifacts"].values()))' \
+print("\n".join(a["member"] for a in provenance["artifacts"].values() if "member" in a))' \
     "$SCORECARD_COMMITTED")" || return 1
   [ -n "$members" ] || { log-error "no members read from the committed manifest"; return 1; }
   # read -r, not `for member in $members`: the names come out of a manifest a
@@ -10051,11 +10541,15 @@ print("\n".join(a["member"] for a in provenance["artifacts"].values()))' \
     git -C "$PROJECT_ROOT" check-ignore -q "db/seed/scorecard/$member" \
       || { log-error "[db/seed/scorecard/$member] is NOT gitignored"; return 1; }
   done <<< "$members"
-  # The two committed files are the negations, and they must survive the rule.
-  git -C "$PROJECT_ROOT" check-ignore -q db/seed/scorecard/PROVENANCE.json \
-    && { log-error "[db/seed/scorecard/PROVENANCE.json] is gitignored"; return 1; }
-  git -C "$PROJECT_ROOT" check-ignore -q db/seed/scorecard/FETCH-NOTES.md \
-    && { log-error "[db/seed/scorecard/FETCH-NOTES.md] is gitignored"; return 1; }
+  # The committed files are the negations, and they must survive the rule: the
+  # record, its notes, and the data dictionary as fetched (RFC 274).
+  local committed
+  for committed in PROVENANCE.json FETCH-NOTES.md CollegeScorecardDataDictionary.xlsx \
+    dictionary-institution-cohorts.csv dictionary-institution-sources.csv \
+    dictionary-field-of-study-cohorts.csv; do
+    git -C "$PROJECT_ROOT" check-ignore -q "db/seed/scorecard/$committed" \
+      && { log-error "[db/seed/scorecard/$committed] is gitignored"; return 1; }
+  done
   return 0
 }
 assert_success "the extracted Scorecard members are gitignored and the committed record is not" \
@@ -10153,12 +10647,13 @@ test_scorecard_logs_to_stderr_and_stdout_stays_empty() {
   fi
   for phrase in \
     "Reading the release page fixture" \
-    "publishes release [06102026]" \
+    "publishes [Most-Recent-Cohorts-Institution] release [06102026]" \
+    "links the data dictionary at" \
     "[1/2] [Most-Recent-Cohorts-Institution] -> member" \
     "[2/2] [Most-Recent-Cohorts-Field-of-Study] -> member" \
     "Checking both artifacts produced data rows" \
     "Checking each member's header carries that artifact's identity columns" \
-    "Writing [3] files" \
+    "Writing [7] files" \
     "College Scorecard an offline replay (no release) written to" \
     "bin/load-external-data"; do
     grep -qF -- "$phrase" "$stderr" \

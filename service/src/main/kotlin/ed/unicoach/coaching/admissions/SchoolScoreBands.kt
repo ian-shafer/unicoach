@@ -583,9 +583,9 @@ object ScoreBandWire {
  * six, with `SATVR*` labelled _critical reading_, `SATMT*` _math_ and `ACTCM*`
  * the ACT _cumulative_ score. So the honest date is an entering-cohort TERM,
  * autumn 2024 -- not an academic year, which is why it is a constant here and
- * not a row in the money seam's academic-year vintage machinery. The same cell
- * is recorded in `db/seed/scorecard/FETCH-NOTES.md`, with the reason these six
- * are not added to `dictionary-variable-sources.csv`.
+ * not a row in the money seam's academic-year vintage machinery. The cell is
+ * committed as fetched, in `db/seed/scorecard/dictionary-institution-cohorts.csv`
+ * (RFC 274), and [ScoreBandCitation.COHORT_TERM] is pinned against it.
  *
  * NAMED WITHOUT THE PUBLISHER, deliberately. `ScorecardScoreBandCitation`
  * would put the literal "Scorecard" on every line that mentions the type --
@@ -598,10 +598,9 @@ object ScoreBandWire {
  * maintenance argument and not a waiver argument.)
  *
  * An `object` rather than a data class with a year field, because there is
- * nothing per-school or per-row to carry: one pinned file publishes one cohort
- * for every college in it. When a later snapshot moves the cohort, this
- * constant and the FETCH-NOTES cell move together, in one edit, and every
- * sentence in [ScoreBandCopy] follows.
+ * nothing per-school or per-row to carry: one fetched file publishes one cohort
+ * for every college in it. When a later release moves the cohort, this
+ * constant moves, in one edit, and every sentence in [ScoreBandCopy] follows.
  *
  * There is deliberately NO url key and no bare numeric year: the term lives
  * INSIDE the sentence, so no `cohort_year` number with no measure reaches the
@@ -611,32 +610,16 @@ object ScoreBandCitation {
   /**
    * The entering cohort every figure in this section describes, in the words a
    * family hears. The ONE place this term is written down.
+   *
+   * A literal only until the score bands move onto rows that carry their own
+   * period (brief 0017 slice `cost/07/the-figures-carry-their-year`): the
+   * publisher dates the seven band variables in the fetched data dictionary
+   * (`db/seed/scorecard/dictionary-institution-cohorts.csv`, RFC 274), and
+   * `ScoreBandCopyTest` reads that file and fails, naming the variable and the
+   * publisher's cell, the day a fetched release dates the bands to any other
+   * term. The fix then is this one value.
    */
   const val COHORT_TERM: String = "autumn 2024"
-
-  /**
-   * The Scorecard release [COHORT_TERM] was transcribed from, and the reason
-   * that term is allowed to be a literal.
-   *
-   * The publisher's own release id, in the publisher's own `MMDDYYYY` form:
-   * `06102026` is 10 June 2026, not 6 October. It is compared as an opaque
-   * STRING to `release` in `db/seed/scorecard/PROVENANCE.json` and is never
-   * parsed as a date, so the ambiguity costs nothing at runtime -- it costs a
-   * reader, which is what this sentence is for.
-   *
-   * `bin/fetch-scorecard` discovers the CURRENT release, so the seed directory
-   * can move under this constant without a line of Kotlin changing: the data
-   * would be a later cohort while the sentence still said autumn 2024, which is
-   * a dated claim about a year nobody checked. `ScoreBandCitationPinTest`
-   * asserts this equals `release` in `db/seed/scorecard/PROVENANCE.json`.
-   *
-   * WHEN THAT TEST FAILS the fetch is not wrong and this constant is not
-   * wrong -- they simply describe different releases. Re-read
-   * `CollegeScorecardDataDictionary.xlsx`, sheet `Most_Recent_Inst_Cohort_Map`,
-   * for the six band variables, and update [COHORT_TERM], this release, and the
-   * matching section of `db/seed/scorecard/FETCH-NOTES.md` together.
-   */
-  const val COHORT_SNAPSHOT_RELEASE: String = "06102026"
 
   /** The sentence fragment the coach says, with the publisher and the cohort in it rather than beside it. */
   val citedAs: String =

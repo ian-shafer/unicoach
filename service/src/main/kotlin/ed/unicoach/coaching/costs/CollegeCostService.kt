@@ -502,12 +502,12 @@ data class CollegeCost(
   /**
    * The ONE academic year this school's published-price figures are served at
    * (RFC 166 §3), read off the rows rather than off a Kotlin constant -- so a
-   * school served from the Scorecard honestly says 2024-25 where a school
-   * served from IC_AY says 2023-24. Null when the school publishes no price at
-   * all ([ServedFigures.servesNoPublishedPrice]).
+   * school served from the Scorecard honestly says its newer year where a
+   * school served from IC_AY says IC_AY's. Null when the school publishes no
+   * price at all ([ServedFigures.servesNoPublishedPrice]).
    *
-   * The two publishers are ONE YEAR APART and never contend (RFC 183): the
-   * Scorecard's charges are the newer list, IC_AY's window ends at 2023-24, so
+   * The two publishers never contend (RFC 183, RFC 274): the Scorecard's
+   * charges are the newer list, later than IC_AY's whole staged window, so
    * which year a school is served at follows which cells completely price the
    * family's arrangement -- not which publisher outranks which.
    */
@@ -520,7 +520,7 @@ data class CollegeCost(
    * Per college, because the store carries several academic years across two
    * publishers whose windows do not coincide (RFC 183) -- IC_AY's is derived
    * from its pinned survey year (`IpedsChargeVocabulary`), the Scorecard's from
-   * its pinned release (`CanonicalMoneyLoader.PUBLISHED_PRICE_YEAR`) -- so one
+   * the year its fetched data dictionary states (RFC 274) -- so one
    * school is served at one year where the next is served at another, and a
    * single Kotlin constant could only ever have said one of them. Which years
    * those are today is those files' own answer, not this comment's.

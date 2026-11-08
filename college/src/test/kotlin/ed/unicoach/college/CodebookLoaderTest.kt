@@ -509,6 +509,7 @@ class CodebookLoaderTest : CollegeScorecardTestBase() {
         fields = source(fixture("scorecard-fields-empty-fixture.csv")),
         aliasesFile = source(fixture("college-aliases-fixture.json")),
         codebooks = codebooks?.let { source(it) },
+        dictionary = SeedScorecardDictionary.sources,
       )
     }
 

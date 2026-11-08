@@ -36,7 +36,9 @@ class IpedsChargesIngestTest : CollegeScorecardTestBase() {
     )
 
   private fun ingest(ipeds: IpedsSources? = ipedsSources()): CollegeScorecardLoader.IngestReport =
-    runBlocking { loader.ingest(source(institutionCsv), source(fieldsCsv), source(aliasesJson), ipeds) }
+    runBlocking {
+      loader.ingest(source(institutionCsv), source(fieldsCsv), source(aliasesJson), ipeds, dictionary = SeedScorecardDictionary.sources)
+    }
 
   // ---------------------------------------------------------------------------
   // The phase

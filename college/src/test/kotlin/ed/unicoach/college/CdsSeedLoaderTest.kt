@@ -704,6 +704,7 @@ class CdsSeedLoaderTest : CollegeScorecardTestBase() {
         fields = source(fixture("scorecard-fields-empty-fixture.csv")),
         aliasesFile = source(fixture("college-aliases-fixture.json")),
         cds = cds,
+        dictionary = SeedScorecardDictionary.sources,
       )
     }
 
@@ -712,7 +713,11 @@ class CdsSeedLoaderTest : CollegeScorecardTestBase() {
     val report = ingest()
     val load = assertNotNull(report.cds, "the run carries the CDS result it loaded")
 
-    assertEquals(7, report.sources.size, "three Scorecard sources plus the four CDS seed files")
+    assertEquals(
+      7 + SeedScorecardDictionary.sources.files.size,
+      report.sources.size,
+      "three Scorecard sources, the four CDS seed files and the three dictionary CSVs",
+    )
     // Digested the way every other source is: the recorded sha256 is the file's,
     // recomputed here independently rather than read back from the loader.
     val recorded = report.sources.first { it.fileName == meritCsv.name }
@@ -789,7 +794,7 @@ class CdsSeedLoaderTest : CollegeScorecardTestBase() {
   fun `a Scorecard-only run still writes a build row`() {
     val report = ingest(cds = null)
     assertNull(report.cds, "the whole CDS half is one absent value")
-    assertEquals(3, report.sources.size)
+    assertEquals(3 + SeedScorecardDictionary.sources.files.size, report.sources.size)
 
     val row = assertNotNull(withSession { buildRow(it, report.buildId) })
     // Absent, never zero: a run that never read a seed file must not report

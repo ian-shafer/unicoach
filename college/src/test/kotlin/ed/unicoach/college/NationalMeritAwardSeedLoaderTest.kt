@@ -1108,6 +1108,7 @@ class NationalMeritAwardSeedLoaderTest : CollegeScorecardTestBase() {
         fields = source(fixture("scorecard-fields-empty-fixture.csv")),
         aliasesFile = source(fixture("college-aliases-fixture.json")),
         nationalMeritAwards = source(awardsCsv),
+        dictionary = SeedScorecardDictionary.sources,
       )
     }
 

@@ -14,6 +14,7 @@ import ed.unicoach.db.models.CollegeId
 import ed.unicoach.db.models.FigureReading
 import ed.unicoach.db.models.FigureStatus
 import ed.unicoach.db.models.IntendedSubjectName
+import ed.unicoach.db.models.ProgramMoneyDollars
 import ed.unicoach.db.models.ProgramMoneyMeasure
 import ed.unicoach.db.models.ValueBearingStatus
 import org.slf4j.LoggerFactory
@@ -38,9 +39,8 @@ import org.slf4j.LoggerFactory
 // about a program it does run has been lied to by a gap in our data.
 //
 // AND NOTHING ON THIS PATH RAISES. A row we cannot stamp -- an unregistered
-// `source_variable`, a measure its variable does not publish, a cohort the
-// registry's sentence does not describe -- is a row we hold and cannot
-// attribute, which is the third reason above and not an error: every one of
+// `source_variable`, a measure its variable does not publish -- is a row we
+// hold and cannot attribute, which is the third reason above and not an error: every one of
 // them is a state the schema permits and OUR registry decides, so refusing one
 // cost a family the whole cost answer over a single row. The operator hears it
 // as a located WARN instead ([provenanceOfOrNull]).
@@ -55,34 +55,19 @@ import org.slf4j.LoggerFactory
 private val programReturnLog = LoggerFactory.getLogger("ed.unicoach.coaching.costs.ProgramReturn")
 
 /**
- * The provenance of one program figure (RFC 231): the registry entry the row's
- * `source_variable` resolved to, and the cohort years that entry states -- which
- * are the years the ROW pools, because this value exists only where the two
- * agree.
+ * The provenance of one program figure (RFC 231): the ROW's own periods, and the
+ * registry entry its `source_variable` resolved to.
+ *
+ * The ROW is the only source of a figure's years: [cohortFirstYear],
+ * [cohortLastYear] and [dollars] are stamped on it at ingest from the fetched
+ * data dictionary (RFC 274).
  *
  * The ENTRY rather than a copy of its fields, because the publisher, the
- * verbatim cohort cell, the dollar base and the measure are ONE fact about the
- * variable: pairing a debt measure with the earnings dollar base is then not a
- * mistake a caller can make, it is a value that cannot be spelled.
+ * assurance tier and the measure are ONE fact about the variable: pairing a debt
+ * measure with the earnings publisher is then not a mistake a caller can make.
  *
- * THE SENTENCE AND THE YEARS AGREE, BY CONSTRUCTION, AND THE DISAGREEING STATE
- * CANNOT BE BUILT. [cohortSentence] is the publisher's verbatim cell out of the
- * registry; the ROW carries its own two years, and a re-pinned registry can
- * leave a stored row whose years that sentence does not describe. A figure
- * served beside a sentence about another cohort contradicts itself in front of
- * a family, so the row's years are compared in ONE place -- [ofAgreeingCohort],
- * the only door in, which answers null instead and leaves the caller rendering
- * the figure's own no-row arm. The row stays perfectly readable: a re-pin never
- * makes a stored figure unspeakable, it only stops us stamping it with the wrong
- * cohort.
- *
- * SO THE YEARS ARE READ OFF THE VARIABLE AND NOT STORED BESIDE IT. Two fields
- * that must equal two fields of a third are a second copy with nothing holding
- * it -- the state a runtime `require` used to reject, on a PUBLIC constructor
- * that threw for exactly the input the factory answers null for. One invariant
- * may not have two behaviours, and the throwing one may not be the public door:
- * the constructor is private, `@ConsistentCopyVisibility` closes `copy()` with
- * it, and the disagreeing pair is no longer a value anything can spell.
+ * [ofOrNull] is the one way to build one, and `@ConsistentCopyVisibility` closes
+ * `copy()` with it: [dollars] always names the [variable]'s own measure.
  *
  * The store's `source` column is deliberately not here: it says `scorecard` on
  * every row and is the file we ingested, not the publisher a family is told.
@@ -90,12 +75,20 @@ private val programReturnLog = LoggerFactory.getLogger("ed.unicoach.coaching.cos
 @ConsistentCopyVisibility
 data class ProgramFigureProvenance private constructor(
   val variable: ScorecardFieldOfStudyColumns.FieldOfStudyVariable,
-) {
-  /** The FIRST academic year this figure's cohort pools, as its start year -- the row's own, which the registry states. */
-  val cohortFirstYear: AcademicYear get() = variable.cohortFirstYear
-
+  /** The FIRST academic year this figure's cohort pools, as its start year. */
+  val cohortFirstYear: AcademicYear,
   /** The LAST academic year that cohort pools; never earlier than the first. */
-  val cohortLastYear: AcademicYear get() = variable.cohortLastYear
+  val cohortLastYear: AcademicYear,
+  /** The measure and the calendar year of its dollars, as ONE value. */
+  val dollars: ProgramMoneyDollars,
+) {
+  /**
+   * The calendar year whose dollars the figure is in, as the publisher states
+   * it; null where it states none. A [CalendarYear] beside the two [AcademicYear]
+   * members above, because the year of a figure's dollars and a cohort year are
+   * different facts that share one representation.
+   */
+  val amountUsdYear: CalendarYear? get() = dollars.amountUsdYear
 
   /** Who published the figure, in the publisher's own word for itself. */
   val publisher: String get() = variable.publisher
@@ -103,49 +96,15 @@ data class ProgramFigureProvenance private constructor(
   /** What kind of number the figure is (RFC 191), the registry's fact about its variable. */
   val assuranceTier: AssuranceTier get() = variable.assuranceTier
 
-  /** The publisher's own cohort cell, verbatim -- the evidence for the two years and the dollar base. */
-  val cohortSentence: String get() = variable.publisherCohortCell
-
-  /**
-   * The calendar year whose dollars the figure is in, where [variable]'s own
-   * registry entry names one -- and null where it does not.
-   *
-   * WHICH variables name one is the registry's fact and is not restated here: a
-   * later pin that names a dollar year for a debt column would leave a sentence
-   * in this file wrong, and the registry's own KDoc calls today's absence "a
-   * finding, not an omission".
-   *
-   * A [CalendarYear] beside the two [AcademicYear] members above, because a
-   * dollar base and a cohort year are different facts that share one
-   * representation: while this was an `Int`, wrapping it as an [AcademicYear]
-   * and speaking a dollar base as a cohort type-checked.
-   */
-  val inflationBaseYear: CalendarYear? get() = variable.inflationBaseYear
-
   companion object {
-    /**
-     * This provenance, or NULL when the registry's cohort cell would describe a
-     * cohort the row is not about (RFC 231).
-     *
-     * The ONLY door in -- the constructor is private -- and null rather than a
-     * refusal: a registry re-pin is OUR edit, and it must not make a stored row
-     * unreadable or take a whole cost answer down with it. The figure takes its
-     * own no-row arm and says so, and there is no second door that answers the
-     * same input with an exception.
-     *
-     * [cohortFirstYear] and [cohortLastYear] are the ROW's, and this is the one
-     * place they are compared with the registry's.
-     */
-    fun ofAgreeingCohort(
+    /** The provenance of a figure [variable] publishes, or null where [dollars] names a measure it does not. */
+    fun ofOrNull(
       variable: ScorecardFieldOfStudyColumns.FieldOfStudyVariable,
       cohortFirstYear: AcademicYear,
       cohortLastYear: AcademicYear,
+      dollars: ProgramMoneyDollars,
     ): ProgramFigureProvenance? =
-      if (variable.cohortFirstYear == cohortFirstYear && variable.cohortLastYear == cohortLastYear) {
-        ProgramFigureProvenance(variable)
-      } else {
-        null
-      }
+      if (variable.measure == dollars.measure) ProgramFigureProvenance(variable, cohortFirstYear, cohortLastYear, dollars) else null
   }
 }
 
@@ -240,9 +199,9 @@ sealed interface ProgramReturnFigure {
 
   /**
    * We hold NO usable row for this measure of this program: the store has none,
-   * or the one it has cannot be stamped -- a cohort its own sentence does not
-   * describe (see [ProgramFigureProvenance]), a `source_variable` the registry
-   * does not carry, or a measure that variable does not publish.
+   * or the one it has cannot be stamped -- it claims another publisher's file,
+   * its `source_variable` is one the registry does not carry, or its measure is
+   * one that variable does not publish.
    *
    * ONE arm for all four, because they are one fact to a FAMILY: we hold no
    * published figure for that measure. The three that are our own gap are told
@@ -578,15 +537,13 @@ private fun programEntryOf(
   )
 
 /**
- * One row's provenance, resolved through [ScorecardFieldOfStudyColumns] by
- * `source_variable` -- the schema's own comment directs a reader of a row there
- * for the publisher, the cohort sentence and the dollar base.
+ * One row's provenance: its own years, and the publisher and assurance tier
+ * resolved through [ScorecardFieldOfStudyColumns] by `source_variable`.
  *
- * NULL, NEVER A REFUSAL, on all four ways a stored row can fail to be stamped:
+ * NULL, NEVER A REFUSAL, on all three ways a stored row can fail to be stamped:
  * a `source` that is not the publisher whose file this registry describes, a
- * `source_variable` the registry does not carry, a row whose stored `measure`
- * is not the one that variable publishes, and a row whose years the registry's
- * cohort cell would not describe. The figure takes its own no-row arm and says
+ * `source_variable` the registry does not carry, and a row whose stored
+ * `measure` is not the one that variable publishes. The figure takes its own no-row arm and says
  * so; every figure beside it still answers, and the cost answer still returns.
  *
  * THE ENVELOPE IS AUDITED BEFORE THE INNER LOOKUP. `source` is the row's own
@@ -598,26 +555,21 @@ private fun programEntryOf(
  * `money_source_check` admits `('ipeds_sfa', 'ipeds_ic_ay', 'scorecard',
  * 'common_data_set')`, and `create-program-money-stats.sql` adds no CHECK
  * narrowing it -- so a variable name shared with another publisher's file would
- * otherwise be spoken to a family under the Scorecard's publisher, its cohort
- * sentence and its dollar base.
+ * otherwise be spoken to a family under the Scorecard's publisher.
  *
- * None of the four is corruption we may refuse on. `source_variable` is `TEXT
+ * None of the three is corruption we may refuse on. `source_variable` is `TEXT
  * NOT NULL` under a non-empty CHECK alone, so a fourth ingested Scorecard
  * column is a SCHEMA-LEGAL value this registry has not learned yet -- a
  * widening, not a broken row -- a variable/measure disagreement is the
- * registry disagreeing with the store, which is our edit exactly as a re-pin
- * is, and a row of another publisher's file is a legal stored state of a column
+ * registry disagreeing with the store, which is our edit, and a row of another publisher's file is a legal stored state of a column
  * whose domain admits four publishers. Refusing any of them took the whole
  * `college_cost_profile` answer down for that student over one row we could not
  * attribute.
  *
- * The OPERATOR hears about all four, by located `WARN`: a family is owed a
+ * The OPERATOR hears about all three, by located `WARN`: a family is owed a
  * sentence, and we are owed the cell. They are not the same absence to us, and
  * an ingest that started writing a column this registry cannot attribute must
- * not be silent. The cohort disagreement is the LOUDEST of them, not the
- * quietest: a re-pin degrades every stored row of that variable at once, so a
- * silent arm there would blank a figure for every student with the only signal
- * being a family asking why.
+ * not be silent.
  */
 private fun provenanceOfOrNull(stat: ProgramReturnStat): ProgramFigureProvenance? {
   if (stat.source != ScorecardFieldOfStudyColumns.SOURCE) {
@@ -639,7 +591,8 @@ private fun provenanceOfOrNull(stat: ProgramReturnStat): ProgramFigureProvenance
     )
     return null
   }
-  if (variable.measure != stat.measure) {
+  val provenance = ProgramFigureProvenance.ofOrNull(variable, stat.cohortFirstYear, stat.cohortLastYear, stat.dollars)
+  if (provenance == null) {
     programReturnLog.warn(
       "source_variable=[{}] publishes measure=[{}] and the row stores measure=[{}] at [{}]: " +
         "the figure takes its no-figure arm rather than being stamped with the other measure's publisher",
@@ -647,20 +600,6 @@ private fun provenanceOfOrNull(stat: ProgramReturnStat): ProgramFigureProvenance
       variable.measure.value,
       stat.measure.value,
       stat.locationOf(ProgramMoneyStatColumn.MEASURE),
-    )
-    return null
-  }
-  val provenance = ProgramFigureProvenance.ofAgreeingCohort(variable, stat.cohortFirstYear, stat.cohortLastYear)
-  if (provenance == null) {
-    programReturnLog.warn(
-      "source_variable=[{}] publishes cohort [{}]..[{}] and the row pools [{}]..[{}] at [{}]: " +
-        "the figure takes its no-figure arm rather than being served beside a sentence about another cohort",
-      variable.sourceVariable,
-      variable.cohortFirstYear.label,
-      variable.cohortLastYear.label,
-      stat.cohortFirstYear.label,
-      stat.cohortLastYear.label,
-      stat.locationOf(ProgramMoneyStatColumn.COHORT_LAST_YEAR),
     )
   }
   return provenance

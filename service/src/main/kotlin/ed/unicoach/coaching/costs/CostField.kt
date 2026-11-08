@@ -117,8 +117,8 @@ enum class CostField(
 
   // UNDATED, and deliberately so (RFC 149 D-E). Neither figure is on either
   // cohort basis this RFC dates: the debt figure is a completers' cohort and the
-  // earnings figure a ten-years-after-entry one. Labelling them AY2023-24
-  // because COSTT4_A is would be exactly the false precision the vintage work
+  // earnings figure a ten-years-after-entry one. Dating them to the academic
+  // year COSTT4_A carries would be exactly the false precision the vintage work
   // exists to remove, so they carry no vintage and the tool prints no academic
   // year beside them.
   //

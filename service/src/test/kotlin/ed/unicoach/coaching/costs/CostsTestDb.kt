@@ -7,6 +7,7 @@ import ed.unicoach.coaching.moneyprofile.FieldUpdate
 import ed.unicoach.coaching.moneyprofile.MoneyProfileService
 import ed.unicoach.coaching.moneyprofile.MoneyProfileUpdate
 import ed.unicoach.college.ScorecardFieldOfStudyColumns
+import ed.unicoach.college.SeedScorecardDictionary
 import ed.unicoach.common.util.AcademicYear
 import ed.unicoach.db.Database
 import ed.unicoach.db.dao.CanonicalMoneyDao
@@ -1087,20 +1088,21 @@ object CostsTestDb {
   const val PROGRAM_MONTHLY_PAYMENT_USD = 260
 
   /**
-   * The cohorts those figures pool, READ OFF THE REGISTRY the ingest itself
-   * writes from (`ProgramMoneyLoader` writes `variable.cohortFirstYear` /
-   * `cohortLastYear` for every [ScorecardFieldOfStudyColumns.VARIABLES] member).
+   * The cohorts those figures pool and the year of the earnings figure's
+   * dollars, READ FROM THE FETCHED DICTIONARY the ingest stamps from.
    *
-   * Not four literals beside it: the row this fixture seeds has to BE the row
-   * the ingest would write, or "ordinary rows take the agreeing path" is a claim
-   * about a second transcription of the registry rather than about the ingest.
-   * The earnings cohort and the debt cohort are dated differently in the
-   * registry itself, so a test that mixes the two up still fails.
+   * Not literals: the row this fixture seeds has to BE the row the ingest would
+   * write. The earnings cohort and the debt cohort are dated differently in the
+   * dictionary itself, so a test that mixes the two up still fails.
    */
-  val PROGRAM_EARNINGS_COHORT_FIRST_YEAR = ScorecardFieldOfStudyColumns.EARNINGS.cohortFirstYear
-  val PROGRAM_EARNINGS_COHORT_LAST_YEAR = ScorecardFieldOfStudyColumns.EARNINGS.cohortLastYear
-  val PROGRAM_DEBT_COHORT_FIRST_YEAR = ScorecardFieldOfStudyColumns.DEBT.cohortFirstYear
-  val PROGRAM_DEBT_COHORT_LAST_YEAR = ScorecardFieldOfStudyColumns.DEBT.cohortLastYear
+  private fun publishedCohortOf(variable: ScorecardFieldOfStudyColumns.FieldOfStudyVariable) =
+    SeedScorecardDictionary.dictionary.fieldOfStudyCohortOf(variable.sourceVariable)
+
+  val PROGRAM_EARNINGS_COHORT_FIRST_YEAR = publishedCohortOf(ScorecardFieldOfStudyColumns.EARNINGS).first
+  val PROGRAM_EARNINGS_COHORT_LAST_YEAR = publishedCohortOf(ScorecardFieldOfStudyColumns.EARNINGS).last
+  val PROGRAM_EARNINGS_AMOUNT_USD_YEAR = requireNotNull(publishedCohortOf(ScorecardFieldOfStudyColumns.EARNINGS).amountUsdYear)
+  val PROGRAM_DEBT_COHORT_FIRST_YEAR = publishedCohortOf(ScorecardFieldOfStudyColumns.DEBT).first
+  val PROGRAM_DEBT_COHORT_LAST_YEAR = publishedCohortOf(ScorecardFieldOfStudyColumns.DEBT).last
 
   /**
    * The three program figures a bachelor's program has, in the loader's own
@@ -1113,17 +1115,17 @@ object CostsTestDb {
     debt: FigureReading<Int> = FigureReading.Present(PROGRAM_DEBT_USD, ValueBearingStatus.REPORTED),
     payment: FigureReading<Int> = FigureReading.Present(PROGRAM_MONTHLY_PAYMENT_USD, ValueBearingStatus.REPORTED),
   ) {
-    // The LOADER's own row shape: measure, both cohort years and the source
-    // variable all come off the registry entry, exactly as `ProgramMoneyLoader`
+    // The LOADER's own row shape: measure and source variable off the registry
+    // entry, the years off the fetched dictionary, exactly as `ProgramMoneyLoader`
     // takes them, so a row seeded here is a row the ingest would write.
     fun stat(
       variable: ScorecardFieldOfStudyColumns.FieldOfStudyVariable,
       reading: FigureReading<Int>,
     ) = NewProgramMoneyStat(
       collegeProgramId = programId,
-      measure = variable.measure,
-      cohortFirstYear = variable.cohortFirstYear,
-      cohortLastYear = variable.cohortLastYear,
+      dollars = SeedScorecardDictionary.dollarsOf(variable),
+      cohortFirstYear = publishedCohortOf(variable).first,
+      cohortLastYear = publishedCohortOf(variable).last,
       reading = reading,
       source = MoneySource.SCORECARD,
       sourceVariable = variable.sourceVariable,

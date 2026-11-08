@@ -78,7 +78,9 @@ class IpedsIngestTest : CollegeScorecardTestBase() {
     }
 
   private fun ingest(ipeds: IpedsSources? = ipedsSources()): CollegeScorecardLoader.IngestReport =
-    runBlocking { loader.ingest(source(institutionCsv), source(fieldsCsv), source(aliasesJson), ipeds) }
+    runBlocking {
+      loader.ingest(source(institutionCsv), source(fieldsCsv), source(aliasesJson), ipeds, dictionary = SeedScorecardDictionary.sources)
+    }
 
   // ---------------------------------------------------------------------------
   // The attribute phase
@@ -430,7 +432,11 @@ class IpedsIngestTest : CollegeScorecardTestBase() {
   fun `the build row gains the IPEDS blocks, the five digests, and the current method_version`() {
     seedColleges(hdIpedsUnitIds)
     val report = ingest()
-    assertEquals(8, report.sources.size, "three Scorecard sources plus the five IPEDS files")
+    assertEquals(
+      8 + SeedScorecardDictionary.sources.files.size,
+      report.sources.size,
+      "three Scorecard sources, the five IPEDS files and the three dictionary CSVs",
+    )
 
     val row = assertNotNull(withSession { buildRow(it, report.buildId) })
     // 5 since RFC 146 added the derived name-word rebuild, RFC 148 the CDS
@@ -461,7 +467,7 @@ class IpedsIngestTest : CollegeScorecardTestBase() {
   fun `a run without the IPEDS group OMITS the keys entirely, never writing them as zeros`() {
     val report = ingest(ipeds = null)
     assertNull(report.ipeds, "the whole IPEDS half is one absent value, not five nullable slots")
-    assertEquals(3, report.sources.size)
+    assertEquals(3 + SeedScorecardDictionary.sources.files.size, report.sources.size)
 
     val row = assertNotNull(withSession { buildRow(it, report.buildId) })
     assertFalse(row.rowsIngested.contains("\"ipeds\""), "absent means absent: ${row.rowsIngested}")

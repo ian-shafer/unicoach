@@ -66,7 +66,7 @@ class SearchCanonicalMoneyTest {
      * green while "newest vintage would pick SFA" -- their whole premise --
      * had quietly become false.
      */
-    private val SCORECARD_VINTAGE = CanonicalMoneyLoader.BLENDED_AVERAGE_VINTAGE.firstCalendarYear
+    private val SCORECARD_VINTAGE = SeedScorecardYears.BLENDED_AVERAGE.firstCalendarYear
 
     /** A LATER aid year, so "newest vintage wins" alone would pick the SFA row. */
     private val SFA_VINTAGE = SCORECARD_VINTAGE + 2

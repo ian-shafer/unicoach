@@ -292,12 +292,21 @@ class CanonicalMoneyLoader internal constructor(
    * by the `sfa` phase, so reading the table unconditionally would let a run
    * that named no SFA file emit `ipeds_sfa` rows out of an earlier run's
    * staged file.
+   *
+   * [dictionary] is the Scorecard data dictionary fetched with [institutionCsv]
+   * (RFC 274): every Scorecard row this fill writes carries the academic year
+   * it states for that row's column. It is checked first, by
+   * [ScorecardYearGuard], in this transaction and before the DELETE -- a
+   * dictionary that drops, re-words or back-dates a served column leaves the
+   * previous fill standing.
    */
   suspend fun fill(
     institutionCsv: File,
     sfa: SfaSources?,
+    dictionary: ScorecardDictionary,
   ): FillResult =
     database.withConnection { session ->
+      guard(session, dictionary)
       val collegeIds = CollegeIpedsDao.collegeIdsByIpedsUnitId(session).getOrThrow()
       val ipedsChargesIgnored = mutableMapOf<ChargeDrift, MutableMap<String, Int>>()
       val prices = LinkedHashMap<PriceKey, NewPriceFigure>()
@@ -351,7 +360,7 @@ class CanonicalMoneyLoader internal constructor(
             // at the level that owns source precedence -- never re-derived
             // inside the pass that only maps a CSV.
             val residency = ScorecardResidencyEvidence.of(prices, ipedsFiledResidencyTiers)
-            scorecard = mapScorecardCsv(institutionCsv, collegeIds, absences, prices, stats, matched, residency)
+            scorecard = mapScorecardCsv(institutionCsv, dictionary, collegeIds, absences, prices, stats, matched, residency)
           }
 
           // The IPEDS SFA fill (RFC 162), FIRST in the ordered list: where SFA
@@ -425,6 +434,23 @@ class CanonicalMoneyLoader internal constructor(
       logFill(result)
       result
     }
+
+  /**
+   * Runs [ScorecardYearGuard] over [dictionary] without filling anything: the
+   * ingest calls it before its first phase commits, so a refusal leaves every
+   * table as it was. [fill] runs the same guard again in its own transaction.
+   */
+  suspend fun requireDictionaryServes(dictionary: ScorecardDictionary) {
+    database.withConnection { session -> guard(session, dictionary) }
+  }
+
+  /** Refuses [dictionary] if a dated column is missing, unreadable or a back-date ([ScorecardYearGuard]). */
+  private fun guard(
+    session: SqlSession,
+    dictionary: ScorecardDictionary,
+  ) {
+    ScorecardYearGuard.requireNoMoneyBackdate(session, ScorecardYearGuard.datedMoneyYears(dictionary))
+  }
 
   /**
    * Everything this fill SAYS to an operator, at one altitude: the per-status
@@ -945,6 +971,7 @@ class CanonicalMoneyLoader internal constructor(
    */
   private fun mapScorecardCsv(
     institutionCsv: File,
+    dictionary: ScorecardDictionary,
     collegeIds: Map<Int, CollegeId>,
     absences: CellAbsenceTally,
     prices: LinkedHashMap<PriceKey, NewPriceFigure>,
@@ -975,7 +1002,7 @@ class CanonicalMoneyLoader internal constructor(
         // not a policy set it has to adjudicate.
         val inStateTuition = residency.inStateTuitionFor(collegeId)
         inStateTuitionTally.record(collegeId, inStateTuition)
-        val controlMissing = mapScorecardRow(record, collegeId, absences, prices, stats, inStateTuition)
+        val controlMissing = mapScorecardRow(record, dictionary, collegeId, absences, prices, stats, inStateTuition)
         if (controlMissing) rowsWithoutControl++
       }
     }
@@ -1091,15 +1118,16 @@ class CanonicalMoneyLoader internal constructor(
    */
   private fun mapScorecardRow(
     record: CSVRecord,
+    dictionary: ScorecardDictionary,
     collegeId: UUID,
     absences: CellAbsenceTally,
     prices: LinkedHashMap<PriceKey, NewPriceFigure>,
     stats: LinkedHashMap<StatKey, NewCohortMoneyStat>,
     inStateTuition: ScorecardResidencyEvidence.InStateTuition,
   ): Boolean {
-    mapScorecardPrices(record, collegeId, absences, prices, inStateTuition)
+    mapScorecardPrices(record, dictionary, collegeId, absences, prices, inStateTuition)
     val control = intOrNull(record, CONTROL)
-    mapScorecardStats(record, collegeId, public = control?.let { it == CONTROL_PUBLIC }, absences, stats)
+    mapScorecardStats(record, dictionary, collegeId, public = control?.let { it == CONTROL_PUBLIC }, absences, stats)
     return control == null
   }
 
@@ -1117,6 +1145,7 @@ class CanonicalMoneyLoader internal constructor(
    */
   private fun mapScorecardPrices(
     record: CSVRecord,
+    dictionary: ScorecardDictionary,
     collegeId: UUID,
     absences: CellAbsenceTally,
     prices: LinkedHashMap<PriceKey, NewPriceFigure>,
@@ -1134,10 +1163,11 @@ class CanonicalMoneyLoader internal constructor(
           concept = concept,
           residency = residency,
           arrangement = arrangement,
-          // The COLUMN carries the year, through the one map that states it
-          // (RFC 183): a write site that picked a constant by hand could stamp
-          // a charge column with the blended cohort's year and pass every test.
-          academicYear = ScorecardInstitutionColumns.datedYearOf(column),
+          // The COLUMN carries the year: the one the fetched dictionary states
+          // for it (RFC 274). A write site that picked a year by hand could
+          // stamp a charge column with the blended cohort's year and pass
+          // every test.
+          academicYear = ScorecardInstitutionColumns.datedYearOf(column, dictionary),
           reading = grossCell(record, column, absences).reading(),
           source = MoneySource.SCORECARD,
           // Through the registry, never straight off the constant: the fill may
@@ -1458,6 +1488,7 @@ class CanonicalMoneyLoader internal constructor(
    */
   private fun mapScorecardStats(
     record: CSVRecord,
+    dictionary: ScorecardDictionary,
     collegeId: UUID,
     public: Boolean?,
     absences: CellAbsenceTally,
@@ -1470,11 +1501,10 @@ class CanonicalMoneyLoader internal constructor(
       cell: StatusfulCell<Double>,
       sourceVariable: String,
     ) {
-      // The COLUMN carries the vintage, through the one map that states it
-      // (RFC 183): no call site picks a year, so a column that joins a
-      // different vintage group moves its own rows and cannot be stamped the
-      // other cohort's year by a stale argument.
-      val vintage = ScorecardInstitutionColumns.stampedYearOf(sourceVariable)
+      // The COLUMN carries the vintage: the one the fetched dictionary states
+      // for it (RFC 274). No call site picks a year, so a column the
+      // publisher re-dates moves its own rows and nothing else.
+      val vintage = ScorecardInstitutionColumns.stampedYearOf(sourceVariable, dictionary)
       val row =
         cohortStat(
           collegeId = collegeId,
@@ -1668,36 +1698,6 @@ class CanonicalMoneyLoader internal constructor(
         "ORDERED_SOURCES ranks a source twice: ${ORDERED_SOURCES.map { it.value }}"
       }
     }
-
-    /**
-     * The Scorecard published-price academic year, the stored twin of
-     * `FigureGroup.PUBLISHED_PRICE` in the service cost domain: the year is a
-     * property of the pinned snapshot and rides on every row (P5).
-     *
-     * The publisher's own dictionary dates `TUITIONFEE_IN/OUT`, `ROOMBOARD_*`,
-     * `BOOKSUPPLY` and `OTHEREXPENSE_*` to **AcadYr 2024-25**
-     * (`Most_Recent_Inst_Cohort_Map`, release 06102026). That sentence is
-     * transcribed into `db/seed/scorecard/dictionary-variable-sources.csv` and
-     * `ScorecardDictionaryPinTest` asserts this constant against it, so the two
-     * can no longer drift apart in silence -- which is how both constants came
-     * to be wrong by two years, unchallenged, from the day they were written
-     * (RFC 183).
-     *
-     * It is NOT the same year as [BLENDED_AVERAGE_VINTAGE], and a snapshot bump
-     * does not move the two together by one shared offset: they are two
-     * different publisher cohorts that happen to arrive in one file, and each
-     * is re-read from the dictionary on its own.
-     */
-    internal val PUBLISHED_PRICE_YEAR = AcademicYear(2024)
-
-    /**
-     * The blended-average year (`FigureGroup.BLENDED_AVERAGE`): COSTT4_A and
-     * the NPT4 family, which the dictionary dates to **AcadYr 2023-24** -- one
-     * year BEHIND the charges above, because they describe a cohort that has
-     * already been through a year rather than a price list for the year ahead.
-     * Pinned against the same transcription by `ScorecardDictionaryPinTest`.
-     */
-    internal val BLENDED_AVERAGE_VINTAGE = AcademicYear(2023)
 
     /** COSTT4_A, the blended published price: Title IV-aided undergraduates, whole cohort. */
     val PUBLISHED_COST_BLEND: CohortStatAddress =

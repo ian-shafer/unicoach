@@ -24,9 +24,28 @@ class IngestApplicationArgvTest {
    */
   private val codebooksFlag = "--codebooks=db/data/codebooks.json"
 
+  /**
+   * The three data dictionary flags every `ok(...)` call supplies unless it
+   * names its own: each REQUIRED (RFC 274).
+   */
+  private val dictionaryFlags =
+    listOf(
+      "--dictionary-cohorts=db/seed/scorecard/dictionary-institution-cohorts.csv",
+      "--dictionary-sources=db/seed/scorecard/dictionary-institution-sources.csv",
+      "--dictionary-fields=db/seed/scorecard/dictionary-field-of-study-cohorts.csv",
+    )
+
+  /** The roles the dictionary joins the existence probe under: one per flag. */
+  private val dictionaryRoles = listOf("dictionary-cohorts", "dictionary-sources", "dictionary-fields")
+
+  /** [dictionaryFlags] without the one for [role]. */
+  private fun dictionaryFlagsWithout(role: String): Array<String> = dictionaryFlags.filterNot { it.startsWith("--$role=") }.toTypedArray()
+
   private fun ok(vararg args: String): ArgvResult.Ok {
     val withCodebooks = if (args.any { it.startsWith("--codebooks=") }) args else arrayOf(codebooksFlag, *args)
-    val result = parseArgv(arrayOf(*positional, *withCodebooks))
+    val missingDictionary = dictionaryFlags.filterNot { flag -> withCodebooks.any { it.startsWith(flag.substringBefore('=') + "=") } }
+    val withDictionary = arrayOf(*missingDictionary.toTypedArray(), *withCodebooks)
+    val result = parseArgv(arrayOf(*positional, *withDictionary))
     assertTrue(result is ArgvResult.Ok, "expected Ok, got $result")
     return result
   }
@@ -225,7 +244,7 @@ class IngestApplicationArgvTest {
       )
     val named = namedSources(parsed)
     assertEquals(
-      listOf("institution", "fields", "aliases", "hd", "ic", "adm", "completions", "ic-ay", "codebooks"),
+      listOf("institution", "fields", "aliases", "hd", "ic", "adm", "completions", "ic-ay", "codebooks", *dictionaryRoles.toTypedArray()),
       named.map { it.first },
       "every file the run reads is named by the flag the operator typed",
     )
@@ -241,7 +260,10 @@ class IngestApplicationArgvTest {
 
   @Test
   fun `a run with no IPEDS group names only the Scorecard sources and the codebook`() {
-    assertEquals(listOf("institution", "fields", "aliases", "codebooks"), namedSources(ok()).map { it.first })
+    assertEquals(
+      listOf("institution", "fields", "aliases", "codebooks", *dictionaryRoles.toTypedArray()),
+      namedSources(ok()).map { it.first },
+    )
   }
 
   // ---------------------------------------------------------------------------
@@ -290,7 +312,56 @@ class IngestApplicationArgvTest {
   @Test
   fun `the codebook joins the existence probe under its own role`() {
     val named = namedSources(ok("--codebooks=db/data/codebooks.json"))
-    assertEquals(listOf("institution", "fields", "aliases", "codebooks"), named.map { it.first })
+    assertEquals(listOf("institution", "fields", "aliases", "codebooks", *dictionaryRoles.toTypedArray()), named.map { it.first })
+  }
+
+  // ---------------------------------------------------------------------------
+  // The fetched Scorecard data dictionary (RFC 274): REQUIRED, with its own
+  // provenance partner, and two siblings read from beside it
+  // ---------------------------------------------------------------------------
+
+  @Test
+  fun `each dictionary flag left off is refused by its own name, not defaulted`() {
+    for (role in dictionaryRoles) {
+      val message = usage(*positional, codebooksFlag, *dictionaryFlagsWithout(role))
+      assertTrue(message.contains("[--$role]") && message.contains("required"), "[$role]: $message")
+    }
+  }
+
+  @Test
+  fun `each dictionary flag carries its path, and its source flag the caller's original argument`() {
+    val remote =
+      ok(
+        "--dictionary-cohorts=/tmp/a/dictionary-institution-cohorts.csv",
+        "--dictionary-cohorts-source=s3://snap/a/dictionary-institution-cohorts.csv",
+        "--dictionary-sources=/tmp/b/dictionary-institution-sources.csv",
+        "--dictionary-sources-source=s3://snap/b/dictionary-institution-sources.csv",
+        "--dictionary-fields=/tmp/c/dictionary-field-of-study-cohorts.csv",
+        "--dictionary-fields-source=s3://snap/c/dictionary-field-of-study-cohorts.csv",
+      ).dictionary
+    // Three directories, as bin/remote lands them: no file is read from beside another.
+    assertEquals("/tmp/a/dictionary-institution-cohorts.csv", remote.institutionCohorts.file.path)
+    assertEquals("s3://snap/a/dictionary-institution-cohorts.csv", remote.institutionCohorts.sourceArg)
+    assertEquals("/tmp/b/dictionary-institution-sources.csv", remote.institutionSources.file.path)
+    assertEquals("s3://snap/b/dictionary-institution-sources.csv", remote.institutionSources.sourceArg)
+    assertEquals("/tmp/c/dictionary-field-of-study-cohorts.csv", remote.fieldOfStudyCohorts.file.path)
+    assertEquals("s3://snap/c/dictionary-field-of-study-cohorts.csv", remote.fieldOfStudyCohorts.sourceArg)
+    // Without a partner, the path IS the original argument.
+    assertEquals("db/seed/scorecard/dictionary-institution-sources.csv", ok().dictionary.institutionSources.sourceArg)
+  }
+
+  @Test
+  fun `a repeated or blank dictionary flag is refused like any other`() {
+    for (role in dictionaryRoles) {
+      val flag = dictionaryFlags.first { it.startsWith("--$role=") }
+      assertTrue(usage(*positional, codebooksFlag, *dictionaryFlags.toTypedArray(), flag).contains("more than once"), role)
+      assertTrue(usage(*positional, codebooksFlag, *dictionaryFlagsWithout(role), "--$role=").contains("non-empty"), role)
+    }
+  }
+
+  @Test
+  fun `all three dictionary files join the existence probe, each under its own flag`() {
+    assertEquals(dictionaryRoles, namedSources(ok()).map { it.first }.filter { it.startsWith("dictionary") })
   }
 
   // ---------------------------------------------------------------------------
@@ -327,7 +398,10 @@ class IngestApplicationArgvTest {
   @Test
   fun `the subject file joins the existence probe under its own role`() {
     val named = namedSources(ok("--codebooks=db/data/codebooks.json", "--subjects=db/data/subjects.json"))
-    assertEquals(listOf("institution", "fields", "aliases", "codebooks", "subjects"), named.map { it.first })
+    assertEquals(
+      listOf("institution", "fields", "aliases", "codebooks", *dictionaryRoles.toTypedArray(), "subjects"),
+      named.map { it.first },
+    )
   }
 
   // ---------------------------------------------------------------------------
@@ -371,7 +445,12 @@ class IngestApplicationArgvTest {
   fun `the vocabulary file joins the existence probe under its own role`() {
     val named =
       namedSources(ok("--codebooks=db/data/codebooks.json", "--money-vocabulary=db/data/money-vocabulary.json"))
-    assertEquals(listOf("institution", "fields", "aliases", "codebooks", "money-vocabulary"), named.map { it.first })
+    assertEquals(
+      listOf("institution", "fields", "aliases", "codebooks", *dictionaryRoles.toTypedArray(), "money-vocabulary"),
+      named.map {
+        it.first
+      },
+    )
   }
 
   // ---------------------------------------------------------------------------
@@ -425,7 +504,19 @@ class IngestApplicationArgvTest {
     // The corpus's link-status.csv is NOT probed here: it has no flag and so no
     // role name, and the loader's own header assertion is what requires it --
     // before the first phase commits, like every other file.
-    assertEquals(listOf("institution", "fields", "aliases", "codebooks", "national-merit-awards"), named.map { it.first })
+    assertEquals(
+      listOf(
+        "institution",
+        "fields",
+        "aliases",
+        "codebooks",
+        *dictionaryRoles.toTypedArray(),
+        "national-merit-awards",
+      ),
+      named.map {
+        it.first
+      },
+    )
   }
 
   // ---------------------------------------------------------------------------
@@ -489,7 +580,7 @@ class IngestApplicationArgvTest {
   @Test
   fun `the SFA file joins the existence probe under its own role`() {
     val named = namedSources(ok(*sfaGroup))
-    assertEquals(listOf("institution", "fields", "aliases", "sfa", "codebooks"), named.map { it.first })
+    assertEquals(listOf("institution", "fields", "aliases", "sfa", "codebooks", *dictionaryRoles.toTypedArray()), named.map { it.first })
   }
 
   private fun ipedsGroupWithYear(year: String): Array<String> =

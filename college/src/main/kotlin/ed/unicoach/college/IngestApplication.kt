@@ -37,6 +37,9 @@ private const val USAGE =
   "Usage: ingest-colleges <institution.csv> <fields.csv> <aliases.json> " +
     "[--institution-source=ARG] [--fields-source=ARG] [--aliases-source=ARG] " +
     "--codebooks=codebooks.json [--codebooks-source=ARG] " +
+    "--dictionary-cohorts=dictionary-institution-cohorts.csv [--dictionary-cohorts-source=ARG] " +
+    "--dictionary-sources=dictionary-institution-sources.csv [--dictionary-sources-source=ARG] " +
+    "--dictionary-fields=dictionary-field-of-study-cohorts.csv [--dictionary-fields-source=ARG] " +
     "[--subjects=subjects.json] [--subjects-source=ARG] " +
     "[--money-vocabulary=money-vocabulary.json] [--money-vocabulary-source=ARG] " +
     "[--national-merit-awards=awards.csv] [--national-merit-awards-source=ARG] " +
@@ -70,6 +73,38 @@ private val SOURCE_FLAGS = listOf("institution-source", "fields-source", "aliase
  * launcher decides WHICH file; the binary insists there is one.
  */
 private const val CODEBOOKS_FLAG = "codebooks"
+
+/**
+ * The College Scorecard data dictionary `bin/fetch-scorecard` fetched with the
+ * pair (RFC 274), as its three CSVs -- one flag EACH: the institution cohort
+ * sheet, the institution SOURCE sheet, the field-of-study cohort sheet. Three flags and
+ * not one file with siblings beside it, because `bin/remote` uploads every file
+ * under its own prefix, so siblings never arrive together on the host.
+ * REQUIRED, and option-shaped, for [CODEBOOKS_FLAG]'s reasons: every Scorecard
+ * money and field-of-study row carries the year it states, so a run without the
+ * dictionary could stamp no row, and the deployed binary guesses no repo layout.
+ */
+private const val DICTIONARY_COHORTS_FLAG = "dictionary-cohorts"
+private const val DICTIONARY_SOURCES_FLAG = "dictionary-sources"
+private const val DICTIONARY_FIELDS_FLAG = "dictionary-fields"
+
+private val DICTIONARY_FLAGS = listOf(DICTIONARY_COHORTS_FLAG, DICTIONARY_SOURCES_FLAG, DICTIONARY_FIELDS_FLAG)
+
+/** The dictionary file named by [flag], or null when the run did not supply it. */
+private fun dictionarySourceOf(
+  flags: Map<String, String>,
+  flag: String,
+): SourceFile? =
+  flags[flag]?.let { path ->
+    File(path).let { file -> SourceFile(file = file, sourceArg = flags["$flag-source"] ?: file.path) }
+  }
+
+private fun missingDictionaryFlag(flag: String): ArgvResult.Usage =
+  ArgvResult.Usage(
+    "Option [--$flag] is required: every Scorecard money and field-of-study row carries the year the " +
+      "fetched data dictionary states for its column, so an ingest without all three of its files can " +
+      "stamp no row. $USAGE",
+  )
 
 /**
  * The authored subject taxonomy (RFC 150). Optional and OPTION-shaped for
@@ -202,7 +237,8 @@ private val SFA_FLAGS = listOf(SFA_FILE_FLAG, SFA_AID_YEAR_FLAG)
 
 private val KNOWN_FLAGS =
   SOURCE_FLAGS + IPEDS_FILE_FLAGS + IPEDS_SOURCE_FLAGS + SURVEY_YEAR_FLAG +
-    CODEBOOKS_FLAG + "$CODEBOOKS_FLAG-source" + SUBJECTS_FLAG + "$SUBJECTS_FLAG-source" +
+    CODEBOOKS_FLAG + "$CODEBOOKS_FLAG-source" + DICTIONARY_FLAGS + DICTIONARY_FLAGS.map { "$it-source" } +
+    SUBJECTS_FLAG + "$SUBJECTS_FLAG-source" +
     MONEY_VOCABULARY_FLAG + "$MONEY_VOCABULARY_FLAG-source" +
     NATIONAL_MERIT_AWARDS_FLAG + "$NATIONAL_MERIT_AWARDS_FLAG-source" + SFA_FLAGS + SFA_SOURCE_FLAG
 
@@ -229,6 +265,8 @@ internal sealed interface ArgvResult {
     val sfa: SfaSources? = null,
     /** The generated codebook (RFC 147). Required since 0067, so never null. */
     val codebooks: SourceFile,
+    /** The fetched Scorecard data dictionary (RFC 274). Required, so never null. */
+    val dictionary: ScorecardDictionarySources,
     /** The authored subject taxonomy (RFC 150), null when `--subjects` was omitted. */
     val subjects: SourceFile? = null,
     /** The authored money vocabulary (RFC 158), null when `--money-vocabulary` was omitted. */
@@ -376,6 +414,19 @@ internal fun parseArgv(args: Array<String>): ArgvResult {
         "corpus that was not supplied. $USAGE",
     )
   }
+  // Required for the codebook's reason (see [DICTIONARY_FLAGS]): every
+  // Scorecard money and field-of-study row is stamped with the year the
+  // dictionary states. Each of the three is refused BY NAME, and checked LAST,
+  // so a run with a second mistake hears about that one first.
+  val dictionary =
+    ScorecardDictionarySources(
+      institutionCohorts =
+        dictionarySourceOf(flags, DICTIONARY_COHORTS_FLAG) ?: return missingDictionaryFlag(DICTIONARY_COHORTS_FLAG),
+      institutionSources =
+        dictionarySourceOf(flags, DICTIONARY_SOURCES_FLAG) ?: return missingDictionaryFlag(DICTIONARY_SOURCES_FLAG),
+      fieldOfStudyCohorts =
+        dictionarySourceOf(flags, DICTIONARY_FIELDS_FLAG) ?: return missingDictionaryFlag(DICTIONARY_FIELDS_FLAG),
+    )
   return ArgvResult.Ok(
     sources =
       positional.mapIndexed { i, path ->
@@ -404,6 +455,7 @@ internal fun parseArgv(args: Array<String>): ArgvResult {
       File(codebooksPath).let { file ->
         SourceFile(file = file, sourceArg = flags[codebooksSourceFlag] ?: file.path)
       },
+    dictionary = dictionary,
     subjects =
       flags[SUBJECTS_FLAG]?.let { path ->
         val file = File(path)
@@ -571,6 +623,13 @@ internal fun namedSources(parsed: ArgvResult.Ok): List<Pair<String, SourceFile>>
   // before the first phase commits, like every other file.
   val automaticAwards = parsed.automaticAwards?.sources?.namedFiles ?: emptyList()
   val codebooks = listOf(CODEBOOKS_FLAG to parsed.codebooks)
+  // All three dictionary files, each under its own flag (RFC 274).
+  val dictionary =
+    listOf(
+      DICTIONARY_COHORTS_FLAG to parsed.dictionary.institutionCohorts,
+      DICTIONARY_SOURCES_FLAG to parsed.dictionary.institutionSources,
+      DICTIONARY_FIELDS_FLAG to parsed.dictionary.fieldOfStudyCohorts,
+    )
   val subjects = parsed.subjects?.let { listOf(SUBJECTS_FLAG to it) } ?: emptyList()
   val moneyVocabulary = parsed.moneyVocabulary?.let { listOf(MONEY_VOCABULARY_FLAG to it) } ?: emptyList()
   // The National Merit corpus's link-status.csv is NOT here, for the reason the
@@ -579,7 +638,7 @@ internal fun namedSources(parsed: ArgvResult.Ok): List<Pair<String, SourceFile>>
   // the first phase commits, like every other file.
   val nationalMeritAwards =
     parsed.nationalMeritAwards?.let { listOf(NATIONAL_MERIT_AWARDS_FLAG to it) } ?: emptyList()
-  return scorecard + ipeds + sfa + cds + automaticAwards + codebooks + subjects + moneyVocabulary +
+  return scorecard + ipeds + sfa + cds + automaticAwards + codebooks + dictionary + subjects + moneyVocabulary +
     nationalMeritAwards
 }
 
@@ -674,6 +733,7 @@ fun main(args: Array<String>) {
           automaticAwards = parsed.automaticAwards?.sources,
           nationalMeritAwards = parsed.nationalMeritAwards,
           codebooks = parsed.codebooks,
+          dictionary = parsed.dictionary,
           subjects = parsed.subjects,
           moneyVocabulary = parsed.moneyVocabulary,
         )
@@ -730,6 +790,16 @@ fun main(args: Array<String>) {
     // the PartialIngestException below. Without this arm the loader's thirty-odd
     // located refusals exist to be read by an operator and never reach a log.
     logger.error("Ingest aborted before any write: national-merit award corpus defect [{}]", e.defect, e)
+    kotlin.system.exitProcess(1)
+  } catch (e: ScorecardDictionary.Refusal) {
+    // Read and refused before the first phase commits (RFC 274): the run reads
+    // the three dictionary CSVs up front, beside the header assertions.
+    logger.error("Ingest aborted before any write: Scorecard data dictionary refused [{}]", e.message, e)
+    kotlin.system.exitProcess(1)
+  } catch (e: ScorecardYearGuard.RefusalException) {
+    // The guard runs up front too, so a dropped, re-worded or back-dated
+    // served column leaves every table as it was.
+    logger.error("Ingest aborted before any write: {}", e.message, e)
     kotlin.system.exitProcess(1)
   } catch (e: CodebookLoader.InvalidCodebookFileException) {
     logger.error(

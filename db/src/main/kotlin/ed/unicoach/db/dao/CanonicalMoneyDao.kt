@@ -1,5 +1,6 @@
 package ed.unicoach.db.dao
 
+import ed.unicoach.common.util.AcademicYear
 import ed.unicoach.db.models.FactTable
 import ed.unicoach.db.models.FigureReading
 import ed.unicoach.db.models.FigureStatus
@@ -358,6 +359,36 @@ object CanonicalMoneyDao {
               )
           }.filterNot { it in sources }
       }
+
+  /**
+   * The newest academic year stored for each of [source]'s `source_variable`s,
+   * across `price_figures.academic_year` and `cohort_money_stats.vintage`
+   * together (RFC 274): the evidence the Scorecard back-date guard compares a
+   * newly fetched dictionary against. Undated rows (a NULL vintage) carry no
+   * year and are no evidence, so they are not read.
+   */
+  fun newestStoredYearBySourceVariable(
+    session: SqlSession,
+    source: MoneySource,
+  ): Result<Map<String, AcademicYear>> =
+    session
+      .queryList(
+        """
+        SELECT source_variable, MAX(stored_year) AS newest
+          FROM (
+            SELECT source_variable, academic_year AS stored_year FROM price_figures WHERE source = ?
+            UNION ALL
+            SELECT source_variable, vintage AS stored_year FROM cohort_money_stats
+             WHERE source = ? AND vintage IS NOT NULL
+          ) stored
+         GROUP BY source_variable
+        """.trimIndent(),
+        bind = { stmt ->
+          stmt.setString(1, source.value)
+          stmt.setString(2, source.value)
+        },
+        map = { rs -> rs.getString("source_variable") to AcademicYear(rs.getInt("newest")) },
+      ).map { rows -> rows.toMap() }
 
   // ---------------------------------------------------------------------------
   // Provenance reads (P11).

@@ -37,6 +37,7 @@ import ed.unicoach.coaching.testing.NationalMeritPublishedAnswer
 import ed.unicoach.coaching.testing.PublishedBaseRate
 import ed.unicoach.college.ScorecardFieldOfStudyColumns
 import ed.unicoach.college.ScorecardFieldOfStudyColumns.FieldOfStudyVariable
+import ed.unicoach.college.SeedScorecardDictionary
 import ed.unicoach.common.util.AcademicYear
 import ed.unicoach.db.models.AbsenceStatus
 import ed.unicoach.db.models.AdmissionTest
@@ -1025,9 +1026,11 @@ fun meritAnswer(
 // RFC 251: the figures by field of study woven into the report
 // -----------------------------------------------------------------------------
 
-/** One Scorecard field-of-study variable's provenance, with the cohort it publishes for. */
-fun fieldOfStudyProvenance(variable: FieldOfStudyVariable): ProgramFigureProvenance =
-  requireNotNull(ProgramFigureProvenance.ofAgreeingCohort(variable, variable.cohortFirstYear, variable.cohortLastYear))
+/** One Scorecard field-of-study variable's provenance, with the periods the fetched dictionary states for it. */
+fun fieldOfStudyProvenance(variable: FieldOfStudyVariable): ProgramFigureProvenance {
+  val cohort = SeedScorecardDictionary.dictionary.fieldOfStudyCohortOf(variable.sourceVariable)
+  return checkNotNull(ProgramFigureProvenance.ofOrNull(variable, cohort.first, cohort.last, SeedScorecardDictionary.dollarsOf(variable)))
+}
 
 /** One matched program with the figures it holds, by measure. */
 fun programFixture(

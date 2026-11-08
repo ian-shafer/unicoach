@@ -235,8 +235,7 @@ class CollegeCostChatTool(
       put(PROGRAM_PUBLISHER_KEY, figure.provenance.publisher)
       put(PROGRAM_COHORT_FIRST_YEAR_KEY, figure.provenance.cohortFirstYear.firstCalendarYear)
       put(PROGRAM_COHORT_LAST_YEAR_KEY, figure.provenance.cohortLastYear.firstCalendarYear)
-      put(PROGRAM_COHORT_SENTENCE_KEY, figure.provenance.cohortSentence)
-      figure.provenance.inflationBaseYear?.let { put(PROGRAM_INFLATION_BASE_YEAR_KEY, it.year) }
+      figure.provenance.amountUsdYear?.let { put(PROGRAM_AMOUNT_USD_YEAR_KEY, it.year) }
     }
 
     /**
@@ -1192,8 +1191,8 @@ class CollegeCostChatTool(
         val dated = emitted.filter { it.figureGroup == group }
         // The year is THIS school's, read off the rows it served (RFC 166 §3
         // rule 4) rather than off a Kotlin constant: a school served from the
-        // Scorecard says 2024-25 where a school served from IC_AY says 2023-24
-        // (RFC 183), and one constant could only ever have said one of them. A group can carry figures and NO year: two
+        // Scorecard says its newer year where a school served from IC_AY says
+        // IC_AY's (RFC 183), and one constant could only ever have said one of them. A group can carry figures and NO year: two
         // blended rows at different vintages resolve to null rather than to the
         // newer one (RFC 166 §8), and then the figures ride with no label instead
         // of a wrong one.
@@ -2043,11 +2042,8 @@ class CollegeCostChatTool(
     const val PROGRAM_COHORT_FIRST_YEAR_KEY = "cohort_first_year"
     const val PROGRAM_COHORT_LAST_YEAR_KEY = "cohort_last_year"
 
-    /** The publisher's own cohort cell, verbatim -- the evidence for the years and the dollar base. */
-    const val PROGRAM_COHORT_SENTENCE_KEY = "cohort_sentence"
-
-    /** The calendar year whose dollars the figure is in, where its registry entry names one. */
-    const val PROGRAM_INFLATION_BASE_YEAR_KEY = "inflation_base_year"
+    /** The calendar year whose dollars the figure is in, from the row, where the publisher states one. */
+    const val PROGRAM_AMOUNT_USD_YEAR_KEY = "amount_usd_year"
 
     /**
      * THE SCHOOL's: no bachelor's program matched the subject's prefixes here, so
@@ -2238,7 +2234,7 @@ class CollegeCostChatTool(
         ProgramMoneyMeasure.entries.joinToString(", ") { "\"${it.value}\"" } + ". Each carries " +
         "$PROGRAM_MEASURE_KEY and then either $PROGRAM_STATUS_KEY with its provenance " +
         "($PROGRAM_PUBLISHER_KEY, $PROGRAM_COHORT_FIRST_YEAR_KEY, $PROGRAM_COHORT_LAST_YEAR_KEY, " +
-        "$PROGRAM_COHORT_SENTENCE_KEY, and $PROGRAM_INFLATION_BASE_YEAR_KEY on the measures named for it below) or " +
+        "and $PROGRAM_AMOUNT_USD_YEAR_KEY on the measures named for it below) or " +
         "$PROGRAM_MEASURE_AVAILABILITY_KEY.\n" +
         "$PROGRAM_FIGURES_AVAILABILITY_KEY - $BASIS_KEY + $STATEMENT_KEY on a PROGRAM entry, instead of " +
         "$PROGRAM_FIGURES_KEY (\"$PROGRAM_NO_PUBLISHED_FIGURES_BASIS\": " +
@@ -2257,12 +2253,10 @@ class CollegeCostChatTool(
         "year; this ROW's own cohort, which the store may hold at more than one date.\n" +
         "$PROGRAM_COHORT_LAST_YEAR_KEY - the last academic year the publisher's cohort pools, as its start " +
         "year.\n" +
-        "$PROGRAM_COHORT_SENTENCE_KEY - the publisher's own cohort cell, verbatim, for the figure beside it; it " +
-        "describes the two years above.\n" +
-        "$PROGRAM_INFLATION_BASE_YEAR_KEY - the calendar year whose dollars the figure is in; carried only on " +
-        ScorecardFieldOfStudyColumns.VARIABLES
-          .filter { it.inflationBaseYear != null }
-          .joinToString(", ") { "\"${it.measure.value}\"" } +
+        "$PROGRAM_AMOUNT_USD_YEAR_KEY - the calendar year whose dollars the figure is in; carried only on " +
+        ProgramMoneyMeasure.entries
+          .filter { it.statesAmountUsdYear }
+          .joinToString(", ") { "\"${it.value}\"" } +
         ", because the publisher names a dollar year for no other measure.\n" +
         "$PROGRAM_MEASURE_AVAILABILITY_KEY - $BASIS_KEY + $STATEMENT_KEY on a FIGURE entry, instead of " +
         "$PROGRAM_STATUS_KEY (\"$PROGRAM_NO_FIGURE_BASIS\": \"${ProgramReturnCopy.NO_FIGURE_STATEMENT}\").\n" +

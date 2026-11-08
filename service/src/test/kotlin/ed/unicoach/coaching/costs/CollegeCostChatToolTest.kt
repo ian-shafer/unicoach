@@ -4570,9 +4570,9 @@ class CollegeCostChatToolTest {
     assertEquals(FigureStatus.REPORTED.value, earnings.getValue("status").jsonPrimitive.content)
     assertEquals(ScorecardFieldOfStudyColumns.EARNINGS.publisher, earnings.getValue("publisher").jsonPrimitive.content)
     assertEquals(
-      ScorecardFieldOfStudyColumns.EARNINGS.inflationBaseYear?.year,
+      CostsTestDb.PROGRAM_EARNINGS_AMOUNT_USD_YEAR.year,
       earnings
-        .getValue("inflation_base_year")
+        .getValue("amount_usd_year")
         .jsonPrimitive.content
         .toInt(),
     )
@@ -4590,12 +4590,9 @@ class CollegeCostChatToolTest {
         .jsonPrimitive.content
         .toInt(),
     )
-    assertTrue(
-      earnings
-        .getValue("cohort_sentence")
-        .jsonPrimitive.content
-        .contains("Treasury AY2017-2018"),
-    )
+    figures.forEach { figure ->
+      assertFalse(figure.containsKey("cohort_sentence"), "the publisher's cohort text is not served: [$figure]")
+    }
     val debt = figures[1]
     assertEquals(
       CostsTestDb.PROGRAM_DEBT_USD,
@@ -4606,7 +4603,7 @@ class CollegeCostChatToolTest {
     )
     assertEquals(ScorecardFieldOfStudyColumns.DEBT.publisher, debt.getValue("publisher").jsonPrimitive.content)
     assertFalse(
-      debt.containsKey(CollegeCostChatTool.PROGRAM_INFLATION_BASE_YEAR_KEY),
+      debt.containsKey(CollegeCostChatTool.PROGRAM_AMOUNT_USD_YEAR_KEY),
       "the publisher names no dollar base for debt",
     )
     assertEquals(
@@ -4632,7 +4629,7 @@ class CollegeCostChatToolTest {
         .toInt(),
     )
     assertEquals(ScorecardFieldOfStudyColumns.DEBT_MONTHLY_PAYMENT.publisher, payment.getValue("publisher").jsonPrimitive.content)
-    assertFalse(payment.containsKey(CollegeCostChatTool.PROGRAM_INFLATION_BASE_YEAR_KEY))
+    assertFalse(payment.containsKey(CollegeCostChatTool.PROGRAM_AMOUNT_USD_YEAR_KEY))
   }
 
   @Test
@@ -4930,8 +4927,7 @@ class CollegeCostChatToolTest {
         CollegeCostChatTool.PROGRAM_PUBLISHER_KEY,
         CollegeCostChatTool.PROGRAM_COHORT_FIRST_YEAR_KEY,
         CollegeCostChatTool.PROGRAM_COHORT_LAST_YEAR_KEY,
-        CollegeCostChatTool.PROGRAM_COHORT_SENTENCE_KEY,
-        CollegeCostChatTool.PROGRAM_INFLATION_BASE_YEAR_KEY,
+        CollegeCostChatTool.PROGRAM_AMOUNT_USD_YEAR_KEY,
         CollegeCostChatTool.PROGRAM_AVAILABILITY_KEY,
         CollegeCostChatTool.PROGRAM_FIGURES_AVAILABILITY_KEY,
         CollegeCostChatTool.PROGRAM_MEASURE_AVAILABILITY_KEY,
@@ -4939,6 +4935,7 @@ class CollegeCostChatToolTest {
     keys.forEach { key ->
       assertTrue(description.contains(key), "the legend must name [$key]: [$description]")
     }
+    assertFalse(description.contains("cohort_sentence"), "the legend describes a key the wire does not carry: [$description]")
 
     // "In payload order" is the legend's whole claim (RFC 231): a model told the
     // keys in one order and handed them in another is exactly the drift a legend
@@ -4969,8 +4966,7 @@ class CollegeCostChatToolTest {
         CollegeCostChatTool.PROGRAM_PUBLISHER_KEY,
         CollegeCostChatTool.PROGRAM_COHORT_FIRST_YEAR_KEY,
         CollegeCostChatTool.PROGRAM_COHORT_LAST_YEAR_KEY,
-        CollegeCostChatTool.PROGRAM_COHORT_SENTENCE_KEY,
-        CollegeCostChatTool.PROGRAM_INFLATION_BASE_YEAR_KEY,
+        CollegeCostChatTool.PROGRAM_AMOUNT_USD_YEAR_KEY,
         CollegeCostChatTool.PROGRAM_MEASURE_AVAILABILITY_KEY,
       )
     val entryLines =

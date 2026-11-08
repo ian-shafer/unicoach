@@ -3,7 +3,10 @@ source "$(dirname "$0")/common"
 
 help() {
   cat << 'EOF'
-ingest-colleges [-m <merit-aid.csv> -a <admission-factors.csv> -d <deadlines.csv>
+ingest-colleges -D <dictionary-institution-cohorts.csv>
+                -O <dictionary-institution-sources.csv>
+                -F <dictionary-field-of-study-cohorts.csv>
+                [-m <merit-aid.csv> -a <admission-factors.csv> -d <deadlines.csv>
                  -p <aid_policy.csv>]
                 [-w <awards.csv> -b <bands.csv>]
                 [-N <national-merit-awards.csv>]
@@ -34,6 +37,20 @@ upserts the ten reference domains, REFUSES to delete a row still referenced,
 reports any drift in the recorded source digests, and — after the row phases —
 reports every stored code with no codebook row (D46). Regenerate the file with
 bin/fetch-codebooks; never hand-edit it.
+
+Every run REQUIRES the College Scorecard data dictionary bin/fetch-scorecard
+fetched with the pair (RFC 274), as its three CSVs, each named by its own
+option: -D dictionary-institution-cohorts.csv, -O
+dictionary-institution-sources.csv and -F dictionary-field-of-study-cohorts.csv.
+Three options and not one file with siblings read from beside it, because
+bin/remote uploads every -f file under its own prefix: files that must sit
+together never arrive together on the host, so each is shipped and resolved
+(local path or s3:// URI) like any other input. Every Scorecard money and field-of-study row is stamped with the year that
+dictionary states for its column, and a dictionary that drops, re-words or
+back-dates a served column is refused, naming it, before any write. There is NO
+default: the dictionary must be the one fetched with the two positionals, so the
+operator names all three beside them (bin/load-external-data does, from
+db/seed/scorecard).
 
 Every run also loads the authored subject taxonomy (RFC 150) in its own
 `subjects` phase, run immediately after `codebooks` so it is validated against
@@ -120,8 +137,15 @@ records the four seed digests and their row counts; a failed CDS load writes
 no build row at all.
 
 Run inside the nix dev shell (the JVM lives there):
-  nix develop -c bin/ingest-colleges <institution.csv> <fields.csv>
   nix develop -c bin/ingest-colleges \
+    -D db/seed/scorecard/dictionary-institution-cohorts.csv \
+    -O db/seed/scorecard/dictionary-institution-sources.csv \
+    -F db/seed/scorecard/dictionary-field-of-study-cohorts.csv \
+    <institution.csv> <fields.csv>
+  nix develop -c bin/ingest-colleges \
+    -D db/seed/scorecard/dictionary-institution-cohorts.csv \
+    -O db/seed/scorecard/dictionary-institution-sources.csv \
+    -F db/seed/scorecard/dictionary-field-of-study-cohorts.csv \
     -m db/seed/cds/merit-aid.csv \
     -a db/seed/cds/admission-factors.csv \
     -d db/seed/cds/deadlines.csv \
@@ -167,6 +191,10 @@ ships in, and one number cannot label both without lying about one. Both come
 from bin/fetch-ipeds, which prints the whole command.
 
 Options:
+  The Scorecard data dictionary (RFC 274) -- all three REQUIRED:
+  -D FILE: its institution cohort sheet (dictionary-institution-cohorts.csv)
+  -O FILE: its institution SOURCE sheet (dictionary-institution-sources.csv)
+  -F FILE: its field-of-study cohort sheet (dictionary-field-of-study-cohorts.csv)
   -m FILE: CDS merit-aid seed CSV (Common Data Set)
   -a FILE: CDS admission-factors seed CSV (Common Data Set)
   -d FILE: CDS deadlines seed CSV (Common Data Set)
@@ -206,7 +234,10 @@ Options:
   -f YYYY: SFA aid-year START year, stamped on every college_sfa row (e.g. 2022)
 
   Read the case pairs carefully. -a is the CDS admission-factors CSV and -A is
-  the IPEDS ADM survey file; -Y is the IC_AY published-charges CSV and -y is the
+  the IPEDS ADM survey file; -d is the CDS deadlines CSV and -D is the Scorecard
+  dictionary's institution cohort sheet; -f is the SFA aid year and -F is the
+  dictionary's field-of-study cohort sheet; -Y is the IC_AY published-charges
+  CSV and -y is the
   four-digit IPEDS collection year. Each pair is two different things, and
   getopts is case-sensitive, so a mistyped case is a different option, never a
   synonym. The SFA aid year is -f rather than a second case of -S or -Y for the
@@ -263,6 +294,11 @@ CODEBOOKS_ARG=""
 SUBJECTS_ARG=""
 # The authored money vocabulary (RFC 158). Same shape as -s above, same reasons.
 MONEY_VOCABULARY_ARG=""
+# The fetched Scorecard data dictionary (RFC 274): three files, each REQUIRED,
+# never defaulted.
+DICTIONARY_COHORTS_ARG=""
+DICTIONARY_SOURCES_ARG=""
+DICTIONARY_FIELDS_ARG=""
 # Every group flag seen, as "<group> -<flag>" entries in ONE array. The group
 # travels in the VALUE, not in the name of a per-group array, so the three rules
 # below have exactly one implementation each however many groups this script
@@ -320,6 +356,15 @@ require_group_complete() {
   fatal -s "$EXIT_MISSING_REQUIRED_ARG" "ingest-colleges: the [$group] options are all-or-nothing; given [$given], also required: [${missing# }]"
 }
 
+# A dictionary option that was not given is refused BY NAME: the three are three
+# files, and "the dictionary is required" would not say which one is missing.
+require_dictionary_arg() {
+  local flag="$1" value="$2" file="$3"
+  [ -n "$value" ] && return 0
+  fatal -s "$EXIT_MISSING_REQUIRED_ARG" \
+    "ingest-colleges: [-$flag <$file>] is required: every Scorecard money and field-of-study row is stamped with the year the fetched data dictionary states (RFC 274); pass the one bin/fetch-scorecard wrote beside the two CSVs, e.g. db/seed/scorecard/$file"
+}
+
 # An empty CDS option value is a usage error, not an omission: the all-or-nothing
 # group below counts non-empty values, so an empty one would silently drop the
 # whole group.
@@ -333,8 +378,11 @@ require_cds_value() {
 # -A (the IPEDS ADM survey file) stay distinct, as do -Y (the IC_AY charges CSV)
 # and -y (the survey year); the SFA group adds -S (its CSV) and -f (its aid
 # year). The help text spells all of them out.
-while getopts ":m:a:d:p:w:b:N:k:s:v:H:I:A:C:Y:y:S:f:h" opt; do
+while getopts ":D:O:F:m:a:d:p:w:b:N:k:s:v:H:I:A:C:Y:y:S:f:h" opt; do
   case "$opt" in
+  D) DICTIONARY_COHORTS_ARG="$OPTARG"; set_group_flag DICTIONARY D "$DICTIONARY_COHORTS_ARG" ;;
+  O) DICTIONARY_SOURCES_ARG="$OPTARG"; set_group_flag DICTIONARY O "$DICTIONARY_SOURCES_ARG" ;;
+  F) DICTIONARY_FIELDS_ARG="$OPTARG";  set_group_flag DICTIONARY F "$DICTIONARY_FIELDS_ARG" ;;
   # An EMPTY value is a wrong value, never an omitted option: without these
   # guards `-p ""` counts as "the CDS group was not passed" and the whole phase
   # is skipped SILENTLY, which is the sentinel -k/-s/-v already refuse.
@@ -426,6 +474,12 @@ require_group_complete SFA S f
 # complete load, and bands with no awards file has nothing to hang them on.
 require_group_complete AWARDS w b
 
+# Checked AFTER every other usage rule, so a run with two mistakes is told about
+# the one it made in the arguments it typed first.
+require_dictionary_arg D "$DICTIONARY_COHORTS_ARG" dictionary-institution-cohorts.csv
+require_dictionary_arg O "$DICTIONARY_SOURCES_ARG" dictionary-institution-sources.csv
+require_dictionary_arg F "$DICTIONARY_FIELDS_ARG" dictionary-field-of-study-cohorts.csv
+
 # Own the scratch dir resolve_file_arg downloads s3:// args into: the file
 # must outlive that (subshell) call, so this script holds the EXIT trap.
 INGEST_SCRATCH="$(mktemp -d)"
@@ -460,6 +514,10 @@ SUBJECTS_JSON="$(resolve_file_arg "$SUBJECTS_ARG" "$INGEST_SCRATCH")"
 # phase foreign-keys into. Resolved and forwarded exactly like the taxonomy.
 MONEY_VOCABULARY_ARG="${MONEY_VOCABULARY_ARG:-$PROJECT_ROOT/db/data/money-vocabulary.json}"
 MONEY_VOCABULARY_JSON="$(resolve_file_arg "$MONEY_VOCABULARY_ARG" "$INGEST_SCRATCH")"
+
+DICTIONARY_COHORTS_CSV="$(resolve_file_arg "$DICTIONARY_COHORTS_ARG" "$INGEST_SCRATCH")"
+DICTIONARY_SOURCES_CSV="$(resolve_file_arg "$DICTIONARY_SOURCES_ARG" "$INGEST_SCRATCH")"
+DICTIONARY_FIELDS_CSV="$(resolve_file_arg "$DICTIONARY_FIELDS_ARG" "$INGEST_SCRATCH")"
 
 # Pass the CDS seed paths to the launcher as NAMED flags, so the file-to-table
 # mapping is explicit on the command line (and in `ps` output) instead of being
@@ -552,6 +610,9 @@ LAUNCHER="$PROJECT_ROOT/$COLLEGE_DIST/bin/college"
 "$LAUNCHER" "$INSTITUTION_CSV" "$FIELDS_CSV" "$ALIASES_JSON" \
   --institution-source="$1" --fields-source="$2" --aliases-source="$ALIASES_ARG" \
   --codebooks="$CODEBOOKS_JSON" --codebooks-source="$CODEBOOKS_ARG" \
+  --dictionary-cohorts="$DICTIONARY_COHORTS_CSV" --dictionary-cohorts-source="$DICTIONARY_COHORTS_ARG" \
+  --dictionary-sources="$DICTIONARY_SOURCES_CSV" --dictionary-sources-source="$DICTIONARY_SOURCES_ARG" \
+  --dictionary-fields="$DICTIONARY_FIELDS_CSV" --dictionary-fields-source="$DICTIONARY_FIELDS_ARG" \
   --subjects="$SUBJECTS_JSON" --subjects-source="$SUBJECTS_ARG" \
   --money-vocabulary="$MONEY_VOCABULARY_JSON" --money-vocabulary-source="$MONEY_VOCABULARY_ARG" \
   ${CDS_ARGS[@]+"${CDS_ARGS[@]}"} \

@@ -1,12 +1,14 @@
 package ed.unicoach.db.dao
 
 import ed.unicoach.common.util.AcademicYear
+import ed.unicoach.common.util.CalendarYear
 import ed.unicoach.db.models.CipCode
 import ed.unicoach.db.models.CollegeId
 import ed.unicoach.db.models.CredentialLevel
 import ed.unicoach.db.models.FigureReading
 import ed.unicoach.db.models.FigureStatus
 import ed.unicoach.db.models.MoneySource
+import ed.unicoach.db.models.ProgramMoneyDollars
 import ed.unicoach.db.models.ProgramMoneyMeasure
 import java.sql.PreparedStatement
 import java.sql.ResultSet
@@ -90,21 +92,22 @@ object ProgramMoneyDao {
       INSERT INTO program_money_stats (
         college_program_id, measure,
         cohort_first_year, cohort_last_year,
-        amount_usd, status, source, source_variable
+        amount_usd, status, source, source_variable, amount_usd_year
       )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
       """.trimIndent(),
       rows,
       ::mapWriteError,
     ) { stmt: PreparedStatement, row: NewProgramMoneyStat ->
       stmt.setObject(1, row.collegeProgramId)
-      stmt.setString(2, row.measure.value)
+      stmt.setString(2, row.dollars.measure.value)
       stmt.setInt(3, row.cohortFirstYear.firstCalendarYear)
       stmt.setInt(4, row.cohortLastYear.firstCalendarYear)
       stmt.setIntOrNull(5, (row.reading as? FigureReading.Present)?.value)
       stmt.setString(6, row.reading.status.value)
       stmt.setString(7, row.source.value)
       stmt.setString(8, row.sourceVariable)
+      stmt.setIntOrNull(9, row.dollars.amountUsdYear?.year)
     }
 
   /**
@@ -115,6 +118,31 @@ object ProgramMoneyDao {
    * as silence.
    */
   fun countsByStatus(session: SqlSession): Result<Map<FigureStatus, Int>> = countsByStatus(session, "program_money_stats")
+
+  /**
+   * The newest cohort stored for each of [source]'s `source_variable`s -- the
+   * one ending latest, and of those the one starting latest (RFC 274): the
+   * evidence the field-of-study back-date guard compares a newly fetched
+   * dictionary against.
+   */
+  fun newestStoredCohortBySourceVariable(
+    session: SqlSession,
+    source: MoneySource,
+  ): Result<Map<String, StoredProgramCohort>> =
+    session
+      .queryList(
+        """
+        SELECT DISTINCT ON (source_variable) source_variable, cohort_first_year, cohort_last_year
+          FROM program_money_stats
+         WHERE source = ?
+         ORDER BY source_variable, cohort_last_year DESC, cohort_first_year DESC
+        """.trimIndent(),
+        bind = { stmt -> stmt.setString(1, source.value) },
+        map = { rs ->
+          rs.getString("source_variable") to
+            StoredProgramCohort(AcademicYear(rs.getInt("cohort_first_year")), AcademicYear(rs.getInt("cohort_last_year")))
+        },
+      ).map { rows -> rows.toMap() }
 
   /**
    * The (subject, bachelor's program) match BOTH major-answer reads stand on
@@ -255,7 +283,7 @@ object ProgramMoneyDao {
         """
         SELECT DISTINCT ON (w.subject_slug, p.college_id, p.cip_code, m.measure)
                p.college_id, w.subject_slug, p.cip_code, m.measure,
-               m.cohort_first_year, m.cohort_last_year, m.amount_usd, m.status,
+               m.cohort_first_year, m.cohort_last_year, m.amount_usd, m.amount_usd_year, m.status,
                m.source, m.source_variable
         """.trimIndent(),
         MATCHED_BACHELOR_PROGRAMS_JOIN,
@@ -390,11 +418,17 @@ object ProgramMoneyDao {
           "MoneySource",
           ProgramMoneyStatLocation(ProgramMoneyStatColumn.SOURCE, collegeId, subjectSlug, cipCode, measure).toString(),
         )
+    val dollars =
+      storedDollarsOf(
+        measure,
+        rs.getIntOrNull("amount_usd_year"),
+        ProgramMoneyStatLocation(ProgramMoneyStatColumn.AMOUNT_USD_YEAR, collegeId, subjectSlug, cipCode, measure).toString(),
+      )
     return ProgramReturnStat(
       collegeId = collegeId,
       subjectSlug = subjectSlug,
       cipCode = cipCode,
-      measure = measure,
+      dollars = dollars,
       cohortFirstYear = AcademicYear(rs.getInt("cohort_first_year")),
       cohortLastYear = AcademicYear(rs.getInt("cohort_last_year")),
       reading =
@@ -408,6 +442,38 @@ object ProgramMoneyDao {
       sourceVariable = rs.getString("source_variable"),
     )
   }
+
+  /**
+   * The row's measure closed with its dollar year.
+   * `program_money_stats_amount_usd_year_earnings_check` closes this pairing by
+   * CHECK, so a year the measure cannot carry, a missing one it must, or one no
+   * [CalendarYear] holds is row CORRUPTION, located at [location].
+   */
+  private fun storedDollarsOf(
+    measure: ProgramMoneyMeasure,
+    rawAmountUsdYear: Int?,
+    location: String,
+  ): ProgramMoneyDollars =
+    ProgramMoneyDollars.ofOrNull(measure, rawAmountUsdYear?.let { raw -> storedCalendarYearOf(raw, location) })
+      ?: throw corruptValueExpecting(
+        rawAmountUsdYear.toString(),
+        if (measure.statesAmountUsdYear) {
+          "an amount_usd_year (a [${measure.value}] row states the calendar year of its dollars)"
+        } else {
+          "no amount_usd_year (a [${measure.value}] row states no dollar year)"
+        },
+        location,
+      )
+
+  private fun storedCalendarYearOf(
+    raw: Int,
+    location: String,
+  ): CalendarYear =
+    try {
+      CalendarYear(raw)
+    } catch (rejection: IllegalArgumentException) {
+      throw corruptValue(raw.toString(), "CalendarYear", location, rejection)
+    }
 
   /**
    * The write-path SQLSTATE mapping. A missing reference here is a row naming a

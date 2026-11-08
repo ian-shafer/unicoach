@@ -27,6 +27,9 @@ dependencies {
   // `api` on :db, because CodebookFixture.load takes a Database.
   testFixturesApi(project(":db"))
   testFixturesImplementation(libs.kotlinx.coroutines.core)
+  testFixturesImplementation(project(":common"))
+  // EditedScorecardDictionary re-prints the committed dictionary's CSVs.
+  testFixturesImplementation(libs.commons.csv)
 
   testImplementation(libs.kotlin.test.junit5)
   testImplementation(libs.kotlinx.coroutines.test)

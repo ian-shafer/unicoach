@@ -72,15 +72,21 @@ internal object ScorecardInstitutionColumns {
   const val RATE_MAX = 1.0
 
   /**
-   * Which of the fill's three year stamps a Scorecard column carries. The years
-   * themselves live on [CanonicalMoneyLoader]; this is the AXIS they sit on.
+   * WHETHER the fill stamps a Scorecard column with a year. WHICH year is never
+   * stated here: it is the publisher's, read from the fetched data dictionary
+   * ([ScorecardDictionary.academicYearOf]) by [stampedYearOf] (RFC 274), so a
+   * newer release re-dates a figure by being fetched and ingested.
    */
   enum class VintageGroup {
-    /** The eight published charges, stamped `CanonicalMoneyLoader.PUBLISHED_PRICE_YEAR`. */
-    PUBLISHED_CHARGE,
-
-    /** `COSTT4_A` and the net-price family, stamped `CanonicalMoneyLoader.BLENDED_AVERAGE_VINTAGE`. */
-    BLENDED_AVERAGE,
+    /**
+     * Stamped with the academic year the dictionary states for the column: the
+     * eight published charges, `COSTT4_A` and the net-price family. The
+     * publisher dates the two halves a year apart (the charges are the price
+     * list for the year ahead, the blend and net prices describe a cohort that
+     * has been through a year) -- the dictionary says so per column, and the
+     * fill no longer has to know it.
+     */
+    DATED,
 
     /** The three cells the fill stamps `CanonicalMoneyLoader.VINTAGE_UNDATED` -- no year at all. */
     UNDATED,
@@ -108,8 +114,8 @@ internal object ScorecardInstitutionColumns {
    * string.
    *
    * Hoisted out of [VINTAGE_GROUP_BY_VARIABLE] so that registry reads at ONE
-   * level -- which column carries which year -- rather than mixing group
-   * membership with the string arithmetic that builds a publisher's name.
+   * level -- which column is dated -- rather than mixing group membership with
+   * the string arithmetic that builds a publisher's name.
    */
   private val NET_PRICE_COLUMNS: List<String> =
     buildList {
@@ -121,18 +127,12 @@ internal object ScorecardInstitutionColumns {
 
   /**
    * Every Scorecard `source_variable` the canonical fill CAN WRITE, each
-   * carrying the ONE [VintageGroup] the fill stamps it with -- and therefore
-   * the ONE statement, anywhere, of which year a Scorecard cell is served at.
+   * carrying the ONE [VintageGroup] that says whether the fill dates it.
    *
-   * A MAP, not three sets beside three hand-picked constants at the write
-   * seams. The year a family is shown a price under is neither optional nor
-   * plural: a key holds one value, so a column dated by two publisher cohorts
-   * cannot be written down, and [stampedYearOf] is what the fill asks -- so a
-   * ninth charge column added to this map is stamped by joining a group, not
-   * by whichever constant its call site happens to type. Getting that wrong is
-   * exactly what RFC 183 landed to make impossible: both year constants were
-   * wrong by two years for as long as they existed, with nothing able to
-   * contradict them.
+   * A MAP, so a column cannot be both dated and undated, and [stampedYearOf]
+   * is what the fill asks -- so a ninth charge column added here is dated by
+   * joining [VintageGroup.DATED], and then by the publisher's own cell for it,
+   * never by whichever constant its call site happens to type.
    *
    * The net-price family is expanded exactly as the fill expands it: one column
    * per income band per `CONTROL` arm, because the stored key IS the literal
@@ -140,18 +140,16 @@ internal object ScorecardInstitutionColumns {
    */
   val VINTAGE_GROUP_BY_VARIABLE: Map<String, VintageGroup> =
     buildMap {
-      for (column in PUBLISHED_CHARGE_COLUMNS) setVintageGroup(column, VintageGroup.PUBLISHED_CHARGE)
-      for (column in listOf(COSTT4_A) + NET_PRICE_COLUMNS) setVintageGroup(column, VintageGroup.BLENDED_AVERAGE)
+      for (column in PUBLISHED_CHARGE_COLUMNS + COSTT4_A + NET_PRICE_COLUMNS) setVintageGroup(column, VintageGroup.DATED)
       for (column in listOf(PCTPELL, GRAD_DEBT_MDN, MD_EARN_WNE_P10)) setVintageGroup(column, VintageGroup.UNDATED)
     }
 
   /**
    * Registers [column] in [group], REFUSING a second claim on it.
    *
-   * A plain `put` would let a column registered in two groups resolve itself,
-   * last writer winning, while the KDoc above says that cannot be written down
-   * -- and the pin test would then agree with whichever year came second. The
-   * claim is enforced here instead of asserted in prose.
+   * A plain `put` would let a column registered in both groups resolve itself,
+   * last writer winning. The claim is enforced here instead of asserted in
+   * prose.
    *
    * Not private, so the refusal is provable: [VINTAGE_GROUP_BY_VARIABLE] must
    * never state a column twice, so the only way to see the guard fire is to
@@ -163,44 +161,28 @@ internal object ScorecardInstitutionColumns {
   ) {
     val previous = put(column, group)
     require(previous == null) {
-      "column=[$column] is dated by two vintage groups ([$previous] and [$group]): a Scorecard cell is " +
-        "served under ONE academic year, so the registry may state it once"
+      "column=[$column] is claimed by two vintage groups ([$previous] and [$group]): a Scorecard cell is " +
+        "either dated or not, so the registry may state it once"
     }
   }
 
   /**
-   * The eight published-charge cells: the columns `mapScorecardPrices` writes,
-   * every one of them stamped `CanonicalMoneyLoader.PUBLISHED_PRICE_YEAR`.
-   *
-   * DERIVED from [VINTAGE_GROUP_BY_VARIABLE], never re-listed: the group is
-   * what carries a year, the publisher dates all eight to one academic year,
-   * and `ScorecardDictionaryPinTest` pins that year against the committed
-   * dictionary transcription group by group.
+   * The columns the fill stamps with the year the dictionary states for each:
+   * the charges, the published cost of attendance and the net-price family.
    */
-  val PUBLISHED_CHARGE_VARIABLES: Set<String> = variablesOf(VintageGroup.PUBLISHED_CHARGE)
-
-  /**
-   * `COSTT4_A` and the whole net-price family: the cells `mapScorecardStats`
-   * stamps `CanonicalMoneyLoader.BLENDED_AVERAGE_VINTAGE`. The publisher dates
-   * these one year EARLIER than the published charges above -- they describe a
-   * cohort that has already been through a year, not a price list -- which is
-   * why the fill carries two year constants rather than one.
-   *
-   * DERIVED from [VINTAGE_GROUP_BY_VARIABLE], like the group above it.
-   */
-  val BLENDED_AVERAGE_VARIABLES: Set<String> = variablesOf(VintageGroup.BLENDED_AVERAGE)
+  val DATED_MONEY_VARIABLES: Set<String> = variablesOf(VintageGroup.DATED)
 
   /**
    * The three cells the fill stamps `CanonicalMoneyLoader.VINTAGE_UNDATED`.
    *
-   * Two of them are undated by the PUBLISHER: `GRAD_DEBT_MDN` pools NSLDS
-   * FY2020 and FY2021, `MD_EARN_WNE_P10` pools two Treasury cohorts, and
-   * neither has an academic year to carry. `PCTPELL` is the odd one out -- the
-   * dictionary DOES date it (AcadYr 2023-24) and the fill stamps it undated
-   * anyway. That divergence is deliberate and scoped (RFC 183 D3: moving a
-   * currently-undated key onto a dated one changes who wins that key, and
-   * nobody has measured it); it is pinned by `ScorecardDictionaryPinTest` so it
-   * stays a known debt rather than becoming folklore.
+   * Two of them are undated by the PUBLISHER: `GRAD_DEBT_MDN` and
+   * `MD_EARN_WNE_P10` each pool two cohorts and have no academic year to
+   * carry. `PCTPELL` is the odd one out -- the dictionary DOES date it, and the
+   * fill stamps it undated anyway. That divergence is deliberate and scoped
+   * (RFC 183 D3: moving a currently-undated key onto a dated one changes who
+   * wins that key, and nobody has measured it); it is pinned by
+   * `ScorecardDictionaryPinTest` so it stays a known debt rather than becoming
+   * folklore.
    */
   val UNDATED_VARIABLES: Set<String> = variablesOf(VintageGroup.UNDATED)
 
@@ -211,74 +193,64 @@ internal object ScorecardInstitutionColumns {
    *
    * The loader does not merely agree with this set, it is BOUND to it:
    * [loadedVariableOf] is the only door a Scorecard cell id passes through on its
-   * way into a row, and it refuses a string that is not here. So a thirteenth
-   * column added to `mapScorecardPrices` or `mapScorecardStats` cannot write a
-   * cell this registry does not name, and the closure test derives its expected
-   * key space from here rather than re-typing it -- which is how a hand-typed
-   * list left every assertion green while the loader wrote an untiered string.
+   * way into a row, and it refuses a string that is not here.
    *
    * DERIVED from [VINTAGE_GROUP_BY_VARIABLE] rather than re-listed: a column
-   * belongs to exactly one vintage group, because the year the fill stamps it
-   * is not optional. A string that reached this registry without joining a
-   * group would be a cell written with no stated vintage at all -- and a union
-   * of three sets could still represent one column claiming two years.
+   * belongs to exactly one vintage group, because whether the fill dates it is
+   * not optional.
    */
   val LOADED_VARIABLES: Set<String> = VINTAGE_GROUP_BY_VARIABLE.keys
 
   /**
    * The Scorecard columns the `colleges` fill writes that a FAMILY is shown as
-   * a figure, each dated by `dictionary-variable-sources.csv` (RFC 226).
+   * a figure, each dated by the data dictionary (RFC 226).
    *
    * Not money, so NOT in [VINTAGE_GROUP_BY_VARIABLE]: that map is the money
-   * fill's own statement of which year IT stamps a cell with, and an outcome
-   * column the money fill never writes has no business in it (brief 0011
-   * D36/D37 — model each thing as what it is). Dated all the same, because
-   * brief 0011 D47 dates every figure a family can see and not only the money
-   * ones.
+   * fill's own statement of which cells IT dates, and an outcome column the
+   * money fill never writes has no business in it (brief 0011 D36/D37 -- model
+   * each thing as what it is). Dated all the same, because brief 0011 D47 dates
+   * every figure a family can see and not only the money ones.
    */
   val OUTCOME_VARIABLES: Set<String> =
     setOf(ADM_RATE, C150_4, UGDS, OMAWDP8_ALL, OMAWDP8_PELL_ALL, OMAWDP8_NOPELL_ALL, TRANS_4)
 
   /**
-   * Every Scorecard column whose date we cite: the money fill's registry plus
-   * the outcome figures.
-   *
-   * This is `db/seed/scorecard/dictionary-variable-sources.csv`'s key-set
-   * contract (RFC 226) -- one dated row per member, and no row for anything
-   * else. Stated HERE, beside the two registries it joins, because the union is
-   * a fact about the registries and not about either of the suites that check
-   * it: the tier-closure walk and the dictionary pin each used to spell the
-   * expression themselves, so a third registry would have been added to one
-   * file and silently not the other.
+   * Every Scorecard column whose date and source we cite: the money fill's
+   * registry plus the outcome figures -- the key set `AssuranceTier.SCORECARD_TIERS`
+   * answers for. Stated HERE, beside the two registries it joins, because the
+   * union is a fact about the registries and not about either of the suites
+   * that check it.
    */
-  val DATED_VARIABLES: Set<String> = LOADED_VARIABLES + OUTCOME_VARIABLES
+  val CITED_VARIABLES: Set<String> = LOADED_VARIABLES + OUTCOME_VARIABLES
 
   /** The registered columns of one vintage group, in registry order. */
   private fun variablesOf(group: VintageGroup): Set<String> =
     // `.toSet()`, because `filterValues` returns a plain `LinkedHashMap` whose
-    // `.keys` is a live MUTABLE view at runtime: the three sets it builds are
-    // shared `object`-level vals, and an unchecked cast could shrink one of
-    // them under every later reader. A snapshot owns no view.
+    // `.keys` is a live MUTABLE view at runtime: the sets it builds are shared
+    // `object`-level vals, and an unchecked cast could shrink one of them under
+    // every later reader. A snapshot owns no view.
     VINTAGE_GROUP_BY_VARIABLE.filterValues { it == group }.keys.toSet()
 
   /**
-   * The academic year the fill stamps [column] with -- null for the
-   * [VintageGroup.UNDATED] cells, which carry no year at all.
+   * The academic year the fill stamps [column] with -- the one [dictionary]
+   * states for it -- or null for the [VintageGroup.UNDATED] cells, which carry
+   * no year at all.
    *
    * The ONE place a Scorecard cell's year is decided, and the seam the fill
-   * itself reads: the write sites used to type `PUBLISHED_PRICE_YEAR` or
-   * `BLENDED_AVERAGE_VINTAGE` by hand, so a ninth charge column could join
-   * [VINTAGE_GROUP_BY_VARIABLE] and still be stamped the other cohort's year
-   * with every test green. Now the column decides, and the group is the
-   * decision.
+   * itself reads: the column decides whether it is dated, the publisher decides
+   * when.
    *
    * FATAL for an unregistered column, on [loadedVariableOf]'s own precedent:
-   * an unstamped cell is a figure served with no stated year.
+   * an unstamped cell is a figure served with no stated year. The dictionary's
+   * own refusals ([ScorecardDictionary.Refusal]) pass
+   * through: `ScorecardYearGuard` runs them all before the fill reads a row.
    */
-  fun stampedYearOf(column: String): AcademicYear? =
+  fun stampedYearOf(
+    column: String,
+    dictionary: ScorecardDictionary,
+  ): AcademicYear? =
     when (VINTAGE_GROUP_BY_VARIABLE[column] ?: throw UnregisteredColumnException(column, LOADED_VARIABLES)) {
-      VintageGroup.PUBLISHED_CHARGE -> CanonicalMoneyLoader.PUBLISHED_PRICE_YEAR
-      VintageGroup.BLENDED_AVERAGE -> CanonicalMoneyLoader.BLENDED_AVERAGE_VINTAGE
+      VintageGroup.DATED -> dictionary.academicYearOf(column)
       VintageGroup.UNDATED -> CanonicalMoneyLoader.VINTAGE_UNDATED
     }
 
@@ -287,8 +259,12 @@ internal object ScorecardInstitutionColumns {
    * `price_figures` row, whose `academic_year` is NOT NULL. An undated column
    * reaching a price write is a mapping error, not a missing year.
    */
-  fun datedYearOf(column: String): AcademicYear =
-    stampedYearOf(column) ?: throw UndatedColumnException(column, VINTAGE_GROUP_BY_VARIABLE.getValue(column))
+  fun datedYearOf(
+    column: String,
+    dictionary: ScorecardDictionary,
+  ): AcademicYear =
+    stampedYearOf(column, dictionary)
+      ?: throw UndatedColumnException(column, VINTAGE_GROUP_BY_VARIABLE.getValue(column))
 
   /**
    * [column], checked to be a registered Scorecard cell id, on its way into a
@@ -322,9 +298,8 @@ internal object ScorecardInstitutionColumns {
   ) : RuntimeException(
       "the Scorecard fill may only write a registered cell id: column=[$column] -- give it a vintage " +
         "group in ScorecardInstitutionColumns.VINTAGE_GROUP_BY_VARIABLE (LOADED_VARIABLES is derived " +
-        "from it, so there is nothing to add there), transcribe its cohort year into " +
-        "db/seed/scorecard/dictionary-variable-sources.csv, and give it a tier in " +
-        "AssuranceTier.SCORECARD_TIERS (RFC 179/183)",
+        "from it, so there is nothing to add there) and a tier in AssuranceTier.SCORECARD_TIERS; its year " +
+        "is the one the fetched data dictionary states (RFC 179/274)",
     )
 
   /**
@@ -342,7 +317,7 @@ internal object ScorecardInstitutionColumns {
     val group: VintageGroup,
   ) : RuntimeException(
       "a price_figures cell must be dated: column=[$column] is in the [$group] vintage group, which " +
-        "carries no academic year -- move it to a dated group in " +
+        "carries no academic year -- move it to the dated group in " +
         "ScorecardInstitutionColumns.VINTAGE_GROUP_BY_VARIABLE, or stop writing it as a price " +
         "(RFC 183): a price is served under a year or it is not served",
     )

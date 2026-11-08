@@ -1,8 +1,6 @@
 package ed.unicoach.college
 
-import ed.unicoach.college.ScorecardDictionaryTranscription.Cohort
 import ed.unicoach.college.ScorecardOutcomeCitations.Citation
-import ed.unicoach.college.ScorecardOutcomeCitations.CohortPeriod
 import ed.unicoach.db.dao.FIXTURE_COMPLETION_8YR_NON_PELL_SHARE
 import ed.unicoach.db.dao.FIXTURE_COMPLETION_8YR_PELL_SHARE
 import ed.unicoach.db.dao.FIXTURE_COMPLETION_8YR_SHARE
@@ -21,22 +19,13 @@ import kotlin.test.assertFalse
 import kotlin.test.assertIs
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
-import kotlin.test.fail
 
 /**
- * The seven outcome citations, pinned against the committed dictionary
- * transcription (RFC 226, widened by RFC 242): each citation names its own
+ * The seven outcome citations (RFC 226, widened by RFC 242): each names its own
  * period in [Citation.cohort] and speaks it inside [Citation.citedAs] through
- * [CohortPeriod.spoken], so the pin test derives the period from the CSV and
- * compares it as a VALUE.
- *
- * TWO period shapes are pinned, not one. The publisher dates `C150_4`,
- * `TRANS_4`, `ADM_RATE` and `UGDS` by an entering fall TERM and the three
- * `OMAWDP8_*` figures by a full entering ACADEMIC YEAR, so [pinnedPeriodOf] is
- * an exhaustive `when` over the transcription's own [Cohort] type. `Cohort` now
- * has four arms, so a FIFTH cohort shape is a compile error here, which is the
- * only way this pin stays a derivation from the committed cell rather than a
- * second place the period is typed.
+ * [ScorecardOutcomeCitations.CohortPeriod.spoken]. That the period is the one the
+ * fetched data dictionary states is `ScorecardDictionaryPinTest`'s claim (RFC
+ * 274); this suite holds the sentences to their own periods and populations.
  *
  * A FILE-only suite, like `ScorecardDictionaryPinTest`: no database.
  */
@@ -127,82 +116,16 @@ class ScorecardOutcomeCitationsTest {
   }
 
   /**
-   * The period the committed dictionary cell states, as the VALUE the citation
-   * registry itself carries.
-   *
-   * An entering fall term is said as an autumn; a full entering academic year
-   * is said as that academic year and NEVER as an autumn, because a cohort
-   * that arrived across a July-June year did not arrive in the autumn and
-   * saying so would misstate the population (RFC 242). Both of those wordings
-   * belong to [CohortPeriod.spoken] and are no longer rebuilt here: this pin
-   * used to author the prose a second time and then scrape the finished
-   * sentence for the year it had just formatted.
-   *
-   * The two remaining arms fail rather than being absent: [Cohort] is closed,
-   * so a citation dated by a money vintage or by nothing at all is a mistake
-   * this suite must NAME, and a fifth cohort shape is a compile error here.
-   * Each refusal names the CELL it refused, read verbatim from the
-   * transcription -- the reader's own reading of a cell is not the cell, and
-   * the cell is the one value that separates a bad transcription from a bad
-   * sentence.
-   */
-  private fun pinnedPeriodOf(
-    variable: String,
-    cohort: Cohort,
-  ): CohortPeriod =
-    when (cohort) {
-      is Cohort.StatedTerm -> {
-        CohortPeriod.EnteringTerm(cohort.autumnYear)
-      }
-
-      is Cohort.StatedEnteringAcademicYear -> {
-        CohortPeriod.EnteringAcademicYear(cohort.year)
-      }
-
-      is Cohort.StatedAcademicYear -> {
-        fail(
-          "[$variable] is dated by an [AcadYr] cell, which is how the publisher dates a MONEY collection " +
-            "year: a figure a family is shown is dated by the cohort it describes, not by when it was " +
-            "collected (cell=[${committedCellOf(variable)}], which this reader read as [${cohort.year.label}])",
-        )
-      }
-
-      is Cohort.NoAcademicYear -> {
-        fail(
-          "[$variable] carries an EMPTY [most_recent_cohort] cell in " +
-            "[${ScorecardDictionaryTranscription.FILE_NAME}]: a figure whose period cannot be transcribed is " +
-            "not served, so either transcribe the publisher's cell or drop the citation",
-        )
-      }
-    }
-
-  /** The committed `most_recent_cohort` cell for [variable], VERBATIM: what a refusal here names. */
-  private fun committedCellOf(variable: String): String = ScorecardDictionaryTranscription.cellByVariable.getValue(variable)
-
-  /**
-   * The period is a VALUE on the citation, so the committed cell and the
-   * citation's period are compared as values -- this is the assertion that
-   * used to substring-search English prose for a year it had rebuilt itself.
-   *
-   * The sentence is still checked to SPEAK that period, because what a family
-   * hears is the sentence; and it is checked to speak no OTHER year, because a
-   * second period beside the stated one is exactly what "the sentence cannot
-   * contradict its own period" claims cannot happen, and a `contains` pin
-   * cannot see it. The year that scan is held to is READ from the citation's
-   * own typed period, never re-typed here.
+   * Each sentence SPEAKS its citation's own period and states no OTHER year:
+   * what a family hears is the sentence, and a second period beside the stated
+   * one is exactly what "the sentence cannot contradict its own period" claims
+   * cannot happen. The year the scan is held to is READ from the citation's own
+   * typed period, never re-typed here. That the period is the one the fetched
+   * data dictionary states is `ScorecardDictionaryPinTest`'s claim (RFC 274).
    */
   @Test
-  fun `each fragment speaks the term the transcription states, and no other year`() {
-    val cohortByVariable = ScorecardDictionaryTranscription.cohortByVariable
+  fun `each fragment speaks its own period, and no other year`() {
     for (citation in citations.values) {
-      val period = pinnedPeriodOf(citation.variable, cohortByVariable.getValue(citation.variable))
-
-      assertEquals(
-        period,
-        citation.cohort,
-        "[${citation.wireKey}] names a period its dictionary cell does not state: " +
-          "cell=[${committedCellOf(citation.variable)}]",
-      )
       assertTrue(
         citation.citedAs.contains(citation.cohort.spoken),
         "[${citation.wireKey}] does not speak its own period: period=[${citation.cohort.spoken}] " +
@@ -213,37 +136,6 @@ class ScorecardOutcomeCitationsTest {
         Regex("""\d{4}""").findAll(citation.citedAs).map { it.value }.toList(),
         "[${citation.wireKey}] states one period and no other: sentence=[${citation.citedAs}]",
       )
-    }
-  }
-
-  /**
-   * The three eight-year figures are dated by an ENTERING ACADEMIC YEAR, and
-   * EVERY OTHER citation by an entering fall TERM -- asserted by SHAPE, so
-   * this suite proves it exercises both arms of [pinnedPeriodOf] rather than
-   * silently pinning term cells that happen to pass.
-   *
-   * The enum is WALKED and the term group is the COMPLEMENT, never a second
-   * hand-written list: two subsets of a closed enum with nothing asserting
-   * they exhaust it left `ADM_RATE` and `UGDS` in neither, so an eighth
-   * citation would have joined neither and been shape-checked nowhere --
-   * silently, because a list that names five of seven still passes.
-   */
-  @Test
-  fun `the eight-year figures are dated by an entering academic year and every other citation by a term`() {
-    val cohortByVariable = ScorecardDictionaryTranscription.cohortByVariable
-    val enteringAcademicYear =
-      setOf(Citation.COMPLETION_RATE_8YR, Citation.COMPLETION_RATE_8YR_PELL, Citation.COMPLETION_RATE_8YR_NON_PELL)
-
-    for (citation in Citation.entries) {
-      val cohort = cohortByVariable.getValue(citation.variable)
-      if (citation in enteringAcademicYear) {
-        assertIs<Cohort.StatedEnteringAcademicYear>(
-          cohort,
-          "[${citation.variable}] is an entering academic-year cohort, which is why it is not said as an autumn",
-        )
-      } else {
-        assertIs<Cohort.StatedTerm>(cohort, "[${citation.variable}] is an entering term")
-      }
     }
   }
 
@@ -309,42 +201,65 @@ class ScorecardOutcomeCitationsTest {
    * pin rather than by dodging six nouns.
    *
    * Spelled out rather than interpolated from the constants under test: a pin
-   * that shares its subject's own constants pins nothing.
+   * that shares its subject's own constants pins nothing. The one thing
+   * interpolated is each PERIOD, and it is read from the fetched data
+   * dictionary (RFC 274) -- the publisher's statement, not the constant under
+   * test -- so no year is typed here and a newer release moves the pin with
+   * the data.
    *
    * The word guard below is KEPT beside it, and is not made redundant by it.
    * It states the RULE -- these words, as words, compare two figures -- over
    * the same vocabulary the coach prompt's guard reads, so the two surfaces
    * still share one list; this map states the CLOSURE.
    */
-  private val permittedCitedAs: Map<Citation, String> =
+  private val permittedCitedAs: Map<Citation, String> by lazy {
+    val c150 = autumnOf(ScorecardInstitutionColumns.C150_4)
+    val admission = autumnOf(ScorecardInstitutionColumns.ADM_RATE)
+    val enrollment = autumnOf(ScorecardInstitutionColumns.UGDS)
+    val awarded = academicYearOf(ScorecardInstitutionColumns.OMAWDP8_ALL)
+    val awardedPell = academicYearOf(ScorecardInstitutionColumns.OMAWDP8_PELL_ALL)
+    val awardedNonPell = academicYearOf(ScorecardInstitutionColumns.OMAWDP8_NOPELL_ALL)
+    val transfer = autumnOf(ScorecardInstitutionColumns.TRANS_4)
     mapOf(
       Citation.COMPLETION_RATE to
-        "the share of students who started full-time, for the first time, in autumn 2018 and had finished a degree at " +
+        "the share of students who started full-time, for the first time, in $c150 and had finished a degree at " +
         "that school within six years, as the U.S. Department of Education's College Scorecard reports it",
       Citation.ADMISSION_RATE to
-        "the share of applicants that school admitted for the class entering in autumn 2024, as the U.S. Department of " +
+        "the share of applicants that school admitted for the class entering in $admission, as the U.S. Department of " +
         "Education's College Scorecard reports it -- one overall rate, not a rate for any single application round",
       Citation.UNDERGRAD_ENROLLMENT to
-        "the number of undergraduates seeking a degree or certificate there in autumn 2024, as the U.S. Department of " +
+        "the number of undergraduates seeking a degree or certificate there in $enrollment, as the U.S. Department of " +
         "Education's College Scorecard reports it",
       Citation.COMPLETION_RATE_8YR to
-        "the share of ALL students who entered that school in the 2016-17 academic year -- full-time and part-time, new " +
+        "the share of ALL students who entered that school in $awarded -- full-time and part-time, new " +
         "to college and transferring in -- who had been awarded a degree or certificate within eight years, as the U.S. " +
         "Department of Education's College Scorecard reports it",
       Citation.COMPLETION_RATE_8YR_PELL to
-        "the share of the students who entered that school in the 2016-17 academic year and received a federal Pell " +
+        "the share of the students who entered that school in $awardedPell and received a federal Pell " +
         "Grant who had been awarded a degree or certificate within eight years, as the U.S. Department of Education's " +
         "College Scorecard reports it -- a group the publisher counted, not a forecast for any one student",
       Citation.COMPLETION_RATE_8YR_NON_PELL to
-        "the share of the students who entered that school in the 2016-17 academic year and did not receive a federal " +
+        "the share of the students who entered that school in $awardedNonPell and did not receive a federal " +
         "Pell Grant who had been awarded a degree or certificate within eight years, as the U.S. Department of " +
         "Education's College Scorecard reports it -- a group the publisher counted, not a forecast for any one student",
       Citation.TRANSFER_OUT_RATE to
-        "the share of students who started full-time, for the first time, in autumn 2018 and transferred to another " +
+        "the share of students who started full-time, for the first time, in $transfer and transferred to another " +
         "school instead of finishing at that one, as the U.S. Department of Education's College Scorecard reports it -- " +
         "counted out of the same six-year group as the six-year completion rate, and leaving is not the same as not " +
         "finishing",
     )
+  }
+
+  /** "autumn <yyyy>" for the term the fetched dictionary states for [variable]. */
+  private fun autumnOf(variable: String): String =
+    "autumn " + assertIs<ScorecardDictionary.Cohort.StatedTerm>(SeedScorecardDictionary.dictionary.enteringPeriodOf(variable)).autumnYear
+
+  /** "the <label> academic year" for the entering academic year the fetched dictionary states for [variable]. */
+  private fun academicYearOf(variable: String): String =
+    "the " +
+      assertIs<ScorecardDictionary.Cohort.StatedEnteringAcademicYear>(
+        SeedScorecardDictionary.dictionary.enteringPeriodOf(variable),
+      ).year.label + " academic year"
 
   @Test
   fun `each citation speaks exactly the sentence this suite permits`() {

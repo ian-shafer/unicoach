@@ -41,7 +41,7 @@ class CanonicalMoneySfaTest : CollegeScorecardTestBase() {
         sfaLoader.assertHeaders(sources)
         sfaLoader.load(sources)
       }
-      loader.fill(institutionCsv, sfa = sources.takeIf { withSfa })
+      loader.fill(institutionCsv, sfa = sources.takeIf { withSfa }, dictionary = SeedScorecardDictionary.dictionary)
     }
 
   // ---------------------------------------------------------------------------
@@ -57,15 +57,16 @@ class CanonicalMoneySfaTest : CollegeScorecardTestBase() {
     // It used to name a COLLISION: the Scorecard's band figure was mis-stamped
     // AY2021-22, landing exactly on SFA's suffix-1 aid year, and upstream-wins
     // suppressed it. That collision was an artefact of the wrong year and it is
-    // gone -- SFA writes 2020/2021/2022, the Scorecard's cohort is 2023-24, and
-    // the two can no longer share a key at all. So the fact worth asserting is
+    // gone -- SFA writes 2020/2021/2022, the Scorecard's cohort is the later
+    // year its fetched dictionary states (RFC 274), and the two can no longer
+    // share a key at all. So the fact worth asserting is
     // the one the correction produces: BOTH numbers are stored, each under the
     // year its own publisher states, and neither is blended into the other.
     // Measured over the pinned artifacts this is 19,780 band rows that were
     // suppressed and are now served.
     //
     // Portland State, band 1: SFA2223 restates AY2021-22 as 10,311; the
-    // Scorecard's own cell is 16,348 and describes AY2023-24.
+    // Scorecard's own cell is 16,348 and describes its dictionary's blend year.
     val rows =
       query(
         "SELECT cms.vintage, cms.value, cms.source, cms.source_variable, cms.publisher_flag " +
@@ -86,7 +87,7 @@ class CanonicalMoneySfaTest : CollegeScorecardTestBase() {
         listOf("2020", "11840", "ipeds_sfa", "npis410", "R"),
         listOf("2021", "10311", "ipeds_sfa", "npis411", "R"),
         listOf("2022", "11558", "ipeds_sfa", "npis412", "R"),
-        listOf("2023", "16348", "scorecard", "NPT41_PUB", null),
+        listOf(SeedScorecardYears.BLENDED_AVERAGE.firstCalendarYear.toString(), "16348", "scorecard", "NPT41_PUB", null),
       ),
       rows,
     )
@@ -116,8 +117,8 @@ class CanonicalMoneySfaTest : CollegeScorecardTestBase() {
     // with the other would be the mistake this pair of rows exists to refuse.
     //
     // RE-DATED (RFC 183): the two rows used to sit at one vintage, 2021, and
-    // the aid scope alone kept them apart. The Scorecard's cell is AcadYr
-    // 2023-24, so the query is no longer pinned to one year -- what it still
+    // the aid scope alone kept them apart. The Scorecard's cell carries its
+    // dictionary's blend year, so the query is no longer pinned to one year -- what it still
     // proves is that the two populations are TWO rows, which the aid scope
     // decides and the vintage never did.
     val rows =
@@ -125,7 +126,7 @@ class CanonicalMoneySfaTest : CollegeScorecardTestBase() {
         "SELECT cms.aid_scope, cms.vintage, cms.source, cms.source_variable, cms.value FROM cohort_money_stats cms " +
           "JOIN colleges c ON c.id = cms.college_id " +
           "WHERE c.ipeds_unit_id = 209807 AND cms.measure = 'avg_net_price' AND cms.income_band IS NULL " +
-          "AND cms.vintage IN (2021, ${CanonicalMoneyLoader.BLENDED_AVERAGE_VINTAGE.firstCalendarYear}) " +
+          "AND cms.vintage IN (2021, ${SeedScorecardYears.BLENDED_AVERAGE.firstCalendarYear}) " +
           "ORDER BY cms.aid_scope",
       ) { rs ->
         listOf(
@@ -138,7 +139,13 @@ class CanonicalMoneySfaTest : CollegeScorecardTestBase() {
       }
     assertEquals(
       listOf(
-        listOf("federal_aid_receiving", "2023", "scorecard", "NPT4_PUB", "17000"),
+        listOf(
+          "federal_aid_receiving",
+          SeedScorecardYears.BLENDED_AVERAGE.firstCalendarYear.toString(),
+          "scorecard",
+          "NPT4_PUB",
+          "17000",
+        ),
         listOf("grant_aided", "2021", "ipeds_sfa", "npist1", "12510"),
       ),
       rows,

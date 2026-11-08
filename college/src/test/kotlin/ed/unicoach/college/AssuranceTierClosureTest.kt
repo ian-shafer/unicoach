@@ -3,9 +3,6 @@ package ed.unicoach.college
 import ed.unicoach.db.models.AssuranceTier
 import ed.unicoach.db.models.MoneySource
 import org.junit.jupiter.api.Test
-import java.io.File
-import java.security.MessageDigest
-import java.util.HexFormat
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
@@ -48,11 +45,10 @@ class AssuranceTierClosureTest {
   private val outcomeVariables: Set<String> = ScorecardInstitutionColumns.OUTCOME_VARIABLES
 
   /**
-   * The whole dated Scorecard key space: money plus outcome, READ off the
-   * registry that owns both halves rather than re-joined here. The dictionary
-   * pin reads the same member, so the CSV's key-set contract has one home.
+   * The whole cited Scorecard key space: money plus outcome, READ off the
+   * registry that owns both halves rather than re-joined here.
    */
-  private val datedScorecardVariables: Set<String> = ScorecardInstitutionColumns.DATED_VARIABLES
+  private val datedScorecardVariables: Set<String> = ScorecardInstitutionColumns.CITED_VARIABLES
 
   @Test
   fun `every IPEDS SFA variable the loader stages resolves, and to the compelled-survey tier`() {
@@ -130,62 +126,30 @@ class AssuranceTierClosureTest {
   }
 
   @Test
-  fun `the tier map agrees with the committed data dictionary transcription, column by column`() {
-    // The spec's own acceptance criterion, made falsifiable: if NCES re-sources
-    // a column, the re-transcription disagrees with the map and this fails --
-    // which is the whole point, because the tier is then wrong.
-    val dictionary = ScorecardDictionaryTranscription.sourceByVariable
-
-    assertEquals(datedScorecardVariables.size, dictionary.size, "one row per string we date")
-    assertEquals(AssuranceTier.SCORECARD_TIERS.keys, dictionary.keys, "the transcription and the map name one set")
-    for ((variable, source) in dictionary) {
-      // The publisher's own SOURCE column decides the tier: IPEDS means the
-      // college filed a compelled survey and the Scorecard relayed it; NSLDS
-      // and Treasury are federal files about students, kept for another purpose.
+  fun `the tier map agrees with the fetched data dictionary's SOURCE, column by column`() {
+    // RFC 179 D4's evidence, read from the publisher's own sheet as fetched
+    // (RFC 274) -- `ScorecardDictionaryTest` holds that file to the digest the
+    // fetch recorded, so it cannot be re-sourced by hand.
+    val dictionary = SeedScorecardDictionary.dictionary
+    for (variable in AssuranceTier.SCORECARD_TIERS.keys) {
+      val source = dictionary.sourceOf(variable)
       val expected =
         when (source) {
           "IPEDS" -> AssuranceTier.MANDATORY_SURVEY
           "NSLDS", "Treasury" -> AssuranceTier.ADMINISTRATIVE_RECORD
-          else -> error("the dictionary transcription states an unhandled SOURCE [$source] for [$variable]")
+          else -> error("the data dictionary states an unhandled SOURCE [$source] for [$variable]")
         }
       assertEquals(expected, AssuranceTier.of(MoneySource.SCORECARD, variable, ROW), "dictionary row [$variable]")
     }
-    // STRINGS, not cells, and the two are different numbers: the twenty-three
-    // IPEDS cells `AssuranceTier` counts are the sixteen money cells (published
-    // as 22 strings, because `NPT4` and its five bands are each published twice
-    // on `CONTROL`) plus the seven outcome cells, which are one string each.
     assertEquals(
       datedScorecardVariables - setOf(ScorecardInstitutionColumns.GRAD_DEBT_MDN, ScorecardInstitutionColumns.MD_EARN_WNE_P10),
-      dictionary.filterValues { it == "IPEDS" }.keys,
-      "22 money strings for sixteen money cells, plus 7 outcome cells: the twenty-three IPEDS cells as strings",
-    )
-  }
-
-  @Test
-  fun `the transcription cannot be edited quietly -- its digest is the one recorded beside it`() {
-    // Typed here as well as written into FETCH-NOTES.md, so an undocumented edit
-    // of the transcription fails a test rather than moving a tier in silence.
-    val file = ScorecardDictionaryTranscription.file
-    // The module's own hex primitive (`CsvIngestSupport`, `CollegeScorecardIngestTest`),
-    // not a per-byte format string: byte-to-hex is an encoding, and the JDK ships
-    // the tested one.
-    val digest = HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(file.readBytes()))
-    assertEquals(
-      DICTIONARY_SHA256,
-      digest,
-      "file=[${ScorecardDictionaryTranscription.FILE_NAME}] was edited without updating FETCH-NOTES.md",
-    )
-    assertTrue(
-      DICTIONARY_SHA256 in File(ScorecardDictionaryTranscription.directory, "FETCH-NOTES.md").readText(),
-      "the hand-authored record in the same directory states the same digest",
+      datedScorecardVariables.filter { dictionary.sourceOf(it) == "IPEDS" }.toSet(),
+      "every cited string but the federal loan file and the tax file is sourced to IPEDS by the publisher",
     )
   }
 
   private companion object {
     /** The locator [AssuranceTier.of] requires: this walk resolves the whole key space, row-less. */
     const val ROW = "the assurance-tier closure walk (the loaders' key space)"
-
-    /** The sha256 recorded in `db/seed/scorecard/FETCH-NOTES.md` for the committed transcription. */
-    const val DICTIONARY_SHA256 = "4c605a01184c6d92fc248b1ebba8346f87c513a62184d6b2e00c6e96f11b6f36"
   }
 }

@@ -76,9 +76,19 @@ class ProgramMoneyLoader(
    * Rebuilds `program_money_stats` from [fieldsCsv] in ONE transaction it owns.
    * A failure anywhere rolls the whole rebuild back and leaves the previous
    * fill standing.
+   *
+   * Every row is stamped with the pooled cohort and the dollar year
+   * [dictionary] -- the Scorecard data dictionary fetched with [fieldsCsv] --
+   * states for its variable (RFC 274), checked first by [ScorecardYearGuard], in this transaction and before
+   * the DELETE: a dictionary that drops, re-words or back-dates a variable
+   * leaves the previous fill standing.
    */
-  suspend fun fill(fieldsCsv: File): FillResult =
+  suspend fun fill(
+    fieldsCsv: File,
+    dictionary: ScorecardDictionary,
+  ): FillResult =
     database.withConnection { session ->
+      val cohorts = guardedCohorts(session, dictionary)
       val programIds = ProgramMoneyDao.programIdsByKey(session).getOrThrow()
 
       // The rebuild's own first step, before a single row is staged: this
@@ -86,7 +96,7 @@ class ProgramMoneyLoader(
       // transaction, so a failure below leaves the old fill standing.
       ProgramMoneyDao.deleteFactsOfSource(session, SOURCE).getOrThrow()
 
-      val pass = streamAndStage(fieldsCsv, session, programIds)
+      val pass = streamAndStage(fieldsCsv, cohorts, session, programIds)
       val result =
         FillResult(
           seen = pass.seen,
@@ -101,6 +111,25 @@ class ProgramMoneyLoader(
       logFill(result)
       result
     }
+
+  /**
+   * Runs [ScorecardYearGuard] over [dictionary] without filling anything: the
+   * ingest calls it before its first phase commits. [fill] runs it again in its
+   * own transaction.
+   */
+  suspend fun requireDictionaryServes(dictionary: ScorecardDictionary) {
+    database.withConnection { session -> guardedCohorts(session, dictionary) }
+  }
+
+  /** Every variable's pooled cohort from [dictionary], refused if one is missing, unreadable or a back-date. */
+  private fun guardedCohorts(
+    session: SqlSession,
+    dictionary: ScorecardDictionary,
+  ): Map<String, ScorecardYearGuard.StampableCohort> {
+    val cohorts = ScorecardYearGuard.fieldOfStudyCohorts(dictionary)
+    ScorecardYearGuard.requireNoFieldOfStudyBackdate(session, cohorts)
+    return cohorts
+  }
 
   /** What one [streamAndStage] pass counted, kept together so [fill] reads as an orchestrator. */
   private data class StreamPass(
@@ -119,6 +148,7 @@ class ProgramMoneyLoader(
    */
   private fun streamAndStage(
     fieldsCsv: File,
+    cohorts: Map<String, ScorecardYearGuard.StampableCohort>,
     session: SqlSession,
     programIds: Map<ProgramKey, java.util.UUID>,
   ): StreamPass {
@@ -169,7 +199,7 @@ class ProgramMoneyLoader(
         }
         mapped++
         for (variable in ScorecardFieldOfStudyColumns.VARIABLES) {
-          pending += statRow(record, variable, programId, absences)
+          pending += statRow(record, variable, cohorts.getValue(variable.sourceVariable), programId, absences)
         }
         if (pending.size >= FLUSH_ROWS) flush()
       }
@@ -191,6 +221,7 @@ class ProgramMoneyLoader(
   private fun statRow(
     record: CSVRecord,
     variable: ScorecardFieldOfStudyColumns.FieldOfStudyVariable,
+    cohort: ScorecardYearGuard.StampableCohort,
     programId: java.util.UUID,
     absences: CellAbsenceTally,
   ): NewProgramMoneyStat {
@@ -204,9 +235,10 @@ class ProgramMoneyLoader(
       )
     return NewProgramMoneyStat(
       collegeProgramId = programId,
-      measure = variable.measure,
-      cohortFirstYear = variable.cohortFirstYear,
-      cohortLastYear = variable.cohortLastYear,
+      // The ROW carries the cohort and the dollar year the fetched dictionary states (RFC 274).
+      dollars = cohort.dollars,
+      cohortFirstYear = cohort.first,
+      cohortLastYear = cohort.last,
       reading = cell.reading().toWholeDollars(),
       source = SOURCE,
       sourceVariable = variable.sourceVariable,

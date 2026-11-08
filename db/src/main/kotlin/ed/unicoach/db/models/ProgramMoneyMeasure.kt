@@ -50,6 +50,13 @@ enum class ProgramMoneyMeasure(
   MEDIAN_DEBT_10YR_MONTHLY_PAYMENT("median_debt_10yr_monthly_payment"),
   ;
 
+  /**
+   * Whether the publisher states the calendar year of this measure's dollars,
+   * read off [ProgramMoneyDollars]: a measure states one exactly when its arm
+   * cannot be built without it. The tool description lists the measures from here.
+   */
+  val statesAmountUsdYear: Boolean get() = ProgramMoneyDollars.ofOrNull(this, amountUsdYear = null) == null
+
   companion object {
     /** The stored slug back to the member, or null -- the house `fromValue` shape. */
     fun fromValue(value: String): ProgramMoneyMeasure? = entries.find { it.value == value }

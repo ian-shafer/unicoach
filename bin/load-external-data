@@ -13,6 +13,9 @@ but a green run that loaded less than the operator believed it loaded.
 
 Defaulted for you, with NO flag to override any of them:
 
+  -D db/seed/scorecard/dictionary-institution-cohorts.csv
+  -O db/seed/scorecard/dictionary-institution-sources.csv
+  -F db/seed/scorecard/dictionary-field-of-study-cohorts.csv
   -k db/data/codebooks.json          -m db/seed/cds/merit-aid.csv
   -s db/data/subjects.json           -a db/seed/cds/admission-factors.csv
   -v db/data/money-vocabulary.json   -d db/seed/cds/deadlines.csv
@@ -21,6 +24,10 @@ Defaulted for you, with NO flag to override any of them:
   -b db/seed/automatic-awards/bands.csv
   -N db/seed/national-merit-awards/awards.csv
   -H -I -A -C -Y -y -S -f            read from db/seed/ipeds/PROVENANCE.json
+
+The three data dictionary CSVs (RFC 274) are written by bin/fetch-scorecard
+beside the two positionals; a missing one is named, with that remedy, before the
+JVM starts.
 
 db/seed/automatic-awards/link-status.csv is checked for here and passed to
 nothing: bin/ingest-colleges' award phase reads it from beside the -w file, so it
@@ -78,8 +85,16 @@ db/data/ and db/seed/ are not bundled to the host (RFC 172 6), so the files this
 command names do not exist there. Send the ones you need with bin/remote's own
 file arguments and refer to them by number:
 
-  bin/remote prod -f 1:institution.csv -f 2:fields.csv -f 3:db/seed/cds/merit-aid.csv \
-    -- ingest-colleges -m @3 ... @1 @2
+  bin/remote prod -f 1:institution.csv -f 2:fields.csv \
+    -f 3:db/seed/scorecard/dictionary-institution-cohorts.csv \
+    -f 4:db/seed/scorecard/dictionary-institution-sources.csv \
+    -f 5:db/seed/scorecard/dictionary-field-of-study-cohorts.csv \
+    -f 6:db/seed/cds/merit-aid.csv \
+    -- ingest-colleges -D @3 -O @4 -F @5 -m @6 ... @1 @2
+
+The three dictionary CSVs are three -f uploads and three options because
+bin/remote stores every -f file under its own prefix: no file arrives on the
+host beside another, so none may be read from beside another.
 
 Run inside the nix dev shell (the JVM lives there):
   nix develop -c bin/load-external-data institution.csv fields.csv
@@ -124,6 +139,12 @@ ALIASES_JSON="${3-$PROJECT_ROOT/db/data/college-aliases.json}"
 # Every path this wrapper exists to supply, in one place. Nothing below invents a
 # path; they are read from here or from the IPEDS manifest.
 CODEBOOKS_JSON="$PROJECT_ROOT/db/data/codebooks.json"
+# The Scorecard data dictionary bin/fetch-scorecard writes beside the pair (RFC
+# 274): three files, each passed by its own option (-D, -O, -F).
+SCORECARD_DIR="$PROJECT_ROOT/db/seed/scorecard"
+SCORECARD_DICTIONARY_CSV="$SCORECARD_DIR/dictionary-institution-cohorts.csv"
+SCORECARD_DICTIONARY_SOURCES_CSV="$SCORECARD_DIR/dictionary-institution-sources.csv"
+SCORECARD_DICTIONARY_FIELDS_CSV="$SCORECARD_DIR/dictionary-field-of-study-cohorts.csv"
 SUBJECTS_JSON="$PROJECT_ROOT/db/data/subjects.json"
 MONEY_VOCABULARY_JSON="$PROJECT_ROOT/db/data/money-vocabulary.json"
 CDS_MERIT_AID="$PROJECT_ROOT/db/seed/cds/merit-aid.csv"
@@ -263,6 +284,9 @@ require_inputs() {
   require_positional "$FIELDS_CSV" "the College Scorecard fields CSV from collegescorecard.ed.gov; run bin/fetch-scorecard and pass db/seed/scorecard/Most-Recent-Cohorts-Field-of-Study.csv"
   require_positional "$ALIASES_JSON" "the curated college aliases; it is committed at db/data/college-aliases.json"
   require_input "$CODEBOOKS_JSON" "the generated published codebook; run bin/fetch-codebooks"
+  require_input "$SCORECARD_DICTIONARY_CSV" "the Scorecard data dictionary's cohort sheet; run bin/fetch-scorecard"
+  require_input "$SCORECARD_DICTIONARY_SOURCES_CSV" "the Scorecard data dictionary's sources sheet; run bin/fetch-scorecard"
+  require_input "$SCORECARD_DICTIONARY_FIELDS_CSV" "the Scorecard data dictionary's field-of-study cohort sheet; run bin/fetch-scorecard"
   require_input "$SUBJECTS_JSON" "the authored subject taxonomy; it is committed at db/data/subjects.json"
   require_input "$MONEY_VOCABULARY_JSON" "the authored money vocabulary; it is committed at db/data/money-vocabulary.json"
   require_input "$CDS_MERIT_AID" "the CDS merit-aid seed; run bin/fetch-cds-seed"
@@ -299,6 +323,9 @@ require_inputs() {
 build_ingest_command() {
   INGEST_COMMAND=(
     "$PROJECT_ROOT/bin/ingest-colleges"
+    -D "$SCORECARD_DICTIONARY_CSV"
+    -O "$SCORECARD_DICTIONARY_SOURCES_CSV"
+    -F "$SCORECARD_DICTIONARY_FIELDS_CSV"
     -k "$CODEBOOKS_JSON"
     -s "$SUBJECTS_JSON"
     -v "$MONEY_VOCABULARY_JSON"

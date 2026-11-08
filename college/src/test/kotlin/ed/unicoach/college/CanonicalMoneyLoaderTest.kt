@@ -39,7 +39,7 @@ class CanonicalMoneyLoaderTest : CollegeScorecardTestBase() {
   private fun fill(): CanonicalMoneyLoader.FillResult =
     runBlocking {
       scorecardLoader.load(institutionCsv, fieldsCsv)
-      loader.fill(institutionCsv, sfa = null)
+      loader.fill(institutionCsv, sfa = null, dictionary = SeedScorecardDictionary.dictionary)
     }
 
   // ---------------------------------------------------------------------------
@@ -199,11 +199,11 @@ class CanonicalMoneyLoaderTest : CollegeScorecardTestBase() {
     // The stored-shape successor of CostBreakdown's mixed-vintage rule: every
     // price row is one real year; the blended stats carry THEIR year; the
     // pooled/undated figures carry NO year rather than borrowing one.
-    // RE-DATED (RFC 183): the Scorecard's published charges describe AcadYr
-    // 2024-25, not 2022-23. This fixture has no IPEDS rows at all, so every
-    // price row here is the Scorecard's and every one moves.
+    // The year is the one the fetched dictionary states for the charges (RFC
+    // 274). This fixture has no IPEDS rows at all, so every price row here is
+    // the Scorecard's and every one carries it.
     assertEquals(
-      listOf(AcademicYear(2024)),
+      listOf(SeedScorecardYears.PUBLISHED_CHARGE),
       query("SELECT DISTINCT academic_year FROM price_figures") { AcademicYear(it.getInt(1)) },
     )
     val vintages =
@@ -211,16 +211,15 @@ class CanonicalMoneyLoaderTest : CollegeScorecardTestBase() {
         "SELECT DISTINCT measure, vintage FROM cohort_money_stats ORDER BY measure, vintage",
       ) { rs -> rs.getString(1) to rs.getInt(2).takeUnless { rs.wasNull() } }
     assertEquals(
-      // RE-DATED (RFC 183): COSTT4_A and the NPT4 family are the publisher's
-      // AcadYr 2023-24 cohort, one year BEHIND the charges above. The three
-      // undated figures are unchanged -- the publisher pools them, and PCTPELL
-      // stays undated by D3.
+      // COSTT4_A and the NPT4 family carry the year the dictionary states
+      // for them -- the publisher's blended cohort. The three undated figures
+      // carry none: the publisher pools them, and PCTPELL stays undated by D3.
       listOf(
-        "avg_net_price" to 2023,
+        "avg_net_price" to SeedScorecardYears.BLENDED_AVERAGE.firstCalendarYear,
         "median_debt_at_completion" to null,
         "median_earnings_10y" to null,
         "pell_share" to null,
-        "published_cost_blend" to 2023,
+        "published_cost_blend" to SeedScorecardYears.BLENDED_AVERAGE.firstCalendarYear,
       ),
       vintages,
     )
@@ -271,7 +270,7 @@ class CanonicalMoneyLoaderTest : CollegeScorecardTestBase() {
   @Test
   fun `a second fill of the same snapshot reproduces the same counts (P12)`() {
     val first = fill()
-    val second = runBlocking { loader.fill(institutionCsv, sfa = null) }
+    val second = runBlocking { loader.fill(institutionCsv, sfa = null, dictionary = SeedScorecardDictionary.dictionary) }
     assertEquals(first.priceFigureRows, second.priceFigureRows)
     assertEquals(first.cohortMoneyStatRows, second.cohortMoneyStatRows)
     assertEquals(first.priceFigureStatusCounts, second.priceFigureStatusCounts)
@@ -295,7 +294,7 @@ class CanonicalMoneyLoaderTest : CollegeScorecardTestBase() {
     // control-independent price cells and the three pooled figures still
     // write.
     runBlocking { scorecardLoader.load(institutionCsv, fieldsCsv) }
-    val result = runBlocking { loader.fill(withBlankControl(110100), sfa = null) }
+    val result = runBlocking { loader.fill(withBlankControl(110100), sfa = null, dictionary = SeedScorecardDictionary.dictionary) }
 
     assertEquals(1, result.rowsWithoutControl)
     assertEquals(35, result.priceFigureRows, "the price cells are not control-keyed and still write")

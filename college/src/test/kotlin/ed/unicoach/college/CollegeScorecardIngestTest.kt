@@ -90,7 +90,14 @@ class CollegeScorecardIngestTest : CollegeScorecardTestBase() {
   private val aliasesJson = fixture("college-aliases-fixture.json")
 
   private fun ingest(): CollegeScorecardLoader.IngestReport =
-    runBlocking { loader.ingest(source(institutionCsv), source(fieldsCsv), source(aliasesJson)) }
+    runBlocking {
+      loader.ingest(
+        source(institutionCsv),
+        source(fieldsCsv),
+        source(aliasesJson),
+        dictionary = SeedScorecardDictionary.sources,
+      )
+    }
 
   // ---------------------------------------------------------------------------
   // The codebook precondition (migration 0067)
@@ -204,7 +211,14 @@ class CollegeScorecardIngestTest : CollegeScorecardTestBase() {
 
     val thrown =
       assertThrows<MissingSourceColumnsException> {
-        runBlocking { loader.ingest(source(missingColumn), source(fieldsCsv), source(aliasesJson)) }
+        runBlocking {
+          loader.ingest(
+            source(missingColumn),
+            source(fieldsCsv),
+            source(aliasesJson),
+            dictionary = SeedScorecardDictionary.sources,
+          )
+        }
       }
     assertEquals(listOf("ADM_RATE"), thrown.missing)
     assertTrue(thrown.message!!.contains("ADM_RATE"), "the fatal message must name the missing column")
@@ -231,7 +245,14 @@ class CollegeScorecardIngestTest : CollegeScorecardTestBase() {
 
     val thrown =
       assertThrows<MissingSourceColumnsException> {
-        runBlocking { loader.ingest(source(stripped), source(fieldsCsv), source(aliasesJson)) }
+        runBlocking {
+          loader.ingest(
+            source(stripped),
+            source(fieldsCsv),
+            source(aliasesJson),
+            dictionary = SeedScorecardDictionary.sources,
+          )
+        }
       }
     assertEquals(listOf("ROOMBOARD_ON"), thrown.missing)
     assertTrue(thrown.message!!.contains("ROOMBOARD_ON"), "the fatal message must name the missing column")
@@ -272,7 +293,14 @@ class CollegeScorecardIngestTest : CollegeScorecardTestBase() {
 
       val thrown =
         assertThrows<MissingSourceColumnsException> {
-          runBlocking { loader.ingest(source(stripped), source(fieldsCsv), source(aliasesJson)) }
+          runBlocking {
+            loader.ingest(
+              source(stripped),
+              source(fieldsCsv),
+              source(aliasesJson),
+              dictionary = SeedScorecardDictionary.sources,
+            )
+          }
         }
       assertEquals(listOf(variable), thrown.missing, "[$variable] must be the column the ingest refuses on")
       assertTrue(thrown.message!!.contains(variable), "the fatal message must name [$variable]: ${thrown.message}")
@@ -304,7 +332,14 @@ class CollegeScorecardIngestTest : CollegeScorecardTestBase() {
 
     val thrown =
       assertThrows<CollegeScorecardLoader.InvalidAliasFileException> {
-        runBlocking { loader.ingest(source(institutionCsv), source(fieldsCsv), source(duplicated)) }
+        runBlocking {
+          loader.ingest(
+            source(institutionCsv),
+            source(fieldsCsv),
+            source(duplicated),
+            dictionary = SeedScorecardDictionary.sources,
+          )
+        }
       }
     assertEquals(listOf(110100), thrown.duplicateIpedsUnitIds)
     assertTrue(thrown.message!!.contains("110100"), "the fatal message must name the duplicate ipeds_unit_id: ${thrown.message}")
@@ -327,6 +362,7 @@ class CollegeScorecardIngestTest : CollegeScorecardTestBase() {
             SourceFile(missingColumn, callerArg),
             source(fieldsCsv),
             source(aliasesJson),
+            dictionary = SeedScorecardDictionary.sources,
           )
         }
       }
@@ -352,7 +388,7 @@ class CollegeScorecardIngestTest : CollegeScorecardTestBase() {
     val file = aliasesFile(json)
     val thrown =
       assertThrows<CollegeScorecardLoader.InvalidAliasFileException> {
-        runBlocking { loader.ingest(source(institutionCsv), source(fieldsCsv), source(file)) }
+        runBlocking { loader.ingest(source(institutionCsv), source(fieldsCsv), source(file), dictionary = SeedScorecardDictionary.sources) }
       }
     assertEquals(file.path, thrown.fileName, "every alias failure names the file")
     for (expected in expectedInMessage) {
@@ -416,7 +452,14 @@ class CollegeScorecardIngestTest : CollegeScorecardTestBase() {
 
     val thrown =
       assertThrows<PartialIngestException> {
-        runBlocking { loader.ingest(source(institutionCsv), source(fieldsCsv), source(hostile)) }
+        runBlocking {
+          loader.ingest(
+            source(institutionCsv),
+            source(fieldsCsv),
+            source(hostile),
+            dictionary = SeedScorecardDictionary.sources,
+          )
+        }
       }
     assertEquals(listOf("institutions", "fields"), thrown.committedPhases)
     assertEquals("aliases", thrown.failedPhase, "the report names the phase that threw, not just what landed")
@@ -444,7 +487,14 @@ class CollegeScorecardIngestTest : CollegeScorecardTestBase() {
     try {
       val thrown =
         assertThrows<PartialIngestException> {
-          runBlocking { loader.ingest(source(institutionCsv), source(fieldsCsv), source(aliasesJson)) }
+          runBlocking {
+            loader.ingest(
+              source(institutionCsv),
+              source(fieldsCsv),
+              source(aliasesJson),
+              dictionary = SeedScorecardDictionary.sources,
+            )
+          }
         }
       assertEquals(
         listOf("institutions", "fields", "aliases", "name-words", "canonical-money", "program-money", "search-index"),
@@ -489,7 +539,17 @@ class CollegeScorecardIngestTest : CollegeScorecardTestBase() {
     val expected = HexFormat.of().formatHex(md.digest(bytes))
     assertEquals(expected, recorded.sha256)
     assertEquals(bytes.size.toLong(), recorded.bytes)
-    assertEquals(3, report.sources.size, "institution, fields, and aliases files are all recorded")
+    assertEquals(
+      3 + SeedScorecardDictionary.sources.files.size,
+      report.sources.size,
+      "institution, fields, aliases and the three data dictionary CSVs are all recorded",
+    )
+    // The dictionary the run stamped every Scorecard year from is named on the
+    // build row, digest for digest (RFC 274).
+    assertEquals(
+      SeedScorecardDictionary.dictionary.digests.map { it.fileName to it.sha256 },
+      report.sources.filter { it.fileName.startsWith("dictionary-") }.map { it.fileName to it.sha256 },
+    )
   }
 
   @Test
@@ -616,6 +676,7 @@ class CollegeScorecardIngestTest : CollegeScorecardTestBase() {
           source(institutionCsv),
           source(fixture("scorecard-fields-empty-fixture.csv")),
           source(aliasesJson),
+          dictionary = SeedScorecardDictionary.sources,
         )
       }
     val summary = report.humanSummary()
@@ -848,7 +909,14 @@ class CollegeScorecardIngestTest : CollegeScorecardTestBase() {
     val buildRowsBefore = withSession { count(it, "college_index_build") }
     val hostile = aliasesFile("""[{ "ipeds_unit_id": 110100, "aliases": ["\u0000bad"] }]""")
     assertThrows<PartialIngestException> {
-      runBlocking { loader.ingest(source(institutionCsv), source(fieldsCsv), source(hostile)) }
+      runBlocking {
+        loader.ingest(
+          source(institutionCsv),
+          source(fieldsCsv),
+          source(hostile),
+          dictionary = SeedScorecardDictionary.sources,
+        )
+      }
     }
     assertEquals(buildRowsBefore, withSession { count(it, "college_index_build") })
   }
@@ -959,6 +1027,7 @@ class CollegeScorecardIngestTest : CollegeScorecardTestBase() {
         source(fieldsCsv),
         source(aliasesJson),
         sfa = SfaSources(source(sfaCsv), sfaAidYearStart),
+        dictionary = SeedScorecardDictionary.sources,
       )
     }
 
@@ -971,7 +1040,11 @@ class CollegeScorecardIngestTest : CollegeScorecardTestBase() {
     assertEquals(7, sfa.institutionsLoaded)
     assertEquals(7 * SfaVariables.ALL.size, sfa.cellsWritten)
     assertEquals(sfa.cellsWritten, withSession { count(it, "college_sfa") })
-    assertEquals(4, report.sources.size, "three Scorecard sources plus the SFA file")
+    assertEquals(
+      4 + SeedScorecardDictionary.sources.files.size,
+      report.sources.size,
+      "three Scorecard sources, the SFA file and the three dictionary CSVs",
+    )
 
     // rows_ingested carries the phase's own block, by its own key.
     val row = assertNotNull(withSession { buildRow(it, report.buildId) })
@@ -1007,7 +1080,7 @@ class CollegeScorecardIngestTest : CollegeScorecardTestBase() {
   /** The same institution snapshot, ingested with NO SFA group at all. */
   private fun ingestWithoutSfa(): CollegeScorecardLoader.IngestReport =
     runBlocking {
-      loader.ingest(source(sfaInstitutionCsv), source(fieldsCsv), source(aliasesJson))
+      loader.ingest(source(sfaInstitutionCsv), source(fieldsCsv), source(aliasesJson), dictionary = SeedScorecardDictionary.sources)
     }
 
   @Test

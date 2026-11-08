@@ -59,7 +59,7 @@ class ProgramMoneyLoaderTest : CollegeScorecardTestBase() {
   private fun fillFromFixture(fields: File = fieldsCsv): ProgramMoneyLoader.FillResult =
     runBlocking {
       loader.load(institutionCsv, fields)
-      programMoney.fill(fields)
+      programMoney.fill(fields, SeedScorecardDictionary.dictionary)
     }
 
   @Test
@@ -130,15 +130,19 @@ class ProgramMoneyLoaderTest : CollegeScorecardTestBase() {
     // Treasury's earnings cohort and NSLDS' debt cohort are DIFFERENT, and the
     // stamp is per column: this is what stops an earnings figure being dated by
     // a debt year.
+    // The years are READ from the committed dictionary (RFC 274), never typed.
+    val dictionary = SeedScorecardDictionary.dictionary
+    val earningsCohort = dictionary.fieldOfStudyCohortOf(ScorecardFieldOfStudyColumns.EARN_MDN_4YR)
     val earnings = assertNotNull(stat(110100, "260702", 3, "median_earnings_4yr_after_entry"))
-    assertEquals(2017, earnings.cohortFirst)
-    assertEquals(2018, earnings.cohortLast)
+    assertEquals(earningsCohort.first.firstCalendarYear, earnings.cohortFirst)
+    assertEquals(earningsCohort.last.firstCalendarYear, earnings.cohortLast)
     assertEquals("EARN_MDN_4YR", earnings.sourceVariable)
     assertEquals("scorecard", earnings.source)
 
+    val debtCohort = dictionary.fieldOfStudyCohortOf(ScorecardFieldOfStudyColumns.DEBT_ALL_STGP_EVAL_MDN)
     val debt = assertNotNull(stat(110100, "260702", 3, "median_debt_at_completion"))
-    assertEquals(2018, debt.cohortFirst)
-    assertEquals(2019, debt.cohortLast)
+    assertEquals(debtCohort.first.firstCalendarYear, debt.cohortFirst)
+    assertEquals(debtCohort.last.firstCalendarYear, debt.cohortLast)
     assertEquals("DEBT_ALL_STGP_EVAL_MDN", debt.sourceVariable)
 
     // And EVERY row, not only the two read above.
@@ -148,13 +152,13 @@ class ProgramMoneyLoaderTest : CollegeScorecardTestBase() {
       ) { rs -> Triple(rs.getString(1), rs.getInt(2), rs.getInt(3)) }
     assertTrue(rows.isNotEmpty(), "the fill wrote nothing, so this guard proves nothing")
     for ((variable, first, last) in rows) {
-      val pinned =
-        assertNotNull(
-          ScorecardFieldOfStudyColumns.ofOrNull(variable),
-          "[$variable] is stored but not in ScorecardFieldOfStudyColumns",
-        )
-      assertEquals(pinned.cohortFirstYear.firstCalendarYear, first, variable)
-      assertEquals(pinned.cohortLastYear.firstCalendarYear, last, variable)
+      assertNotNull(
+        ScorecardFieldOfStudyColumns.ofOrNull(variable),
+        "[$variable] is stored but not in ScorecardFieldOfStudyColumns",
+      )
+      val stated = dictionary.fieldOfStudyCohortOf(variable)
+      assertEquals(stated.first.firstCalendarYear, first, variable)
+      assertEquals(stated.last.firstCalendarYear, last, variable)
     }
   }
 
@@ -199,7 +203,7 @@ class ProgramMoneyLoaderTest : CollegeScorecardTestBase() {
     // The rebuild shape's whole claim: DELETE this source's rows, then
     // re-insert. Idempotency is by construction, and this is what says so.
     val first = fillFromFixture()
-    val second = runBlocking { programMoney.fill(fieldsCsv) }
+    val second = runBlocking { programMoney.fill(fieldsCsv, SeedScorecardDictionary.dictionary) }
     assertEquals(first.rowsWritten, second.rowsWritten)
     assertEquals(first.statusCounts, second.statusCounts)
     assertEquals(
@@ -220,7 +224,7 @@ class ProgramMoneyLoaderTest : CollegeScorecardTestBase() {
         "110100,260702,Marine Biology and Biological Oceanography,3,52000,21500,227.86\n",
     )
     // No `fields` phase, so no college_programs row exists at all.
-    val result = runBlocking { programMoney.fill(orphan) }
+    val result = runBlocking { programMoney.fill(orphan, SeedScorecardDictionary.dictionary) }
     assertEquals(1, result.seen)
     assertEquals(0, result.mapped)
     assertEquals(0, result.rowsWritten)
@@ -239,7 +243,7 @@ class ProgramMoneyLoaderTest : CollegeScorecardTestBase() {
         "NA,260702,Marine Biology,3,52000,21500,227.86\n" +
         "110100,260702,Marine Biology,99,52000,21500,227.86\n",
     )
-    val result = runBlocking { programMoney.fill(odd) }
+    val result = runBlocking { programMoney.fill(odd, SeedScorecardDictionary.dictionary) }
     assertEquals(2, result.seen)
     assertEquals(
       mapOf<SkipReason, Int>(SkipReason.IpedsUnitIdNa to 1, SkipReason.CredentialLevelOutOfDomain to 1),

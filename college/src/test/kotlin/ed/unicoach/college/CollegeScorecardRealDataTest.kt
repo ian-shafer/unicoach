@@ -53,7 +53,7 @@ class CollegeScorecardRealDataTest : CollegeScorecardTestBase() {
       // negative net prices, and an `NA` really is an absence rather than a
       // zero -- and they still run over verbatim Scorecard rows.
       loader.load(institutionCsv, fieldsCsv)
-      canonicalMoneyLoader.fill(institutionCsv, sfa = null)
+      canonicalMoneyLoader.fill(institutionCsv, sfa = null, dictionary = SeedScorecardDictionary.dictionary)
 
       val netPrices = netPricesByUnit()
 
@@ -83,7 +83,7 @@ class CollegeScorecardRealDataTest : CollegeScorecardTestBase() {
       // claim: "not reported" is a PER-ARRANGEMENT fact, and it is an absence
       // of value rather than a zero.
       loader.load(institutionCsv, fieldsCsv)
-      canonicalMoneyLoader.fill(institutionCsv, sfa = null)
+      canonicalMoneyLoader.fill(institutionCsv, sfa = null, dictionary = SeedScorecardDictionary.dictionary)
 
       val cells = componentAmountsByUnit()
 
@@ -227,7 +227,7 @@ class CollegeScorecardRealDataTest : CollegeScorecardTestBase() {
       // UNITID=NA), so the not-reported arm has no real reachable cell here;
       // the synthetic fixture holds that arm.
       loader.load(institutionCsv, fieldsCsv)
-      ProgramMoneyLoader(database).fill(fieldsCsv)
+      ProgramMoneyLoader(database).fill(fieldsCsv, SeedScorecardDictionary.dictionary)
       assertEquals(
         setOf("reported", "suppressed_by_publisher"),
         query("SELECT DISTINCT status FROM program_money_stats") { rs -> rs.getString(1) }.toSet(),
@@ -266,7 +266,7 @@ class CollegeScorecardRealDataTest : CollegeScorecardTestBase() {
       // the cell is cleared rather than merely permitted.
       loader.load(institutionCsv, fieldsCsv)
       ipedsChargesLoader.load(source(fixture("ipeds-ic2023-ay-fixture.csv")), IpedsChargeVocabulary.SURVEY_YEAR)
-      canonicalMoneyLoader.fill(institutionCsv, sfa = null)
+      canonicalMoneyLoader.fill(institutionCsv, sfa = null, dictionary = SeedScorecardDictionary.dictionary)
 
       val blends = publishedCostBlendsByUnit()
       assertTrue(blends.isNotEmpty(), "the real fixture must have filled some blends for this scan to mean anything")

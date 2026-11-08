@@ -1,6 +1,7 @@
 package ed.unicoach.db.dao
 
 import ed.unicoach.common.util.AcademicYear
+import ed.unicoach.common.util.CalendarYear
 import ed.unicoach.db.models.AbsenceStatus
 import ed.unicoach.db.models.CipCode
 import ed.unicoach.db.models.CollegeId
@@ -8,6 +9,7 @@ import ed.unicoach.db.models.CredentialLevel
 import ed.unicoach.db.models.FigureReading
 import ed.unicoach.db.models.FigureStatus
 import ed.unicoach.db.models.MoneySource
+import ed.unicoach.db.models.ProgramMoneyDollars
 import ed.unicoach.db.models.ProgramMoneyMeasure
 import ed.unicoach.db.models.SubjectStatus
 import ed.unicoach.db.models.ValueBearingStatus
@@ -19,6 +21,7 @@ import java.sql.PreparedStatement
 import java.util.UUID
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertIs
 import kotlin.test.assertTrue
 
 /**
@@ -47,6 +50,8 @@ class ProgramMoneyDaoTest {
           .getOrThrow()
       connection = DriverManager.getConnection(dbConfig.jdbcUrl, dbConfig.user, dbConfig.password ?: "")
     }
+
+    private const val AMOUNT_USD_YEAR_CHECK = "program_money_stats_amount_usd_year_earnings_check"
 
     @JvmStatic
     @org.junit.jupiter.api.AfterAll
@@ -114,9 +119,10 @@ class ProgramMoneyDaoTest {
     last: AcademicYear = AcademicYear(2018),
     reading: FigureReading<Int> = FigureReading.Present(52000, ValueBearingStatus.REPORTED),
     sourceVariable: String = "EARN_MDN_4YR",
+    amountUsdYear: CalendarYear? = if (measure.statesAmountUsdYear) CalendarYear(FIXTURE_AMOUNT_USD_YEAR) else null,
   ) = NewProgramMoneyStat(
     collegeProgramId = programId,
-    measure = measure,
+    dollars = requireNotNull(ProgramMoneyDollars.ofOrNull(measure, amountUsdYear)) { "[$measure] and [$amountUsdYear] disagree" },
     cohortFirstYear = first,
     cohortLastYear = last,
     reading = reading,
@@ -133,19 +139,21 @@ class ProgramMoneyDaoTest {
     amount: String = "52000",
     status: String = "reported",
     sourceVariable: String = "EARN_MDN_4YR",
+    amountUsdYear: Int? = if (measure == ProgramMoneyMeasure.MEDIAN_EARNINGS_4YR_AFTER_ENTRY.value) FIXTURE_AMOUNT_USD_YEAR else null,
   ) {
     // `amount` stays spliced: it is a SQL literal, and `NULL` is one of the values a case passes.
     RawSql.execute(
       connection,
       "INSERT INTO program_money_stats (college_program_id, measure, cohort_first_year, " +
-        "cohort_last_year, amount_usd, status, source, source_variable) " +
-        "VALUES (?, ?, ?, ?, $amount, ?, 'scorecard', ?)",
+        "cohort_last_year, amount_usd, status, source, source_variable, amount_usd_year) " +
+        "VALUES (?, ?, ?, ?, $amount, ?, 'scorecard', ?, ?)",
       programId,
       measure,
       first,
       last,
       status,
       sourceVariable,
+      amountUsdYear,
     )
   }
 
@@ -252,6 +260,60 @@ class ProgramMoneyDaoTest {
       thrown.message!!.contains("program_money_stats_cohort_years_ordered_check"),
       thrown.message!!,
     )
+  }
+
+  @Test
+  fun `an earnings row with no dollar year is refused by name`() {
+    val programId = program()
+    val thrown = assertFailsWith<Exception> { insertRaw(programId, amountUsdYear = null) }
+    assertTrue(
+      thrown.message!!.contains("program_money_stats_amount_usd_year_earnings_check"),
+      thrown.message!!,
+    )
+  }
+
+  @Test
+  fun `a debt row with a dollar year is refused by name`() {
+    val programId = program()
+    val thrown =
+      assertFailsWith<Exception> {
+        insertRaw(
+          programId,
+          measure = ProgramMoneyMeasure.MEDIAN_DEBT_AT_COMPLETION.value,
+          amountUsdYear = FIXTURE_AMOUNT_USD_YEAR,
+        )
+      }
+    assertTrue(
+      thrown.message!!.contains("program_money_stats_amount_usd_year_earnings_check"),
+      thrown.message!!,
+    )
+  }
+
+  @Test
+  fun `the major-answer read carries each row's own dollar year`() {
+    subject("nursing", "Nursing", "51")
+    val collegeId = college(ipedsUnitId = 240002)
+    val programId = programAt(collegeId, cipCode = "5101")
+    ProgramMoneyDao
+      .batchInsert(
+        session,
+        listOf(
+          stat(programId),
+          stat(programId, measure = ProgramMoneyMeasure.MEDIAN_DEBT_AT_COMPLETION, sourceVariable = "DEBT_ALL_STGP_EVAL_MDN"),
+        ),
+      ).getOrThrow()
+
+    val rows =
+      ProgramMoneyDao
+        .programMoneyBySubject(session, listOf(collegeId), listOf("nursing"))
+        .getOrThrow()
+        .associateBy { it.measure }
+
+    assertEquals(
+      CalendarYear(FIXTURE_AMOUNT_USD_YEAR),
+      rows.getValue(ProgramMoneyMeasure.MEDIAN_EARNINGS_4YR_AFTER_ENTRY).dollars.amountUsdYear,
+    )
+    assertEquals(null, rows.getValue(ProgramMoneyMeasure.MEDIAN_DEBT_AT_COMPLETION).dollars.amountUsdYear)
   }
 
   @Test
@@ -518,6 +580,65 @@ class ProgramMoneyDaoTest {
   }
 
   @Test
+  fun `a stored year the measure cannot carry is corruption naming the cell`() {
+    subject("nursing", "Nursing", "51")
+    val collegeId = college(ipedsUnitId = 200005)
+    val programId = programAt(collegeId, cipCode = "5101")
+    // The CHECK makes this state unreachable through any write path; force it
+    // by dropping the constraint, then restore it.
+    connection.createStatement().use { it.execute("ALTER TABLE program_money_stats DROP CONSTRAINT $AMOUNT_USD_YEAR_CHECK") }
+    try {
+      insertRaw(
+        programId,
+        measure = ProgramMoneyMeasure.MEDIAN_DEBT_AT_COMPLETION.value,
+        sourceVariable = "DEBT_ALL_STGP_EVAL_MDN",
+        amountUsdYear = FIXTURE_AMOUNT_USD_YEAR,
+      )
+      val failure =
+        assertFailsWith<CorruptPersistedValueException> {
+          ProgramMoneyDao.programMoneyBySubject(session, listOf(collegeId), listOf("nursing")).getOrThrow()
+        }
+      assertTrue(failure.message!!.contains("program_money_stats.[amount_usd_year]"), "got: [${failure.message}]")
+      assertTrue(failure.message!!.contains("states no dollar year"), "got: [${failure.message}]")
+      assertEquals(FIXTURE_AMOUNT_USD_YEAR.toString(), failure.value)
+
+      connection.createStatement().use { it.execute("TRUNCATE TABLE program_money_stats") }
+      insertRaw(programId, amountUsdYear = null)
+      val missing =
+        assertFailsWith<CorruptPersistedValueException> {
+          ProgramMoneyDao.programMoneyBySubject(session, listOf(collegeId), listOf("nursing")).getOrThrow()
+        }
+      assertTrue(missing.message!!.contains("program_money_stats.[amount_usd_year]"), "got: [${missing.message}]")
+      assertTrue(missing.message!!.contains("states the calendar year of its dollars"), "got: [${missing.message}]")
+    } finally {
+      connection.createStatement().use { stmt ->
+        stmt.execute("TRUNCATE TABLE program_money_stats")
+        stmt.execute(
+          "ALTER TABLE program_money_stats ADD CONSTRAINT $AMOUNT_USD_YEAR_CHECK " +
+            "CHECK ((amount_usd_year IS NOT NULL) = (measure = 'median_earnings_4yr_after_entry'))",
+        )
+      }
+    }
+  }
+
+  @Test
+  fun `a stored year no CalendarYear holds is corruption naming the cell`() {
+    subject("nursing", "Nursing", "51")
+    val collegeId = college(ipedsUnitId = 200006)
+    val programId = programAt(collegeId, cipCode = "5101")
+    // The CHECK pairs NULL-ness with the measure and says nothing of range.
+    insertRaw(programId, amountUsdYear = 24)
+    val failure =
+      assertFailsWith<CorruptPersistedValueException> {
+        ProgramMoneyDao.programMoneyBySubject(session, listOf(collegeId), listOf("nursing")).getOrThrow()
+      }
+    assertEquals("24", failure.value)
+    assertTrue(failure.message!!.contains("[CalendarYear]"), "got: [${failure.message}]")
+    assertTrue(failure.message!!.contains("program_money_stats.[amount_usd_year]"), "got: [${failure.message}]")
+    assertIs<IllegalArgumentException>(failure.cause)
+  }
+
+  @Test
   fun `the three silence arms come back with their amounts paired`() {
     subject("nursing", "Nursing", "51")
     val collegeId = college(ipedsUnitId = 200004)
@@ -746,3 +867,6 @@ class ProgramMoneyDaoTest {
     )
   }
 }
+
+/** A year for the store to carry; this suite tests the store, not any release's dictionary. */
+private const val FIXTURE_AMOUNT_USD_YEAR = 2024

@@ -22,6 +22,7 @@ import org.jsoup.nodes.Element
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
 /**
@@ -370,10 +371,14 @@ class CostReportProgramReturnTest {
     assertTrue(section.select(".report-program-return table").isEmpty(), "[$section]")
   }
 
+  private val earningsYears = "${earnings.provenance.cohortFirstYear.label} and ${earnings.provenance.cohortLastYear.label}"
+  private val debtYears = "${debt.provenance.cohortFirstYear.label} and ${debt.provenance.cohortLastYear.label}"
+  private val dollarYear = assertNotNull(earnings.provenance.amountUsdYear).year
+
   private val allCohorts =
     "Earnings by field of study describe graduates working four years after finishing (students who finished in " +
-      "2017-18 and 2018-19, in 2024 dollars). Federal loan debt and monthly payment by field of study describe " +
-      "graduates who borrowed federal loans (students who finished in 2018-19 and 2019-20)."
+      "$earningsYears, in $dollarYear dollars). Federal loan debt and monthly payment by field of study describe " +
+      "graduates who borrowed federal loans (students who finished in $debtYears)."
 
   private fun cohortParagraphsOf(body: String): List<String> =
     textOf(
@@ -395,7 +400,7 @@ class CostReportProgramReturnTest {
     val body = renderedReportOf(costProfile(listOf(lakeshore, eastbrook, wynnford), programReturn = answer))
 
     assertEquals(listOf(allCohorts), cohortParagraphsOf(body))
-    assertEquals(1, countOf(proseOf(reportSectionOf(body)), "2024 dollars"), "the cohort sentence is the only one that says it")
+    assertEquals(1, countOf(proseOf(reportSectionOf(body)), "$dollarYear dollars"), "the cohort sentence is the only one that says it")
     listOf("rank", "score", "rating", "award").forEach { word ->
       assertFalse(allCohorts.lowercase().contains(word), "[$word] in the kinds block")
     }
@@ -424,7 +429,7 @@ class CostReportProgramReturnTest {
     assertEquals(
       listOf(
         "Earnings by field of study describe graduates working four years after finishing (students who finished in " +
-          "2017-18 and 2018-19, in 2024 dollars).",
+          "$earningsYears, in $dollarYear dollars).",
       ),
       cohortParagraphsOf(body),
     )

@@ -5,6 +5,7 @@ import ed.unicoach.db.models.CipCode
 import ed.unicoach.db.models.CollegeId
 import ed.unicoach.db.models.FigureReading
 import ed.unicoach.db.models.MoneySource
+import ed.unicoach.db.models.ProgramMoneyDollars
 import ed.unicoach.db.models.ProgramMoneyMeasure
 import java.util.UUID
 
@@ -42,15 +43,15 @@ data class ProgramKey(
  *
  * [cohortFirstYear] and [cohortLastYear] are the first and last
  * academic year the publisher's cohort POOLS, each named by its start year, and
- * they are EQUAL when a figure pools nothing. They belong on the row because
- * they are what the figure is about; everything else the publisher says about
- * the variable -- which calendar years earnings were measured in, the inflation
- * base -- is a fact about the VARIABLE and lives once, in
- * `ScorecardFieldOfStudyColumns`, reached through [sourceVariable].
+ * they are EQUAL when a figure pools nothing. [dollars] closes the measure and
+ * the calendar year of the dollars in [reading] into one value, so the two
+ * cannot disagree. All of them belong on the row because they are what the
+ * figure is about.
  */
 data class NewProgramMoneyStat(
   val collegeProgramId: UUID,
-  val measure: ProgramMoneyMeasure,
+  /** The measure and the calendar year of its dollars, as ONE value (RFC 274): the invalid pairings do not compile. */
+  val dollars: ProgramMoneyDollars,
   /** The FIRST academic year the publisher's cohort pools, as its start year. */
   val cohortFirstYear: AcademicYear,
   /** The LAST academic year the publisher's cohort pools; never earlier than the first. */
@@ -95,7 +96,8 @@ data class ProgramReturnStat(
   val subjectSlug: String,
   /** The matched program's own CIP code, the publisher's grain and the answer's key. */
   val cipCode: CipCode,
-  val measure: ProgramMoneyMeasure,
+  /** The measure and the calendar year of its dollars, as ONE value (RFC 274): the invalid pairings do not compile. */
+  val dollars: ProgramMoneyDollars,
   /** The FIRST academic year the publisher's cohort pools, as its start year. */
   val cohortFirstYear: AcademicYear,
   /** The LAST academic year the publisher's cohort pools; never earlier than the first. */
@@ -106,6 +108,9 @@ data class ProgramReturnStat(
   /** The publisher's own variable name, the key into `ScorecardFieldOfStudyColumns`. */
   val sourceVariable: String,
 ) {
+  /** What the figure measures: [dollars]' own, read here because most readers want only this. */
+  val measure: ProgramMoneyMeasure get() = dollars.measure
+
   /**
    * WHICH matched program this row's figure is about -- the SAME value the
    * program read returns, so the two reads' answers are joined on one type
@@ -169,9 +174,7 @@ enum class ProgramMoneyStatColumn(
   SOURCE("source"),
   SOURCE_VARIABLE("source_variable"),
   AMOUNT_USD("amount_usd"),
-
-  /** The row's own cohort, which a registry re-pin can leave the registry's sentence not describing. */
-  COHORT_LAST_YEAR("cohort_last_year"),
+  AMOUNT_USD_YEAR("amount_usd_year"),
 }
 
 /** The table every refusal on this path addresses, in ONE spelling. */
@@ -235,3 +238,13 @@ fun programMoneyStatNaturalKey(
 ): String =
   "college_id=[${collegeId.value}] subject=[$subjectSlug] cip_code=[${cipCode.value}]" +
     (measure?.let { " measure=[${it.value}]" } ?: "")
+
+/**
+ * The cohort one stored `program_money_stats` row pools, as the back-date
+ * guard reads it (RFC 274): the first and last academic year, each by its start
+ * year.
+ */
+data class StoredProgramCohort(
+  val first: AcademicYear,
+  val last: AcademicYear,
+)

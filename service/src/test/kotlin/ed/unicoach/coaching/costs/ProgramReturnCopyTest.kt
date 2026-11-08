@@ -5,6 +5,7 @@ import ed.unicoach.coaching.costs.ProgramReturnCopy.ProgramRow
 import ed.unicoach.coaching.costs.ProgramReturnCopy.SubjectLayout
 import ed.unicoach.coaching.costs.canonical.FigureStatusCopy
 import ed.unicoach.college.ScorecardFieldOfStudyColumns
+import ed.unicoach.college.SeedScorecardDictionary
 import ed.unicoach.college.figureComparisonWordsIn
 import ed.unicoach.db.models.CipCode
 import ed.unicoach.db.models.CollegeId
@@ -15,13 +16,29 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertIs
+import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /** [ProgramReturnCopy] (RFC 251, glance/04): every figure arm, at every measure, has its own cell -- and says it without a comparison. */
 class ProgramReturnCopyTest {
-  private fun provenanceOf(variable: ScorecardFieldOfStudyColumns.FieldOfStudyVariable): ProgramFigureProvenance =
-    requireNotNull(ProgramFigureProvenance.ofAgreeingCohort(variable, variable.cohortFirstYear, variable.cohortLastYear))
+  private fun provenanceOf(variable: ScorecardFieldOfStudyColumns.FieldOfStudyVariable): ProgramFigureProvenance {
+    val cohort = SeedScorecardDictionary.dictionary.fieldOfStudyCohortOf(variable.sourceVariable)
+    return assertNotNull(ProgramFigureProvenance.ofOrNull(variable, cohort.first, cohort.last, SeedScorecardDictionary.dollarsOf(variable)))
+  }
+
+  @Test
+  fun `a provenance whose dollars name another measure than its variable cannot be built`() {
+    val cohort = SeedScorecardDictionary.dictionary.fieldOfStudyCohortOf(ScorecardFieldOfStudyColumns.DEBT.sourceVariable)
+    assertNull(
+      ProgramFigureProvenance.ofOrNull(
+        ScorecardFieldOfStudyColumns.DEBT,
+        cohort.first,
+        cohort.last,
+        SeedScorecardDictionary.dollarsOf(ScorecardFieldOfStudyColumns.EARNINGS),
+      ),
+    )
+  }
 
   private fun everyArmOf(variable: ScorecardFieldOfStudyColumns.FieldOfStudyVariable): List<ProgramReturnFigure> {
     val provenance = provenanceOf(variable)
@@ -137,17 +154,18 @@ class ProgramReturnCopyTest {
   @Test
   fun `a figure with a number reaches the cohort sentence with its own cohort, and only earnings names a dollar year`() {
     ScorecardFieldOfStudyColumns.VARIABLES.forEach { variable ->
-      val figure = ProgramReturnFigure.Reported(1234, provenanceOf(variable))
+      val provenance = provenanceOf(variable)
+      val figure = ProgramReturnFigure.Reported(1234, provenance)
       val sentence = requireNotNull(ProgramReturnCopy.cohortsSentenceOf(listOf(collegeOf(programOf("Biology, General.", figure)))))
 
       assertTrue(
-        sentence.contains(variable.cohortFirstYear.label) && sentence.contains(variable.cohortLastYear.label),
+        sentence.contains(provenance.cohortFirstYear.label) && sentence.contains(provenance.cohortLastYear.label),
         "[${variable.sourceVariable}] does not name its cohort: [$sentence]",
       )
       assertEquals(
-        variable.inflationBaseYear != null,
+        provenance.amountUsdYear != null,
         sentence.contains(" dollars)"),
-        "[${variable.sourceVariable}] dollar base disagrees with the registry: [$sentence]",
+        "[${variable.sourceVariable}] says a dollar year its provenance does not carry: [$sentence]",
       )
       assertEquals(emptyList(), figureComparisonWordsIn(sentence), "[$sentence] compares a figure with another")
     }
@@ -155,6 +173,11 @@ class ProgramReturnCopyTest {
 
   @Test
   fun `measures sharing a population and a cohort are one clause, in registry order`() {
+    val earnings = provenanceOf(ScorecardFieldOfStudyColumns.EARNINGS)
+    val debt = provenanceOf(ScorecardFieldOfStudyColumns.DEBT)
+    val earningsYears = "${earnings.cohortFirstYear.label} and ${earnings.cohortLastYear.label}"
+    val debtYears = "${debt.cohortFirstYear.label} and ${debt.cohortLastYear.label}"
+    val dollars = assertNotNull(earnings.amountUsdYear).year
     val program =
       programOf(
         "Biology, General.",
@@ -165,8 +188,8 @@ class ProgramReturnCopyTest {
 
     assertEquals(
       "Earnings by field of study describe graduates working four years after finishing (students who finished in " +
-        "2017-18 and 2018-19, in 2024 dollars). Federal loan debt and monthly payment by field of study describe " +
-        "graduates who borrowed federal loans (students who finished in 2018-19 and 2019-20).",
+        "$earningsYears, in $dollars dollars). Federal loan debt and monthly payment by field of study describe " +
+        "graduates who borrowed federal loans (students who finished in $debtYears).",
       ProgramReturnCopy.cohortsSentenceOf(listOf(collegeOf(program))),
     )
   }

@@ -31,7 +31,9 @@ class CanonicalMoneyIpedsTest : CollegeScorecardTestBase() {
   private val aliasesJson = fixture("college-aliases-fixture.json")
 
   private fun ingest(ipeds: IpedsSources? = ipedsCorpusSources()): CollegeScorecardLoader.IngestReport =
-    runBlocking { loader.ingest(source(institutionCsv), source(fieldsCsv), source(aliasesJson), ipeds) }
+    runBlocking {
+      loader.ingest(source(institutionCsv), source(fieldsCsv), source(aliasesJson), ipeds, dictionary = SeedScorecardDictionary.sources)
+    }
 
   /**
    * [CollegeScorecardTestBase.figure] at the IC_AY fixture's OWN survey year,
@@ -76,7 +78,7 @@ class CanonicalMoneyIpedsTest : CollegeScorecardTestBase() {
     // 2,550 as its in-state price. The cell is now REFUSED at the write seam
     // instead, so the same fact holds for a reason that survives the year
     // being right: 2,550 exists ONLY under in_district.
-    val scorecardYear = CanonicalMoneyLoader.PUBLISHED_PRICE_YEAR
+    val scorecardYear = SeedScorecardYears.PUBLISHED_CHARGE
     assertNull(
       figure(222992, "tuition_and_fees", "in_state", academicYear = scorecardYear),
       "no in_state tuition row may exist at the Scorecard's year for a college whose tiers really differ",
@@ -152,7 +154,7 @@ class CanonicalMoneyIpedsTest : CollegeScorecardTestBase() {
 
     val scorecard =
       assertNotNull(
-        figure(110680, "tuition_and_fees", "in_state", academicYear = CanonicalMoneyLoader.PUBLISHED_PRICE_YEAR),
+        figure(110680, "tuition_and_fees", "in_state", academicYear = SeedScorecardYears.PUBLISHED_CHARGE),
       )
     assertEquals(MoneySource.SCORECARD.value, scorecard.source)
     assertEquals("TUITIONFEE_IN", scorecard.sourceVariable)
@@ -166,7 +168,7 @@ class CanonicalMoneyIpedsTest : CollegeScorecardTestBase() {
     // remainder IC_AY does not cover. Upstream-wins must not delete it.
     val row =
       assertNotNull(
-        figure(10236801, "tuition_and_fees", "in_state", academicYear = CanonicalMoneyLoader.PUBLISHED_PRICE_YEAR),
+        figure(10236801, "tuition_and_fees", "in_state", academicYear = SeedScorecardYears.PUBLISHED_CHARGE),
       )
     assertEquals(MoneySource.SCORECARD.value, row.source)
     assertEquals("TUITIONFEE_IN", row.sourceVariable)
@@ -209,12 +211,12 @@ class CanonicalMoneyIpedsTest : CollegeScorecardTestBase() {
       query("SELECT DISTINCT source FROM price_figures") { it.getString(1) },
     )
     assertEquals(
-      listOf(CanonicalMoneyLoader.PUBLISHED_PRICE_YEAR),
+      listOf(SeedScorecardYears.PUBLISHED_CHARGE),
       query("SELECT DISTINCT academic_year FROM price_figures") { AcademicYear(it.getInt(1)) },
     )
     assertEquals(mapOf(MoneySource.SCORECARD to result.priceFigureRows), result.priceFigureSourceCounts)
     assertNull(
-      figure(222992, "tuition_and_fees", "in_state", academicYear = CanonicalMoneyLoader.PUBLISHED_PRICE_YEAR),
+      figure(222992, "tuition_and_fees", "in_state", academicYear = SeedScorecardYears.PUBLISHED_CHARGE),
       "with no staged residency evidence the Scorecard's single \"in\" cell is withheld, never guessed",
     )
     // Five, not four: RFC 183 added a fifth institution to the Scorecard
@@ -225,7 +227,7 @@ class CanonicalMoneyIpedsTest : CollegeScorecardTestBase() {
     // one cell rather than the whole college.
     val outOfState =
       assertNotNull(
-        figure(222992, "tuition_and_fees", "out_of_state", academicYear = CanonicalMoneyLoader.PUBLISHED_PRICE_YEAR),
+        figure(222992, "tuition_and_fees", "out_of_state", academicYear = SeedScorecardYears.PUBLISHED_CHARGE),
       )
     assertEquals(10590, outOfState.amountUsd)
     assertEquals("TUITIONFEE_OUT", outOfState.sourceVariable)

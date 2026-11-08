@@ -1,21 +1,39 @@
 #!/usr/bin/env python3
 """fetch-scorecard: download the two College Scorecard CSVs bin/ingest-colleges takes as positionals.
 
-RFC 173. Discovers the current release on collegescorecard.ed.gov, downloads the
-institution-level and field-of-study archives of THAT release, extracts the one
-data member from each, and writes the members plus a manifest:
+RFC 173, RFC 274. Discovers the current release on collegescorecard.ed.gov,
+downloads the institution-level and field-of-study archives the publisher
+offers as "most recent", extracts the one data member from each, fetches the
+publisher's data dictionary workbook beside them, and writes:
 
     db/seed/scorecard/Most-Recent-Cohorts-Institution.csv     institution level
     db/seed/scorecard/Most-Recent-Cohorts-Field-of-Study.csv  field of study
-    db/seed/scorecard/PROVENANCE.json  release, url, fetched_at, bytes, sha256
-                                       per archive, plus the member taken, its
-                                       digest, its data-row count and the
-                                       bin/load-external-data POSITION it is
-                                       passed as
+    db/seed/scorecard/dictionary-institution-cohorts.csv      sheet Most_Recent_Inst_Cohort_Map
+    db/seed/scorecard/dictionary-institution-sources.csv      sheet Institution_Data_Dictionary
+    db/seed/scorecard/dictionary-field-of-study-cohorts.csv   sheet FieldOfStudy_Cohort_Map
+    db/seed/scorecard/CollegeScorecardDataDictionary.xlsx     the workbook itself
+    db/seed/scorecard/PROVENANCE.json  per archive: its release stamp, url,
+                                       fetched_at, bytes, sha256, the member
+                                       taken, its digest, its data-row count and
+                                       the bin/load-external-data POSITION it is
+                                       passed as; for the workbook: url,
+                                       fetched_at, bytes, sha256, its README
+                                       "Released ..." cell and, per written
+                                       sheet, the CSV's data-row count and digest
 
-The pair is fetched TOGETHER, from ONE release. bin/ingest-colleges cross-reads
-them by UNITID, so an institution file from one release beside a field-of-study
-file from another is a silent mismatch no header assertion can see.
+The dictionary is the ONE home of the period every Scorecard figure describes
+(RFC 274): the ingest reads the three CSVs and stamps each money and
+field-of-study row with the year the publisher states for its column. They are
+written cells VERBATIM, so a release that re-dates a variable shows in the diff
+of a committed file, never only in a served answer. The workbook is read here,
+with the standard library, so no spreadsheet reader joins the JVM.
+
+The two data files may carry DIFFERENT release stamps -- the publisher re-issues
+one without the other (institution 11022026 beside field of study 10152026 on
+2026-11-05) -- and the pair the /data/ page offers as "most recent" is fetched as
+offered. Each stamp is recorded on its own artifact, and a disagreement is a
+WARNING naming both, never a refusal: refusing it would stop every fetch until
+the publisher happened to re-stamp both files.
 
 The release stamp is DISCOVERED, not pinned, and that is this script's one
 departure from bin/fetch-ipeds (which pins SURVEY_YEAR and its archive
@@ -35,22 +53,25 @@ refuse. /downloads/ is itself a 404, so there is no directory listing: the stamp
 is read off the /data/ page, and the URL that is downloaded is the href that page
 served, never a string this script assembled.
 
-So: GET https://collegescorecard.ed.gov/data/, match the hrefs, require EXACTLY
-ONE match per artifact and require the two stamps to be EQUAL. Zero matches,
-several matches for one artifact, or two disagreeing stamps are FATAL -- that is
-a publisher change a human looks at, the same stance bin/fetch-ipeds takes on a
-member it cannot resolve. A run whose discovered stamp differs from the one
-PROVENANCE.json records LOGS the change and PROCEEDS: a new release is the whole
-point of the fetcher, so it is reported, never refused. The member-drift guard
-below is the one that refuses.
+So: GET https://collegescorecard.ed.gov/data/, match the hrefs, and require
+EXACTLY ONE match per artifact. Zero matches or several matches for one artifact
+are FATAL -- that is a publisher change a human looks at, the same stance
+bin/fetch-ipeds takes on a member it cannot resolve. A run whose discovered stamp
+differs from the one PROVENANCE.json records for that artifact LOGS the change
+and PROCEEDS: a new release is the whole point of the fetcher, so it is
+reported, never refused. The member-drift guard below is the one that refuses.
+
+The workbook's URL is unversioned and the publisher overwrites it, so it is
+discovered the same way: GET https://collegescorecard.ed.gov/data/data-documentation/
+and take the ONE href naming the workbook; zero or several are FATAL.
 
 The members are NOT committed: extracted they are ~100 MB and ~153 MB against a
 16 MB .git -- worse than the IPEDS members bin/fetch-ipeds already keeps out --
-so db/seed/scorecard/ is gitignored except for PROVENANCE.json and
-FETCH-NOTES.md. That manifest is the committed record of the real fetch AND the
-baseline the shrink guard below reads, which is why an offline (-F) replay is
-refused outright against a directory holding one that is not itself a fixture
-replay.
+so db/seed/scorecard/ is gitignored except for PROVENANCE.json, FETCH-NOTES.md,
+the workbook and its three CSVs. That manifest is the committed record of the
+real fetch AND the baseline the shrink guard below reads, which is why an
+offline (-F) replay is refused outright against a directory holding one that is
+not itself a fixture replay.
 
 The `fetched_at` CONTRACT, at both levels of the manifest (top level and per
 artifact), is part of that record:
@@ -92,8 +113,9 @@ Stdlib-only (dev-shell python3), no dependencies. Usage:
 
     -o DIR    extracted CSV + PROVENANCE.json directory
               (default: db/seed/scorecard under the repo root)
-    -F DIR    offline mode for tests: read the recorded /data/ page and the
-              recorded archives or CSVs from <dir> instead of downloading.
+    -F DIR    offline mode for tests: read the recorded /data/ page, the
+              recorded documentation page, the recorded archives or CSVs and
+              the recorded workbook from <dir> instead of downloading.
               REQUIRES an explicit -o: the recorded fixtures are a handful of
               rows while the committed manifest under the DEFAULT -o records the
               real release, so a replay into the default directory would either
@@ -126,8 +148,10 @@ The run REFUSES to write an artifact that resolved to a member with ZERO data
 rows, REFUSES a member whose header does not carry that artifact's identity
 columns, REFUSES when a data-row count collapsed against the count
 PROVENANCE.json recorded, and REFUSES when the resolved member NAME is not the
-one PROVENANCE.json recorded. Nothing is written until all of them pass, and the
-write itself is all-or-nothing across both extracted members AND the manifest.
+one PROVENANCE.json recorded. It REFUSES a workbook missing a sheet it
+reads, or a sheet missing a column it writes. Nothing is written until all of
+them pass, and the write itself is all-or-nothing across both extracted members,
+the three dictionary CSVs, the workbook AND the manifest.
 """
 
 import csv
@@ -138,7 +162,9 @@ import posixpath
 import re
 import shlex
 import sys
+import xml.etree.ElementTree as ElementTree
 import zipfile
+import zlib
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import NamedTuple
@@ -196,6 +222,49 @@ DATA_PAGE_URL = "https://collegescorecard.ed.gov/data/"
 # discovery below is exercised by the shell harness with no network at all.
 DATA_PAGE_FIXTURE = "scorecard-data-page-fixture.html"
 
+# The page that links the publisher's data dictionary workbook (RFC 274 D4). The
+# workbook's own URL is UNVERSIONED and overwritten in place, so it is read off
+# this page, never assembled: the URL downloaded is the href the page served,
+# resolved against the page's origin, exactly as the data hrefs are.
+DOCUMENTATION_PAGE_URL = "https://collegescorecard.ed.gov/data/data-documentation/"
+# The recorded stand-in an offline (-F) run reads that page from.
+DOCUMENTATION_PAGE_FIXTURE = "scorecard-documentation-page-fixture.html"
+
+
+class PageSource(NamedTuple):
+    """One publisher page this script scans for an href, read by read_page."""
+
+    url: str
+    fixture_name: str
+    # How a fixture message and a download failure each name the page.
+    fixture_label: str
+    http_label: str
+    # What the page is read to discover.
+    discovers: str
+
+
+# The /data/ page is the ONLY discovery surface for a release: /downloads/ is a
+# 404, so there is no listing to read.
+DATA_PAGE = PageSource(DATA_PAGE_URL, DATA_PAGE_FIXTURE, "release page", "data page", "the current release")
+DOCUMENTATION_PAGE = PageSource(
+    DOCUMENTATION_PAGE_URL,
+    DOCUMENTATION_PAGE_FIXTURE,
+    "documentation page",
+    "documentation page",
+    "the data dictionary",
+)
+
+# The workbook: its manifest key, the name it is WRITTEN under (the publisher's
+# own, so a reader of the seed directory can open it by the name the publisher
+# links), and the recorded stand-in an offline replay accepts beside that name.
+WORKBOOK_ARTIFACT = "CollegeScorecardDataDictionary"
+WORKBOOK_OUTPUT_NAME = f"{WORKBOOK_ARTIFACT}.xlsx"
+WORKBOOK_FIXTURE = "scorecard-data-dictionary-fixture.xlsx"
+# The ONE href shape the documentation page serves for it: site-relative, under
+# /files/, and ending at the closing quote -- a longer token is a publisher
+# change, not a URL to truncate (RELEASE_HREF_PATTERN states the same rule).
+WORKBOOK_HREF_PATTERN = re.compile(r'href="(/files/' + re.escape(WORKBOOK_OUTPUT_NAME) + r')"')
+
 MANIFEST_NAME = "PROVENANCE.json"
 
 # The manifest's `source` vocabulary, named once. It is a PERSISTED guard
@@ -229,9 +298,9 @@ class Artifact(NamedTuple):
     bin/fetch-ipeds and bin/fetch-cds-seed already state this house rule.
 
     url_name is BOTH the manifest key and the artifact half of the discovered
-    URL. It carries no release stamp, deliberately: the stamp belongs to the
-    RELEASE (one for the pair), not to either file, and it is discovered rather
-    than declared.
+    URL. It carries no release stamp, deliberately: the stamp is the
+    publisher's, discovered off the /data/ page per artifact and recorded on
+    that artifact (RFC 274 D3), never declared here.
 
     ingest_position is which POSITIONAL of bin/load-external-data /
     bin/ingest-colleges the written file becomes -- 1 is <institution.csv>, 2 is
@@ -351,10 +420,10 @@ def decode(body, filename):
 # ---------------------------------------------------------------------------
 
 
-def read_data_page(fixtures):
-    """(page text, origin): the /data/ page downloaded, or read from the
-    recorded fixture when this is an offline (-F) replay, named by what was
-    actually read.
+def read_page(fixtures, page):
+    """(page text, origin): `page` downloaded, or read from its recorded
+    fixture when this is an offline (-F) replay, named by what was actually
+    read.
 
     The origin is RETURNED rather than re-derived by the caller: it is the label
     every discovery refusal below carries, and a second branch deciding it could
@@ -366,15 +435,15 @@ def read_data_page(fixtures):
 
     This SELECTS a route; the two readers below perform it, and the decode is
     stated once rather than per branch."""
-    body, origin = read_page_fixture(fixtures) if fixtures is not None else download_data_page()
+    body, origin = read_page_fixture(fixtures, page) if fixtures is not None else download_page(page)
     return decode_page(body, origin), origin
 
 
-def read_page_fixture(fixtures):
+def read_page_fixture(fixtures, page):
     """(page bytes, origin) from the recorded page, matched by its EXACT
     declared name, like every other fixture here."""
-    path = fixtures / DATA_PAGE_FIXTURE
-    log_info(f"Reading the release page fixture [{path}]")
+    path = fixtures / page.fixture_name
+    log_info(f"Reading the {page.fixture_label} fixture [{path}]")
     try:
         return path.read_bytes(), str(path)
     except FileNotFoundError as error:
@@ -383,18 +452,16 @@ def read_page_fixture(fixtures):
         # link's TARGET, and "no fixture in this directory" is a claim about the
         # directory that `ls` would then contradict.
         fatal(
-            f"no release page fixture [{DATA_PAGE_FIXTURE}] in [{fixtures}] "
-            f"([{type(error).__name__}] [{error}]); an offline replay discovers the release "
-            f"from the recorded page exactly as a network run discovers it from "
-            f"[{DATA_PAGE_URL}]"
+            f"no {page.fixture_label} fixture [{page.fixture_name}] in [{fixtures}] "
+            f"([{type(error).__name__}] [{error}]); an offline replay discovers {page.discovers} "
+            f"from the recorded page exactly as a network run does from [{page.url}]"
         )
 
 
-def download_data_page():
-    """(page bytes, origin) from the live page, the ONLY discovery surface:
-    /downloads/ is a 404, so there is no listing to read."""
-    log_info(f"Discovering the current release from [{DATA_PAGE_URL}]")
-    return http_get(DATA_PAGE_URL, "data page"), DATA_PAGE_URL
+def download_page(page):
+    """(page bytes, origin) from the live page."""
+    log_info(f"Discovering {page.discovers} from [{page.url}]")
+    return http_get(page.url, page.http_label), page.url
 
 
 def decode_page(body, origin):
@@ -505,35 +572,35 @@ def require_one_download_each(downloads, origin, page):
         )
 
 
-def require_one_release(downloads, origin):
-    """The ONE release stamp both artifacts are offered from.
+def report_release_stamps(stamps, origin):
+    """WARNS when the two artifacts are offered under different release stamps
+    -- and PROCEEDS (RFC 274 D3).
 
-    Reached only AFTER require_one_download_each: that refusal is what makes
-    downloads[artifact.url_name][0] safe here, since it has already established
-    that every artifact has exactly one match. Called out of that order this
-    raises KeyError instead of refusing.
+    The publisher re-issues one file without the other: on 2026-11-05 the
+    /data/ page offered the institution file stamped 11022026 beside the
+    field-of-study file stamped 10152026, and that pair IS the publisher's own
+    "most recent". This used to be a refusal, on the ground that the ingest
+    cross-reads the two by UNITID; but the field-of-study phase already counts
+    and skips a row whose UNITID names no college, and refusing the pair the
+    publisher offers means never fetching again until it happens to re-stamp
+    both. So each stamp is recorded on its own artifact, and a difference is
+    said out loud, naming both.
 
-    bin/ingest-colleges cross-reads the two files by UNITID, so a pair taken
-    from two releases loads without error and is wrong. The stamp is never
-    parsed as a date: it is an opaque identity compared for equality, and
-    reading it as a date would invite a fetcher that reasons about which release
-    is newer."""
-    stamps = {artifact.url_name: downloads[artifact.url_name][0].stamp for artifact in ARTIFACTS}
+    The stamp is never parsed as a date: it is an opaque identity, and reading it
+    as a date would invite a fetcher that reasons about which release is newer."""
     if len(set(stamps.values())) > 1:
-        fatal(
-            "the release stamps disagree ("
+        log_warning(
+            "the two files carry different release stamps ("
             + ", ".join(f"[{name}] is [{stamp}]" for name, stamp in stamps.items())
-            + f"): [{origin}] is offering the two files from different releases, and "
-            f"bin/ingest-colleges cross-reads them by UNITID, so a mismatched pair loads "
-            f"without error and is wrong. Both halves come from ONE release or neither does"
+            + f"): [{origin}] offers them as its most recent pair, so both are fetched and "
+            f"each stamp is recorded on its own artifact in [{MANIFEST_NAME}]"
         )
-    return next(iter(stamps.values()))
 
 
 def discover_release(page, origin):
-    """(release, {url_name: url}) read off the /data/ page: matched, refused if
-    the page does not offer exactly one download per artifact from one release,
-    then reported.
+    """({url_name: stamp}, {url_name: url}) read off the /data/ page: matched,
+    refused if the page does not offer exactly one download per artifact, then
+    reported.
 
     Both halves come from the SAME regex match: the URL that is downloaded is
     the href the publisher served, and the release stamp is the group inside it.
@@ -542,18 +609,20 @@ def discover_release(page, origin):
     ability to build a URL is the ability to build that one."""
     downloads = find_release_hrefs(page)
     require_one_download_each(downloads, origin, page)
-    release = require_one_release(downloads, origin)
     # Indexed, not .get(): require_one_download_each above has already refused a
     # page offering zero or several downloads for an artifact, so exactly one
     # match per url_name exists by this line.
+    stamps = {artifact.url_name: downloads[artifact.url_name][0].stamp for artifact in ARTIFACTS}
     urls = {artifact.url_name: downloads[artifact.url_name][0].url for artifact in ARTIFACTS}
-    log_info(f"[{origin}] publishes release [{release}]")
-    return release, urls
+    for name, stamp in stamps.items():
+        log_info(f"[{origin}] publishes [{name}] release [{stamp}]")
+    report_release_stamps(stamps, origin)
+    return stamps, urls
 
 
-def report_release_change(outdir, previous, release, offline):
-    """Says so when the discovered release is not the one PROVENANCE.json
-    records -- and PROCEEDS.
+def report_release_change(outdir, previous, stamps, offline):
+    """Says so, per artifact, when a discovered release stamp is not the one
+    PROVENANCE.json records for that artifact -- and PROCEEDS.
 
     A new release is the whole POINT of this fetcher, so it is reported, never
     refused. That is the opposite stance from the member-drift guard below, and
@@ -570,19 +639,25 @@ def report_release_change(outdir, previous, release, offline):
     fixture's release with a published one. The route is taken as an argument --
     the way require_offline_outdir, require_matching_route, build_manifest and
     print_summary all take it -- rather than read out of a nulled `release`,
-    because `release` is exactly as real on a replay as on a fetch."""
+    because `release` is exactly as real on a replay as on a fetch.
+
+    Read per ARTIFACT, because each artifact records its own stamp (RFC 274
+    D3). A manifest that records none for an artifact reports it as moved from
+    [None]: the honest reading of a record that did not say."""
     if offline or previous is None:
         return
-    recorded = previous.get("release")
-    if recorded == release:
-        log_info(f"The release [{release}] is the one [{outdir / MANIFEST_NAME}] records")
-        return
-    log_info(
-        f"The release moved: [{release}] now, [{recorded}] recorded in "
-        f"[{outdir / MANIFEST_NAME}]. That is what this fetcher is for, so it proceeds -- the "
-        f"guards below still measure this release's members and row counts against the "
-        f"recorded ones"
-    )
+    recorded_stamps = get_baseline(previous, "release")
+    for name, stamp in stamps.items():
+        recorded = recorded_stamps.get(name)
+        if recorded == stamp:
+            log_info(f"[{name}] release [{stamp}] is the one [{outdir / MANIFEST_NAME}] records")
+            continue
+        log_info(
+            f"[{name}] release moved: [{stamp}] now, [{recorded}] recorded in "
+            f"[{outdir / MANIFEST_NAME}]. That is what this fetcher is for, so it proceeds -- the "
+            f"guards below still measure this release's members and row counts against the "
+            f"recorded ones"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -590,10 +665,10 @@ def report_release_change(outdir, previous, release, offline):
 # ---------------------------------------------------------------------------
 
 
-def find_fixture(fixtures, artifact, url):
-    """The one file in `fixtures` that stands in for `artifact`: either the
-    published archive under the name the discovered href carries, or the
-    recorded zip/CSV named in ARTIFACTS.
+def find_fixture(fixtures, label, published, recorded):
+    """The one file in `fixtures` that stands in for the download `label`: either
+    the published file under the name the discovered href carries (`published`),
+    or the recorded fixture named in this script's tables (`recorded`).
 
     Both are matched by EXACT name. A normalised substring search would be
     friendlier, but the fixture directory (college/src/test/resources) is shared
@@ -612,20 +687,16 @@ def find_fixture(fixtures, artifact, url):
     publisher's "<url_name>_<stamp>.zip" rule is declared once, by
     RELEASE_HREF_PATTERN, and re-typing it in a function body is how a rename
     splits the two."""
-    published = posixpath.basename(url)
     candidates = [
         path
-        for path in (fixtures / published, fixtures / artifact.fixture_name)
+        for path in (fixtures / published, fixtures / recorded)
         if path.is_file()
     ]
     if not candidates:
-        fatal(
-            f"no fixture for [{artifact.url_name}] in [{fixtures}]: expected [{published}] "
-            f"or [{artifact.fixture_name}]"
-        )
+        fatal(f"no fixture for [{label}] in [{fixtures}]: expected [{published}] or [{recorded}]")
     if len(candidates) > 1:
         fatal(
-            f"[{len(candidates)}] fixtures stand in for [{artifact.url_name}] in "
+            f"[{len(candidates)}] fixtures stand in for [{label}] in "
             f"[{fixtures}]: {bracketed(path.name for path in candidates)}"
         )
     return candidates[0]
@@ -785,11 +856,15 @@ class Source:
     it, and the bytes about to be written. A value: everything it reports is
     passed in or computed from the bytes, and nothing here can exit."""
 
-    def __init__(self, artifact, url, body, member, member_body, header, rows, fetched_at):
+    def __init__(self, artifact, url, release, body, member, member_body, header, rows, fetched_at):
         self.artifact = artifact
         self.url_name = artifact.url_name
         self.output_name = artifact.member_name
         self.url = url
+        # The stamp in THIS artifact's own URL, null on an offline replay: the
+        # two data files may be offered under different stamps (RFC 274 D3), so
+        # the stamp is a fact about the artifact, not about the pair.
+        self.release = release
         self.bytes = len(body)
         self.sha256 = hashlib.sha256(body).hexdigest()
         self.member = member
@@ -816,12 +891,12 @@ class Source:
         positionals are interchangeable to the shell and are not interchangeable
         to bin/ingest-colleges, and nothing downstream would report a swap.
 
-        The RELEASE is not repeated here. It belongs to the pair, is checked to
-        be one value for both artifacts before anything is downloaded, and is
-        recorded once at the top level; a per-artifact copy could only ever
-        disagree with it."""
+        The RELEASE is recorded HERE, per artifact (RFC 274 D3): the publisher
+        may offer the two files under different stamps, and one top-level value
+        claimed one stamp for a pair that does not have one."""
         return {
             "url": self.url,
+            "release": self.release,
             "fetched_at": self.fetched_at,
             "bytes": self.bytes,
             "sha256": self.sha256,
@@ -833,7 +908,7 @@ class Source:
         }
 
 
-def load_sources(fixtures, urls, fetched_at):
+def load_sources(fixtures, urls, releases, fetched_at):
     """{url_name -> Source} for both artifacts, downloaded from the DISCOVERED
     urls, or read from `fixtures` with no network at all. Nothing is written
     here: the CSVs land only once the header and the counts they carry have been
@@ -850,7 +925,12 @@ def load_sources(fixtures, urls, fetched_at):
         # captured log can be read back per artifact.
         step = f"[{index}/{len(ARTIFACTS)}]"
         if fixtures is not None:
-            path = find_fixture(fixtures, artifact, urls[artifact.url_name])
+            path = find_fixture(
+                fixtures,
+                artifact.url_name,
+                posixpath.basename(urls[artifact.url_name]),
+                artifact.fixture_name,
+            )
             log_info(f"{step} [{artifact.url_name}] reading fixture [{path}]")
             body = path.read_bytes()
             # None IS the fixture route: read_member and the manifest both read
@@ -877,6 +957,7 @@ def load_sources(fixtures, urls, fetched_at):
         sources[artifact.url_name] = Source(
             artifact,
             url,
+            releases[artifact.url_name],
             body,
             member,
             member_body,
@@ -885,6 +966,419 @@ def load_sources(fixtures, urls, fetched_at):
             fetched_at,
         )
     return sources
+
+
+# ---------------------------------------------------------------------------
+# The data dictionary workbook (RFC 274)
+# ---------------------------------------------------------------------------
+
+
+class DictionarySheet(NamedTuple):
+    """One workbook sheet this script writes as a CSV, by NAME.
+
+    `required_columns` are the header names the sheet must carry, each exactly
+    once, or the fetch refuses naming the sheet and the column: the ingest reads
+    these columns by name, so a renamed one is a publisher change a human looks
+    at before anything is written. `written_columns` is what lands, in that
+    order -- None writes every header column, verbatim. `variable_column` names
+    the column a row is keyed by, for the cell-change report and for
+    `drop_rows_without_variable`, which only the sources sheet sets: its rows
+    with an empty variable name are the enumeration VALUES of the variable above
+    them, a description of values rather than of a variable."""
+
+    output_name: str
+    sheet: str
+    required_columns: tuple[str, ...]
+    written_columns: tuple[str, ...] | None
+    variable_column: str
+    drop_rows_without_variable: bool
+
+
+# The three sheets the ingest reads, as CSV, cells VERBATIM. The column names are
+# the publisher's own headers; the Kotlin reader (ScorecardDictionary) names the
+# same headers, because both read the publisher's file, not each other.
+SOURCES_COLUMNS = ("VARIABLE NAME", "SOURCE", "NAME OF DATA ELEMENT", "NOTES")
+FIELD_OF_STUDY_COLUMNS = ("Variable Name", "FieldOfStudyMostRecent datafile")
+DICTIONARY_SHEETS = (
+    DictionarySheet(
+        "dictionary-institution-cohorts.csv",
+        "Most_Recent_Inst_Cohort_Map",
+        ("variable", 'Cohort/Measure in "Most Recent" Datafile'),
+        None,
+        "variable",
+        False,
+    ),
+    DictionarySheet(
+        "dictionary-institution-sources.csv",
+        "Institution_Data_Dictionary",
+        SOURCES_COLUMNS,
+        SOURCES_COLUMNS,
+        "VARIABLE NAME",
+        True,
+    ),
+    DictionarySheet(
+        "dictionary-field-of-study-cohorts.csv",
+        "FieldOfStudy_Cohort_Map",
+        FIELD_OF_STUDY_COLUMNS,
+        FIELD_OF_STUDY_COLUMNS,
+        "Variable Name",
+        False,
+    ),
+)
+
+# The sheet whose column A carries the publisher's "Released <date>" line. Prose,
+# not a contract: found by prefix, and its absence is a warning, never a refusal.
+README_SHEET = "README"
+RELEASED_PREFIX = "Released"
+
+# Every sheet read. A workbook missing any of them is refused naming it.
+WORKBOOK_SHEETS = tuple(spec.sheet for spec in DICTIONARY_SHEETS) + (README_SHEET,)
+
+# How many variable names the cell-change report prints per list. Information
+# only, and one line per sheet: a new release re-dates a few dozen variables,
+# and the CSV diff is where the whole list lives.
+CHANGED_VARIABLES_PREVIEW = 20
+
+# SpreadsheetML's two namespaces this reader touches, and the package
+# relationships namespace workbook.xml.rels is written in.
+XLSX_MAIN = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
+XLSX_RELATIONSHIPS = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+XLSX_PACKAGE_RELATIONSHIPS = "http://schemas.openxmlformats.org/package/2006/relationships"
+XLSX_NS = {"m": XLSX_MAIN, "pr": XLSX_PACKAGE_RELATIONSHIPS}
+CELL_REFERENCE = re.compile(r"([A-Z]+)\d*")
+
+
+def discover_workbook_url(page, origin):
+    """The workbook's URL: the ONE href the documentation page serves for it,
+    resolved against the page's origin. Zero or several are a refusal, on
+    require_one_download_each's terms -- a publisher change a human reads."""
+    hrefs = WORKBOOK_HREF_PATTERN.findall(page)
+    if len(hrefs) != 1:
+        fatal(
+            f"[{origin}] names [{len(hrefs)}] links to the data dictionary workbook "
+            f"(pattern [{WORKBOOK_HREF_PATTERN.pattern}]), expected exactly one; the page read "
+            f"was [{len(page)}] characters and begins [{page_preview(page)}]. Which file is the "
+            f"dictionary is a reading of the page this script does not make"
+        )
+    url = f"{site_origin(DOCUMENTATION_PAGE_URL)}{hrefs[0]}"
+    log_info(f"[{origin}] links the data dictionary at [{url}]")
+    return url
+
+
+def site_origin(url):
+    """`https://host` of an absolute URL: the base a site-relative href resolves
+    against. Taken from the page URL this script declares, never from a header."""
+    scheme, _, rest = url.partition("://")
+    return f"{scheme}://{rest.split('/', 1)[0]}"
+
+
+def read_workbook_body(fixtures, url):
+    """(workbook bytes, origin): downloaded from the discovered url, or, offline,
+    the one fixture standing in for it."""
+    if fixtures is None:
+        log_info(f"Downloading the data dictionary [{url}]")
+        return http_get(url, WORKBOOK_ARTIFACT), posixpath.basename(url)
+    path = find_fixture(fixtures, WORKBOOK_ARTIFACT, posixpath.basename(url), WORKBOOK_FIXTURE)
+    log_info(f"Reading the data dictionary fixture [{path}]")
+    return path.read_bytes(), path.name
+
+
+def string_item_text(item):
+    """The text of one shared-string or inline-string item: its own <t>, or the
+    <t> of each rich-text run in order. Phonetic hints (<rPh>) are NOT text the
+    publisher wrote into the cell, so they are skipped rather than concatenated."""
+    parts = []
+    for child in item:
+        if child.tag == f"{{{XLSX_MAIN}}}t":
+            parts.append(child.text or "")
+        elif child.tag == f"{{{XLSX_MAIN}}}r":
+            parts.extend(run.text or "" for run in child.findall("m:t", XLSX_NS))
+    return "".join(parts)
+
+
+def column_index(reference):
+    """0-based column of a cell reference (`C12` -> 2)."""
+    letters = CELL_REFERENCE.fullmatch(reference).group(1)
+    index = 0
+    for letter in letters:
+        index = index * 26 + ord(letter) - ord("A") + 1
+    return index - 1
+
+
+def cell_text(cell, shared):
+    """One cell as text, verbatim: a shared or inline string resolved, any other
+    value (a number, a boolean, a formula's cached string) as the text the file
+    stores. An empty cell is the empty string."""
+    kind = cell.get("t")
+    if kind == "inlineStr":
+        inline = cell.find("m:is", XLSX_NS)
+        return "" if inline is None else string_item_text(inline)
+    value = cell.find("m:v", XLSX_NS)
+    if value is None or value.text is None:
+        return ""
+    return shared[int(value.text)] if kind == "s" else value.text
+
+
+def sheet_rows(archive, path, shared):
+    """Every row of one worksheet, as a list of cell texts placed by column. A
+    cell carrying no reference takes the next column, as the format allows."""
+    rows = []
+    for row in ElementTree.fromstring(archive.read(path)).iter(f"{{{XLSX_MAIN}}}row"):
+        cells = {}
+        position = 0
+        for cell in row.findall("m:c", XLSX_NS):
+            reference = cell.get("r")
+            position = column_index(reference) if reference else position
+            cells[position] = cell_text(cell, shared)
+            position += 1
+        rows.append([cells.get(index, "") for index in range(max(cells) + 1)] if cells else [])
+    return rows
+
+
+def sheet_paths(archive, origin):
+    """{sheet name: archive path} from workbook.xml and its relationships. A
+    target is relative to xl/ unless it is written absolute. A workbook.xml with
+    no <sheets> element is refused by name."""
+    targets = {
+        relationship.get("Id"): relationship.get("Target")
+        for relationship in ElementTree.fromstring(archive.read("xl/_rels/workbook.xml.rels")).findall(
+            "pr:Relationship", XLSX_NS
+        )
+    }
+    sheets = ElementTree.fromstring(archive.read("xl/workbook.xml")).find("m:sheets", XLSX_NS)
+    if sheets is None:
+        fatal(f"[{origin}] xl/workbook.xml has no <sheets> element; the file is not the SpreadsheetML workbook this script reads")
+    paths = {}
+    for sheet in sheets:
+        target = targets[sheet.get(f"{{{XLSX_RELATIONSHIPS}}}id")]
+        paths[sheet.get("name")] = target.lstrip("/") if target.startswith("/") else f"xl/{target}"
+    return paths
+
+
+def shared_strings(archive):
+    """The workbook's shared-string table; a workbook with none has an empty one."""
+    if "xl/sharedStrings.xml" not in archive.namelist():
+        return []
+    root = ElementTree.fromstring(archive.read("xl/sharedStrings.xml"))
+    return [string_item_text(item) for item in root.findall("m:si", XLSX_NS)]
+
+
+def require_sheets(paths, origin):
+    """Refuses a workbook that lacks a sheet in WORKBOOK_SHEETS, naming it and the
+    sheets that are there."""
+    missing = [name for name in WORKBOOK_SHEETS if name not in paths]
+    if missing:
+        fatal(
+            f"[{origin}] has no sheet {bracketed(missing)}; its sheets are "
+            f"{bracketed(paths)}. The ingest reads the period of every Scorecard figure "
+            f"from these sheets, so a renamed sheet is a publisher change a human reads"
+        )
+
+
+def read_workbook(body, origin):
+    """{sheet name: rows} for exactly WORKBOOK_SHEETS, read with the standard
+    library: an .xlsx is a zip of XML, and the three sheets the ingest reads need
+    nothing more (RFC 274 D1).
+
+    A sheet the workbook does not carry is a refusal naming it AND listing the
+    sheets that are there, because "renamed" and "not the dictionary at all" are
+    told apart by that list. A workbook that will not open or parse is a refusal
+    through this script's channel, never a traceback."""
+    try:
+        with zipfile.ZipFile(io.BytesIO(body)) as archive:
+            paths = sheet_paths(archive, origin)
+            require_sheets(paths, origin)
+            shared = shared_strings(archive)
+            return {name: sheet_rows(archive, paths[name], shared) for name in WORKBOOK_SHEETS}
+    except (
+        zipfile.BadZipFile,
+        zlib.error,
+        EOFError,
+        KeyError,
+        IndexError,
+        ValueError,
+        AttributeError,
+        ElementTree.ParseError,
+    ) as error:
+        fatal(
+            f"[{origin}] ([{len(body)}] bytes) could not be read as the data dictionary workbook: "
+            f"[{type(error).__name__}] [{error}]. A truncated download is the usual cause -- re-run "
+            f"the fetch; a workbook that is not SpreadsheetML is a publisher change and needs a look"
+        )
+
+
+def trimmed(cells):
+    """[cells] with trailing empty cells dropped: a sheet's header is as wide as
+    its last NAMED column, whatever styling widened the row past it."""
+    end = len(cells)
+    while end and cells[end - 1] == "":
+        end -= 1
+    return cells[:end]
+
+
+class WrittenSheet(NamedTuple):
+    """One dictionary CSV as it will land: its spec, its bytes and its data-row
+    count -- the facts the manifest records and the change report reads."""
+
+    spec: DictionarySheet
+    body: bytes
+    rows: int
+
+
+def require_header_columns(spec, header, origin):
+    """Refuses a header that lacks a required column, or carries one twice --
+    which of two same-named columns the ingest means is not a guess -- naming
+    the sheet and the column."""
+    wrong = sorted(
+        f"[{column}] appears [{header.count(column)}] times" for column in spec.required_columns if header.count(column) != 1
+    )
+    if wrong:
+        fatal(
+            f"[{origin}] sheet [{spec.sheet}]: {', '.join(wrong)}, expected exactly once; its header "
+            f"is {', '.join(f'[{name}]' for name in header)}. The ingest reads these columns by name"
+        )
+
+
+def render_sheet_csv(spec, header, data_rows):
+    """(CSV text, data-row count) for one sheet: the header's named columns (or
+    all of them), every row that is not blank, cells VERBATIM."""
+    columns = list(spec.written_columns) if spec.written_columns is not None else header
+    indexes = [header.index(column) for column in columns]
+    variable_at = header.index(spec.variable_column)
+    text = io.StringIO()
+    # "\n", not csv's default "\r\n": the file is committed and diffed, and a
+    # CRLF file is one more thing a reviewer's tooling disagrees about.
+    writer = csv.writer(text, quoting=csv.QUOTE_MINIMAL, lineterminator="\n")
+    writer.writerow(columns)
+    count = 0
+    for row in data_rows:
+        cells = [row[index] if index < len(row) else "" for index in indexes]
+        variable = row[variable_at] if variable_at < len(row) else ""
+        if not any(cells) or (spec.drop_rows_without_variable and not variable):
+            continue
+        writer.writerow(cells)
+        count += 1
+    return text.getvalue(), count
+
+
+def extract_sheet(spec, rows, origin):
+    """One sheet as the CSV this script writes. Refuses a header that is not the
+    one the ingest reads, and a sheet with no data rows: an empty sheet dates
+    nothing, and writing it would fail every served variable at ingest with a
+    fault that points at the wrong file."""
+    header = trimmed(rows[0]) if rows else []
+    require_header_columns(spec, header, origin)
+    body, count = render_sheet_csv(spec, header, rows[1:])
+    if count == 0:
+        fatal(f"[{origin}] sheet [{spec.sheet}] holds a header and no rows; it dates nothing")
+    return WrittenSheet(spec, body.encode("utf-8"), count)
+
+
+def find_released(rows):
+    """The README's "Released <date>" cell, verbatim, or None. Column A, by
+    prefix: the line is prose the publisher writes for people, not a field."""
+    for row in rows:
+        if row and row[0].startswith(RELEASED_PREFIX):
+            return row[0]
+    return None
+
+
+class Workbook:
+    """The data dictionary as fetched: the workbook's own facts and the sheets
+    written from it. A value; nothing here can exit."""
+
+    def __init__(self, url, body, released, sheets, fetched_at):
+        self.url = url
+        self.body = body
+        self.bytes = len(body)
+        self.sha256 = hashlib.sha256(body).hexdigest()
+        self.released = released
+        self.sheets = sheets
+        self.fetched_at = fetched_at
+
+    def as_json(self):
+        """The recorded fact sheet for the workbook (RFC 274 D4). `released` is
+        the README's cell verbatim -- the publisher's own date, not the stamp in
+        any URL -- and each written sheet carries the digest the Kotlin pin
+        tests compare the committed CSV against."""
+        return {
+            "url": self.url,
+            "fetched_at": self.fetched_at,
+            "bytes": self.bytes,
+            "sha256": self.sha256,
+            "released": self.released,
+            "sheets": {
+                sheet.spec.output_name: {
+                    "sheet": sheet.spec.sheet,
+                    "rows": sheet.rows,
+                    "sha256": hashlib.sha256(sheet.body).hexdigest(),
+                }
+                for sheet in self.sheets
+            },
+        }
+
+
+def load_workbook(fixtures, fetched_at):
+    """The data dictionary: discovered, downloaded (or read from the fixture),
+    parsed and extracted -- everything a refusal can find, before anything is
+    written."""
+    page, origin = read_page(fixtures, DOCUMENTATION_PAGE)
+    url = discover_workbook_url(page, origin)
+    body, body_origin = read_workbook_body(fixtures, url)
+    sheets = read_workbook(body, body_origin)
+    written = [extract_sheet(spec, sheets[spec.sheet], body_origin) for spec in DICTIONARY_SHEETS]
+    released = find_released(sheets[README_SHEET])
+    if released is None:
+        log_warning(
+            f"[{body_origin}] sheet [{README_SHEET}] has no [{RELEASED_PREFIX} ...] line in column A; "
+            f"[released] is recorded null"
+        )
+    for sheet in written:
+        log_info(f"[{WORKBOOK_ARTIFACT}] sheet [{sheet.spec.sheet}] -> [{sheet.spec.output_name}] [{sheet.rows}] rows")
+    # The fixture route records no URL, as every artifact on it does.
+    return Workbook(None if fixtures is not None else url, body, released, written, fetched_at)
+
+
+def rows_by_variable(body, variable_column):
+    """{variable: row} of one written dictionary CSV, for the change report."""
+    reader = csv.DictReader(io.StringIO(body.decode("utf-8"), newline=""))
+    return {row[variable_column]: row for row in reader}
+
+
+def preview(names):
+    """Up to CHANGED_VARIABLES_PREVIEW names, bracketed, and how many more."""
+    shown = bracketed(names[:CHANGED_VARIABLES_PREVIEW])
+    more = len(names) - CHANGED_VARIABLES_PREVIEW
+    return f"{shown} and [{more}] more" if more > 0 else shown
+
+
+def report_sheet_changes(outdir, workbook):
+    """Per written CSV with a predecessor in `outdir`: how many variables' cells
+    changed, how many were added and removed, and the first names of each, on
+    stderr (RFC 274 D7). INFORMATION ONLY -- a new release is the point -- and
+    the line an operator reads to see what the release re-dated before the diff.
+
+    A predecessor this cannot read is said and skipped: it is about to be
+    replaced, and its damage is not a reason to refuse the replacement."""
+    for sheet in workbook.sheets:
+        path = outdir / sheet.spec.output_name
+        try:
+            before = rows_by_variable(path.read_bytes(), sheet.spec.variable_column)
+        except FileNotFoundError:
+            log_info(f"[{sheet.spec.output_name}] has no predecessor in [{outdir}]")
+            continue
+        except (OSError, UnicodeDecodeError, csv.Error, KeyError) as error:
+            log_warning(f"[{path}] could not be compared: [{type(error).__name__}] [{error}]")
+            continue
+        after = rows_by_variable(sheet.body, sheet.spec.variable_column)
+        changed = sorted(name for name in before.keys() & after.keys() if before[name] != after[name])
+        added = sorted(after.keys() - before.keys())
+        removed = sorted(before.keys() - after.keys())
+        log_info(
+            f"[{sheet.spec.output_name}] against [{path}]: [{len(changed)}] variable(s) changed "
+            f"{preview(changed)}; [{len(added)}] added {preview(added)}; [{len(removed)}] removed "
+            f"{preview(removed)}"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -1400,7 +1894,7 @@ def require_offline_outdir(outdir, previous, offline):
 # ---------------------------------------------------------------------------
 
 
-def build_manifest(sources, offline, release, fetched_at):
+def build_manifest(sources, workbook, offline, fetched_at):
     """The manifest: which release it is, when and from where each archive came,
     its size and digest, which member was taken out of it, that member's digest
     as written, the data-row count the shrink guard reads next time, and the
@@ -1413,35 +1907,35 @@ def build_manifest(sources, offline, release, fetched_at):
 
     Where an offline run DOES write one -- a fresh output directory, which is
     what the shell harness uses -- it is marked unmistakably: fixture_derived
-    true, source "fixtures", every fetched_at null, and release null. `offline`
-    is the ONE input that decides source and fixture_derived, and `release` is
-    the value main derived from that same flag ONCE and handed to every consumer
-    that reports what this run got, so the manifest and the summary line cannot
-    disagree about it. `fetched_at` is likewise the caller's single timestamp,
-    stamped identically at both levels: asking the clock again here would make
-    the top-level field later than every artifact by the whole download.
+    true, source "fixtures", every fetched_at null, and every release null.
+    `offline` is the ONE input that decides source and fixture_derived; the
+    per-artifact releases were derived from that same flag ONCE in main, so the
+    manifest and the summary line cannot disagree about them. `fetched_at` is
+    likewise the caller's single timestamp, stamped identically at both levels:
+    asking the clock again here would make the top-level field later than every
+    artifact by the whole download.
 
-    The RELEASE is top level because it is a property of the PAIR: discovery has
-    already refused two artifacts whose stamps disagree, so one recorded value
-    cannot contradict the files beside it. It is the only version identity the
-    publisher gives these files -- there is no survey year here -- and recording
-    it is what lets the next run say the release moved instead of silently
-    fetching a different one."""
+    There is no top-level release (RFC 274 D3): each data artifact records the
+    stamp in its own URL, because the publisher may offer the two under
+    different stamps, and the workbook records its README's own "Released" line.
+    Recording them is what lets the next run say a release moved instead of
+    silently fetching a different one."""
+    artifacts = {source.url_name: source.as_json() for source in sources.values()}
+    artifacts[WORKBOOK_ARTIFACT] = workbook.as_json()
     return {
         "fetched_at": fetched_at,
         "source": ROUTE_FIXTURES if offline else ROUTE_NETWORK,
         "fixture_derived": offline,
-        "release": release,
-        "artifacts": {source.url_name: source.as_json() for source in sources.values()},
+        "artifacts": artifacts,
     }
 
 
-def print_summary(outdir, sources, offline, release, rows_armed, member_armed):
+def print_summary(outdir, sources, workbook, offline, rows_armed, member_armed):
     """The one success line, reporting each guard as it actually stood.
 
-    `release` is the release this run FETCHED -- null on an offline replay, the
-    same value the manifest records -- not the stamp discovery read off the
-    page.
+    The releases named are the ones this run FETCHED -- each artifact's own,
+    null on an offline replay, the same values the manifest records -- not the
+    stamps discovery read off a recorded page.
 
     The guard state is stated PER GUARD. A single "guarded"/"not guarded" verdict
     over two independent checks either overstates a run whose member baseline was
@@ -1462,7 +1956,13 @@ def print_summary(outdir, sources, offline, release, rows_armed, member_armed):
     # of this function -- not from `release is None`, which would make a null
     # carry "this was a replay" and print "an offline replay" about a network
     # fetch whose stamp somehow went missing.
-    named = "an offline replay (no release)" if offline else f"release [{release}]"
+    named = (
+        "an offline replay (no release)"
+        if offline
+        else "releases "
+        + ", ".join(f"[{source.url_name}]=[{source.release}]" for source in sources.values())
+        + f" and the dictionary [{workbook.released}]"
+    )
     log_info(
         f"College Scorecard {named} written to [{outdir}] from [{route}]; "
         f"guards [{guards}]: {counts}"
@@ -1573,18 +2073,21 @@ def main(argv):
     # Discovery FIRST, and on both routes: it decides which URLs are fetched at
     # all, and a page that no longer names the pair must stop the run before a
     # 23 MB download rather than after it.
-    page, page_origin = read_data_page(fixtures)
-    release, urls = discover_release(page, page_origin)
+    page, page_origin = read_page(fixtures, DATA_PAGE)
+    stamps, urls = discover_release(page, page_origin)
     # The stamp DISCOVERED is not the release FETCHED. A replay discovers one --
     # the recorded page names it, and find_fixture matches a stamped archive by
     # it -- and publishes none, so everything that REPORTS what this run got is
     # handed the second value. Derived here, once: the same "None if offline"
     # written at each consumer is one a consumer can forget, and one of them did.
-    fetched_release = None if offline else release
-    report_release_change(outdir, previous, release, offline)
+    fetched_releases = {name: None if offline else stamp for name, stamp in stamps.items()}
+    report_release_change(outdir, previous, stamps, offline)
 
     fetched_at = None if offline else datetime.now(timezone.utc).isoformat(timespec="seconds")
-    sources = load_sources(fixtures, urls, fetched_at)
+    # The dictionary BEFORE the 250 MB of data: it is one small file, and a
+    # renamed sheet or column must stop the run before the large downloads.
+    workbook = load_workbook(fixtures, fetched_at)
+    sources = load_sources(fixtures, urls, fetched_releases, fetched_at)
     # Nothing is written until the extraction is believed: a fetch that succeeded
     # and a member resolution that went wrong must leave the recorded CSVs and
     # the manifest that describes them exactly as they were.
@@ -1592,8 +2095,10 @@ def main(argv):
     require_identity_columns(outdir, sources)
     rows_armed, member_armed = armed_guards(outdir, previous, sources)
     require_stable_baseline(outdir, previous, sources)
+    report_sheet_changes(outdir, workbook)
 
-    # Both members AND the manifest, staged together, and the MANIFEST IS LAST.
+    # Both members, the three dictionary CSVs and the workbook, AND the
+    # manifest, staged together, and the MANIFEST IS LAST.
     # write_atomically stages all-or-nothing but RENAMES in list order, and a
     # rename that fails part way through cannot be undone (bin/pyfunctions.py):
     # the directory can be left MIXED. With the manifest last, that leaves new
@@ -1602,13 +2107,13 @@ def main(argv):
     # its refusal is honest. Manifest first would leave a manifest describing
     # files that were never written. The order is load-bearing; do not sort this
     # list.
-    provenance = build_manifest(sources, offline, fetched_release, fetched_at)
-    files = [(outdir / source.output_name, source.member_body) for source in sources.values()] + [
-        (
-            outdir / MANIFEST_NAME,
-            (json.dumps(provenance, indent=2) + "\n").encode("utf-8"),
-        )
-    ]
+    provenance = build_manifest(sources, workbook, offline, fetched_at)
+    files = (
+        [(outdir / source.output_name, source.member_body) for source in sources.values()]
+        + [(outdir / sheet.spec.output_name, sheet.body) for sheet in workbook.sheets]
+        + [(outdir / WORKBOOK_OUTPUT_NAME, workbook.body)]
+        + [(outdir / MANIFEST_NAME, (json.dumps(provenance, indent=2) + "\n").encode("utf-8"))]
+    )
     # The write is its own wait: the real members are ~250 MB together, staged
     # and then renamed, so a run that said nothing here would look finished long
     # before it was.
@@ -1618,7 +2123,7 @@ def main(argv):
     )
     write_atomically(files, SCRIPT_NAME)
 
-    print_summary(outdir, sources, offline, fetched_release, rows_armed, member_armed)
+    print_summary(outdir, sources, workbook, offline, rows_armed, member_armed)
     print_load_command(outdir, sources)
     return 0
 
