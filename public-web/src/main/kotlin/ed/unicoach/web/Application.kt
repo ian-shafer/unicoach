@@ -9,7 +9,10 @@ import ed.unicoach.auth.EmailVerificationService
 import ed.unicoach.auth.EmailVerifier
 import ed.unicoach.auth.GoogleIdTokenVerifier
 import ed.unicoach.auth.IdTokenVerifierFactory
+import ed.unicoach.auth.PasswordResetConfig
+import ed.unicoach.auth.PasswordResetService
 import ed.unicoach.auth.SessionMetadataService
+import ed.unicoach.auth.SessionMinter
 import ed.unicoach.auth.SsoProviderConfig
 import ed.unicoach.chat.ChatConfig
 import ed.unicoach.chat.ChatProviderFactory
@@ -133,6 +136,7 @@ fun startServer(wait: Boolean = true): EmbeddedServer<*, *> {
 
   val databaseConfig = DatabaseConfig.from(config).getOrThrow()
   val emailVerificationConfig = EmailVerificationConfig.from(config).getOrThrow()
+  val passwordResetConfig = PasswordResetConfig.from(config).getOrThrow()
   val supporterInviteConfig = SupporterInviteConfig.from(config).getOrThrow()
   val coachConfigs = CoachConfigs.read(config)
   val signInProviders = WebSignInProviders.read(config)
@@ -155,7 +159,14 @@ fun startServer(wait: Boolean = true): EmbeddedServer<*, *> {
   // writer of it (RFC 241).
   val supporterInviteService = SupporterInviteService(database, supporterInviteConfig, TokenGenerator(), supporterService)
 
-  val authServices = WebAuthServices.build(emailVerificationConfig, database, signInProviders, linkRequestService::releaseOnVerified)
+  val authServices =
+    WebAuthServices.build(
+      emailVerificationConfig,
+      passwordResetConfig,
+      database,
+      signInProviders,
+      linkRequestService::releaseOnVerified,
+    )
   // ONE budget read for the whole process (RFC 273 §4): the coach's gate
   // blocks on it and Settings renders it, so the meter a family reads and the
   // meter the coach stops at are one object, not two readers of one config.
@@ -181,6 +192,7 @@ fun startServer(wait: Boolean = true): EmbeddedServer<*, *> {
         // RFC 225 parameter that now sits before them.
         authService = authServices.authService,
         emailVerificationService = authServices.emailVerificationService,
+        passwordResetService = authServices.passwordResetService,
         publicWebConfig = publicWebConfig,
         supporterInviteService = supporterInviteService,
         supporterService = supporterService,
@@ -215,9 +227,9 @@ fun startServer(wait: Boolean = true): EmbeddedServer<*, *> {
 }
 
 /**
- * The two `:service` collaborators RFC 224 wires, built together because
- * `AuthService` takes the verification service as a dependency and both take the
- * one [TokenGenerator].
+ * The `:service` auth collaborators, built together because `AuthService` takes
+ * the verification service as a dependency and all three take the one
+ * [TokenGenerator].
  *
  * A named factory rather than sixteen more lines inside [startServer]: assembling
  * the auth graph is a different decision from "start a server", and it changes
@@ -236,15 +248,18 @@ fun startServer(wait: Boolean = true): EmbeddedServer<*, *> {
 private data class WebAuthServices(
   val authService: AuthService,
   val emailVerificationService: EmailVerificationService,
+  val passwordResetService: PasswordResetService,
 ) {
   companion object {
     fun build(
       emailVerificationConfig: EmailVerificationConfig,
+      passwordResetConfig: PasswordResetConfig,
       database: Database,
       signInProviders: WebSignInProviders,
       afterVerified: (SqlSession, UserId) -> Unit,
     ): WebAuthServices {
       val tokenGenerator = TokenGenerator()
+      val argon2Hasher = Argon2Hasher()
       val emailVerificationService =
         EmailVerificationService(
           database,
@@ -256,7 +271,7 @@ private data class WebAuthServices(
         authService =
           AuthService(
             database,
-            Argon2Hasher(),
+            argon2Hasher,
             tokenGenerator,
             emailVerificationService,
             signInProviders.googleVerifier,
@@ -264,6 +279,16 @@ private data class WebAuthServices(
             afterVerified,
           ),
         emailVerificationService = emailVerificationService,
+        passwordResetService =
+          PasswordResetService(
+            database,
+            QueueService(database),
+            tokenGenerator,
+            argon2Hasher,
+            SessionMinter(tokenGenerator),
+            passwordResetConfig,
+            afterVerified,
+          ),
       )
     }
   }
@@ -422,6 +447,7 @@ fun Application.publicWebModule(
   bundleUrl: () -> String = { WebAssets.MAIN },
   authService: AuthService,
   emailVerificationService: EmailVerificationService,
+  passwordResetService: PasswordResetService,
   publicWebConfig: PublicWebConfig,
   supporterInviteService: SupporterInviteService,
   supporterService: SupporterService,
@@ -478,6 +504,7 @@ fun Application.publicWebModule(
     openInAppUrl,
     authService,
     emailVerificationService,
+    passwordResetService,
     publicWebConfig.session,
     supporterInviteService,
     supporterService,

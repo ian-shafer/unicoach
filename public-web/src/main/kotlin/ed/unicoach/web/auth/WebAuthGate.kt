@@ -28,6 +28,12 @@ const val REGISTER_PATH = "/register"
 /** Sign-out. A `POST`, because it changes state and must be guarded. */
 const val SIGN_OUT_PATH = "/sign-out"
 
+/** The form that asks for a password-reset link (RFC 276). */
+const val FORGOT_PASSWORD_PATH = "/forgot-password"
+
+/** Where a mailed password-reset link lands; its URL holds a live credential (RFC 276). */
+const val RESET_PASSWORD_PATH = "/reset-password"
+
 /** The verification confirm/hold screen. */
 const val VERIFY_EMAIL_PATH = "/verify-email"
 

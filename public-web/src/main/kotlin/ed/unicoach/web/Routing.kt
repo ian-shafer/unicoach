@@ -5,7 +5,11 @@ import ed.unicoach.auth.ChangeEmailResult
 import ed.unicoach.auth.EmailVerificationService
 import ed.unicoach.auth.EmailVerifier
 import ed.unicoach.auth.LoginResult
+import ed.unicoach.auth.PasswordResetRequest
+import ed.unicoach.auth.PasswordResetResult
+import ed.unicoach.auth.PasswordResetService
 import ed.unicoach.auth.RegisterResult
+import ed.unicoach.auth.ResetLink
 import ed.unicoach.auth.SessionMetadataService
 import ed.unicoach.auth.SsoLoginResult
 import ed.unicoach.auth.VerifyEmailResult
@@ -35,10 +39,12 @@ import ed.unicoach.web.assets.WebAssets
 import ed.unicoach.web.auth.ACCOUNT_PATH
 import ed.unicoach.web.auth.CHANGE_EMAIL_PATH
 import ed.unicoach.web.auth.CHAT_PATH
+import ed.unicoach.web.auth.FORGOT_PASSWORD_PATH
 import ed.unicoach.web.auth.HOME_PATH
 import ed.unicoach.web.auth.HandledAccess
 import ed.unicoach.web.auth.REGISTER_PATH
 import ed.unicoach.web.auth.RESEND_VERIFICATION_PATH
+import ed.unicoach.web.auth.RESET_PASSWORD_PATH
 import ed.unicoach.web.auth.SIGN_IN_PATH
 import ed.unicoach.web.auth.SIGN_OUT_PATH
 import ed.unicoach.web.auth.VERIFY_EMAIL_PATH
@@ -72,6 +78,7 @@ import ed.unicoach.web.render.ClaimOffer
 import ed.unicoach.web.render.CoachingMeter
 import ed.unicoach.web.render.EMAIL_FIELD
 import ed.unicoach.web.render.FAFSA_PATH
+import ed.unicoach.web.render.ForgotPasswordFormState
 import ed.unicoach.web.render.ID_TOKEN_FIELD
 import ed.unicoach.web.render.InviteViewer
 import ed.unicoach.web.render.NAME_FIELD
@@ -79,6 +86,7 @@ import ed.unicoach.web.render.OwnNotFoundBody
 import ed.unicoach.web.render.PASSWORD_FIELD
 import ed.unicoach.web.render.REPORT_FIELD
 import ed.unicoach.web.render.RegisterFormState
+import ed.unicoach.web.render.ResetPasswordFormState
 import ed.unicoach.web.render.SIGNUP_DOOR_SECRET_PARAMS
 import ed.unicoach.web.render.SettingsCoaching
 import ed.unicoach.web.render.ShellNav
@@ -91,12 +99,16 @@ import ed.unicoach.web.render.WHO_PAYS_PATH
 import ed.unicoach.web.render.WebNotice
 import ed.unicoach.web.render.respondChangeEmailPage
 import ed.unicoach.web.render.respondCostReportPage
+import ed.unicoach.web.render.respondDeadResetLink
 import ed.unicoach.web.render.respondFafsaPage
+import ed.unicoach.web.render.respondForgotPasswordPage
 import ed.unicoach.web.render.respondHomePage
 import ed.unicoach.web.render.respondInvitePage
 import ed.unicoach.web.render.respondNotFoundPage
+import ed.unicoach.web.render.respondPasswordResetSent
 import ed.unicoach.web.render.respondPrivacyPage
 import ed.unicoach.web.render.respondRegisterPage
+import ed.unicoach.web.render.respondResetPasswordPage
 import ed.unicoach.web.render.respondServiceUnavailablePage
 import ed.unicoach.web.render.respondSettingsPage
 import ed.unicoach.web.render.respondSignInPage
@@ -308,6 +320,7 @@ fun Application.installPublicWebRouting(
   openInAppUrl: String?,
   authService: AuthService,
   emailVerificationService: EmailVerificationService,
+  passwordResetService: PasswordResetService,
   sessionConfig: WebSessionConfig,
   supporterInviteService: SupporterInviteService,
   supporterService: SupporterService,
@@ -418,6 +431,7 @@ fun Application.installPublicWebRouting(
     authRoutes(
       authService,
       emailVerificationService,
+      passwordResetService,
       sessionConfig,
       supporterInviteService,
       linkRequestService,
@@ -700,6 +714,90 @@ private class SignInCompletion(
   }
 }
 
+/** An absent or repeated token: there is no single token to look up, so none that was issued is matched. */
+private val UNREADABLE_RESET_TOKEN = ResetLink.Dead.NotValid(ResetLink.Dead.NotValidReason.UNKNOWN_TOKEN)
+
+/**
+ * Password reset (RFC 276), signed-out doors the same-origin guard covers.
+ *
+ * `/reset-password` has `/invite`'s treatment because its URL holds a live
+ * credential: the token is scoped secret in the request log and the response
+ * carries the link-holder privacy headers. The `GET` only reads, so a mail
+ * scanner fetching the link cannot spend it. An unreadable or repeated token
+ * reads as a link that is not valid.
+ */
+private fun Route.passwordResetRoutes(
+  passwordReset: PasswordResetService,
+  authService: AuthService,
+  sessionConfig: WebSessionConfig,
+  signIn: SignInCompletion,
+) {
+  route(FORGOT_PASSWORD_PATH) {
+    get { call.respondForgotPasswordPage(nav = call.shellNav(authService, sessionConfig)) }
+
+    post {
+      val nav = call.shellNav(authService, sessionConfig)
+      val email =
+        call.formParametersOrNull()?.formField(EMAIL_FIELD)
+          ?: return@post call.respondForgotPasswordPage(ForgotPasswordFormState.Malformed(null), nav)
+      when (passwordReset.request(email).getOrThrow()) {
+        PasswordResetRequest.Submitted -> call.respondPasswordResetSent(nav)
+        is PasswordResetRequest.InvalidEmail -> call.respondForgotPasswordPage(ForgotPasswordFormState.Malformed(email), nav)
+      }
+    }
+  }
+
+  route(RESET_PASSWORD_PATH) {
+    secretQueryParams(TOKEN_FIELD)
+    setLinkHolderPrivacyHeaders()
+
+    get {
+      val nav = call.shellNav(authService, sessionConfig)
+      val token =
+        presentedToken(call.request.queryParameters.getAll(TOKEN_FIELD)).usableToken()
+          ?: return@get call.respondDeadResetLink(UNREADABLE_RESET_TOKEN, nav)
+      when (val link = passwordReset.inspect(token).getOrThrow()) {
+        ResetLink.Usable -> call.respondResetPasswordPage(token, nav = nav)
+        is ResetLink.Dead -> call.respondDeadResetLink(link, nav)
+      }
+    }
+
+    post {
+      val nav = call.shellNav(authService, sessionConfig)
+      val form = call.formParametersOrNull()
+      val token =
+        presentedToken(form?.getAll(TOKEN_FIELD)).usableToken()
+          ?: return@post call.respondDeadResetLink(UNREADABLE_RESET_TOKEN, nav)
+      val result =
+        passwordReset
+          .reset(
+            rawToken = token,
+            // An absent or repeated control is no password at all, and the
+            // rules in `:service` say so; the link is still checked first.
+            newPassword = form?.formField(PASSWORD_FIELD).orEmpty(),
+            oldCookieToken = call.request.sessionCookieToken(sessionConfig),
+            sessionExpiration = sessionConfig.expiration,
+            userAgent = call.request.userAgent(),
+            // Same peer-over-forwarded-header reasoning as the sign-in door.
+            initialIp = call.request.origin.remoteHost,
+          ).getOrThrow()
+      when (result) {
+        is PasswordResetResult.Done -> {
+          signIn.complete(call, result.user, result.sessionToken, PresentedToken.Absent, PresentedToken.Absent, RESET_PASSWORD_PATH)
+        }
+
+        is PasswordResetResult.Rejected -> {
+          call.respondResetPasswordPage(token, ResetPasswordFormState.Rejected(result.violations), nav)
+        }
+
+        is PasswordResetResult.Dead -> {
+          call.respondDeadResetLink(result.link, nav)
+        }
+      }
+    }
+  }
+}
+
 /**
  * The headers the two signup doors carry: link-holder privacy (RFC 232) at the
  * referrer policy [sso] needs, and — when a provider is configured — the
@@ -870,6 +968,7 @@ private suspend fun RoutingContext.respondProviderRefused(
 private fun Route.authRoutes(
   authService: AuthService,
   emailVerificationService: EmailVerificationService,
+  passwordResetService: PasswordResetService,
   sessionConfig: WebSessionConfig,
   supporterInviteService: SupporterInviteService,
   linkRequestService: SupporterLinkRequestService,
@@ -879,6 +978,8 @@ private fun Route.authRoutes(
   ssoButtons: SsoButtons,
 ) {
   val signIn = SignInCompletion(sessionConfig, supporterInviteService, linkRequestService)
+
+  passwordResetRoutes(passwordResetService, authService, sessionConfig, signIn)
 
   // `/invite` sends a signed-out recipient to these two doors with the RAW
   // invite token in the query string, so both scope it secret exactly as
@@ -932,8 +1033,8 @@ private fun Route.authRoutes(
             password = password,
             // The CURRENT cookie, so `:service` can revoke the row it names in the
             // same transaction that inserts the new one. Session fixation is
-            // handled there and not here (D13): `mintSession` is the only code
-            // that knows what "replacing a session" means.
+            // handled there and not here (D13): `SessionMinter.mint` is the only
+            // code that knows what "replacing a session" means.
             oldCookieToken = call.request.sessionCookieToken(sessionConfig),
             sessionExpiration = sessionConfig.expiration,
             userAgent = call.request.userAgent(),

@@ -600,6 +600,8 @@ class CspConformanceTest {
         // a token renders the confirm FORM, and they are different pages.
         PublicPage("/verify-email"),
         PublicPage("/verify-email", query = "token=$NOT_A_REAL_TOKEN"),
+        PublicPage("/forgot-password"),
+        PublicPage("/reset-password", query = "token=$NOT_A_REAL_TOKEN", expectedStatus = HttpStatusCode.BadRequest),
         // RFC 224's pre-session forms: public pages, rendered to a signed-out
         // visitor, so they answer 200 here and are CSP-checked like every other
         // page.
@@ -656,6 +658,8 @@ class CspConformanceTest {
       mapOf(
         (HttpMethod.Get to "/healthz") to "a JSON liveness probe: no HTML, so no resource for a policy to govern",
         (HttpMethod.Get to "/report") to "needs a live share token; ReportLinkContractTest owns that route",
+        (HttpMethod.Get to "/reset-password") to
+          "its 200 form needs a live mailed token; its dead-link page is fetched above and PasswordResetRoutingTest owns the form",
         (HttpMethod.Get to "/invite") to
           "needs a live invite token: InviteRoutingTest mints one and renders the page, InviteLinkContractTest pins the link path",
         (HttpMethod.Get to "/account") to

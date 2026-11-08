@@ -710,4 +710,28 @@ class UsersDaoTest {
     assertTrue(orderedVersions == orderedVersions.sorted(), "Expected ascending version order, got $orderedVersions")
     assertTrue(orderedVersions == listOf(1, 2, 3), "Expected versions 1,2,3, got $orderedVersions")
   }
+
+  @Test
+  fun `setPassword replaces the credential as a new version and refuses a closed account`() {
+    val email = (EmailAddress.create("set-password@example.com") as ValidationResult.Valid).value
+    val name = (PersonName.create("Set Password") as ValidationResult.Valid).value
+    val oldHash = (PasswordHash.create("old-hash") as ValidationResult.Valid).value
+    val newHash = (PasswordHash.create("new-hash") as ValidationResult.Valid).value
+    val user = UsersDao.create(session, NewUser(email, name, null, oldHash)).getOrThrow()
+
+    val changed = UsersDao.setPassword(session, user.id, newHash).getOrThrow()
+
+    assertEquals(newHash, changed.passwordHash)
+    assertEquals(user.version + 1, changed.version)
+    assertEquals(
+      newHash,
+      UsersDao
+        .findVersion(session, user.id, changed.version)
+        .getOrThrow()
+        .entity.passwordHash,
+    )
+
+    UsersDao.delete(session, user.id, changed.version).getOrThrow()
+    assertIs<NotFoundException>(UsersDao.setPassword(session, user.id, oldHash).exceptionOrNull())
+  }
 }

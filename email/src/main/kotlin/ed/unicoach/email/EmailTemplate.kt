@@ -19,4 +19,7 @@ enum class EmailTemplate {
 
   /** The account was erased (RFC 267); its `email_sends` row is the deletion receipt. */
   ACCOUNT_ERASED,
+
+  /** A single-use link to choose a new password (RFC 276). */
+  PASSWORD_RESET,
 }

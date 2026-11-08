@@ -268,6 +268,34 @@ object UsersDao :
   }
 
   /**
+   * Replaces the account's password credential (RFC 276): bumps `version` and
+   * returns the updated row; an absent or soft-deleted user yields
+   * [NotFoundException]. Written only by the dedicated password-reset path,
+   * never the generic [update] surface, like [markEmailVerified] and
+   * [changeEmail].
+   */
+  fun setPassword(
+    session: SqlSession,
+    id: UserId,
+    passwordHash: PasswordHash,
+  ): Result<User> =
+    session.mutateReturning(
+      """
+      UPDATE users
+      SET version = version + 1, password_hash = ?
+      WHERE id = ? AND deleted_at IS NULL
+      RETURNING *
+      """.trimIndent(),
+      bind = {
+        it.setString(1, passwordHash.value)
+        it.setObject(2, id.value)
+      },
+      map = ::mapUser,
+      mapError = ::mapCreateUpdateError,
+      onNoRow = { NotFoundException() },
+    )
+
+  /**
    * Restores a full historical row (auth columns included) under the bypass GUC
    * so the logical-timestamp trigger does not advance `created_at`. Two
    * statements in the caller's transaction: the `SET LOCAL` bypass, then the

@@ -3,6 +3,7 @@ package ed.unicoach.web
 import ed.unicoach.auth.AuthService
 import ed.unicoach.auth.EmailVerificationService
 import ed.unicoach.auth.EmailVerifier
+import ed.unicoach.auth.PasswordResetService
 import ed.unicoach.auth.SessionMetadataService
 import ed.unicoach.auth.VerifyEmailResult
 import ed.unicoach.coaching.CoachingService
@@ -73,6 +74,7 @@ fun Application.testPublicWebModule(
   bundleUrl: () -> String = { WebAssets.MAIN },
   authService: AuthService = WebAuthTestSupport.authService,
   emailVerificationService: EmailVerificationService = WebAuthTestSupport.emailVerificationService,
+  passwordResetService: PasswordResetService = WebAuthTestSupport.passwordResetService,
   publicWebConfig: PublicWebConfig = WebAuthTestSupport.publicWebConfig,
   supporterInviteService: SupporterInviteService = WebAuthTestSupport.supporterInviteService,
   supporterService: SupporterService = WebAuthTestSupport.supporterService,
@@ -97,6 +99,7 @@ fun Application.testPublicWebModule(
     bundleUrl,
     authService,
     emailVerificationService,
+    passwordResetService,
     publicWebConfig,
     supporterInviteService,
     supporterService,

@@ -7,7 +7,10 @@ import ed.unicoach.auth.AuthenticatedSession
 import ed.unicoach.auth.EmailVerificationConfig
 import ed.unicoach.auth.EmailVerificationService
 import ed.unicoach.auth.LoginResult
+import ed.unicoach.auth.PasswordResetConfig
+import ed.unicoach.auth.PasswordResetService
 import ed.unicoach.auth.SessionMetadataService
+import ed.unicoach.auth.SessionMinter
 import ed.unicoach.chat.ChatProvider
 import ed.unicoach.chat.LogOnlyChatProvider
 import ed.unicoach.coaching.CoachingConfig
@@ -153,6 +156,17 @@ object WebAuthTestSupport {
       // A lambda, not a bound reference: the request service is declared below.
       { session, userId -> linkRequestService.releaseOnVerified(session, userId) },
     )
+
+  /** The production reset service, wired as `Application.kt` wires it. */
+  val passwordResetService =
+    PasswordResetService(
+      database,
+      QueueService(database),
+      tokenGenerator,
+      argon2Hasher,
+      SessionMinter(tokenGenerator),
+      PasswordResetConfig.from(config).getOrThrow(),
+    ) { session, userId -> linkRequestService.releaseOnVerified(session, userId) }
 
   val supporterService = SupporterService(database, LinkEndedNotice(QueueService(database)))
 

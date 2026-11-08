@@ -5,6 +5,7 @@ import ed.unicoach.account.AccountErasureService
 import ed.unicoach.appstore.AppStoreConfig
 import ed.unicoach.appstore.AppStoreServerApiFactory
 import ed.unicoach.auth.EmailVerificationConfig
+import ed.unicoach.auth.PasswordResetConfig
 import ed.unicoach.chat.ChatConfig
 import ed.unicoach.chat.ChatProviderFactory
 import ed.unicoach.coaching.LlmCallLog
@@ -86,12 +87,13 @@ fun main() {
   val budgetService = BudgetService(database, BudgetConfig.from(config).getOrThrow(), subscriptionPlans)
 
   // The worker is the sole transmitter of outbound email (RFC 96), so it is the
-  // only process that constructs an EmailProvider/EmailService. verifyUrlBase
-  // derives from service.conf, already loaded here.
+  // only process that constructs an EmailProvider/EmailService. The mailed links'
+  // bases derive from service.conf, already loaded here.
   val emailConfig = EmailConfig.from(config).getOrThrow()
   val emailProvider = EmailProviderFactory.fromConfig(emailConfig).getOrThrow()
   val emailService = EmailService(database, emailProvider, emailConfig)
-  val verifyUrlBase = EmailVerificationConfig.from(config).getOrThrow().verifyUrlBase
+  val emailVerificationConfig = EmailVerificationConfig.from(config).getOrThrow()
+  val passwordResetConfig = PasswordResetConfig.from(config).getOrThrow()
 
   // The App Store client the refresh handler reads authoritative state through
   // (RFC 112). Built unconditionally: absent credentials are a valid
@@ -123,7 +125,7 @@ fun main() {
           // email verification is not an optional feature — registration is broken
           // without it. When EMAIL_PROVIDER is unset the packaged `provider = "log"`
           // default is used, so the handler still runs (logging instead of transmitting).
-          add(EmailSendHandler(emailService, emailRenderers(verifyUrlBase)))
+          add(EmailSendHandler(emailService, emailRenderers(emailVerificationConfig, passwordResetConfig)))
 
           // Registered unconditionally too (RFC 112): subscriptions are not an
           // optional coaching feature, so this sits outside the enabled-pass gate

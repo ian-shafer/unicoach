@@ -11,6 +11,7 @@ import ed.unicoach.account.AccountErasureService
 import ed.unicoach.account.CloseAccountOutcome
 import ed.unicoach.account.ErasureOutcome
 import ed.unicoach.auth.EmailVerificationConfig
+import ed.unicoach.auth.PasswordResetConfig
 import ed.unicoach.common.config.AppConfig
 import ed.unicoach.db.Database
 import ed.unicoach.db.DatabaseConfig
@@ -62,7 +63,8 @@ class AccountErasureEndToEndTest {
     private lateinit var database: Database
     private lateinit var connection: Connection
     private lateinit var emailConfig: EmailConfig
-    private lateinit var verifyUrlBase: String
+    private lateinit var emailVerificationConfig: EmailVerificationConfig
+    private lateinit var passwordResetConfig: PasswordResetConfig
 
     private const val MESSAGE_ID = "ses-erased-1"
 
@@ -74,7 +76,8 @@ class AccountErasureEndToEndTest {
       database = Database(dbConfig)
       connection = DriverManager.getConnection(dbConfig.jdbcUrl, dbConfig.user, dbConfig.password ?: "")
       emailConfig = EmailConfig.from(config).getOrThrow()
-      verifyUrlBase = EmailVerificationConfig.from(config).getOrThrow().verifyUrlBase
+      emailVerificationConfig = EmailVerificationConfig.from(config).getOrThrow()
+      passwordResetConfig = PasswordResetConfig.from(config).getOrThrow()
     }
 
     @JvmStatic
@@ -137,7 +140,10 @@ class AccountErasureEndToEndTest {
       val handlers =
         listOf(
           AccountErasureHandler(AccountErasureService(database, queue)),
-          EmailSendHandler(EmailService(database, SesEmailProvider(ses, AutoCloseable {}), emailConfig), emailRenderers(verifyUrlBase)),
+          EmailSendHandler(
+            EmailService(database, SesEmailProvider(ses, AutoCloseable {}), emailConfig),
+            emailRenderers(emailVerificationConfig, passwordResetConfig),
+          ),
         )
       val worker = QueueWorker(database, JobsDao(), handlers)
       worker.start(CoroutineScope(Dispatchers.IO))

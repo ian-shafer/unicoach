@@ -322,7 +322,7 @@ class SsoSignInRoutingTest {
       assertEquals(0, WebAuthTestSupport.sessionRowCount(), "a cross-site post signed someone in")
     }
 
-  /** Fixation, as `mintSession` handles it: the session a browser held before signing in is revoked by the sign-in. */
+  /** Fixation, as `SessionMinter.mint` handles it: the session a browser held before signing in is revoked by the sign-in. */
   @Test
   fun `a provider sign-in replaces the session the browser already held`() =
     testApplication {

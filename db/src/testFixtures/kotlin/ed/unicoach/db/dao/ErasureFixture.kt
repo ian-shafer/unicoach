@@ -346,6 +346,13 @@ object ErasureFixture {
     VerificationTokensDao
       .create(session, NewVerificationToken(userId, TokenHash.fromRawToken("erasure-verify-$tag"), Instant.now().plus(Duration.ofDays(1))))
       .getOrThrow()
+    RawSql.execute(
+      session,
+      "INSERT INTO account_tokens (user_id, type, user_version, token_hash, expires_at) " +
+        "VALUES (?, 'password_reset', 1, ?, NOW() + interval '1 hour')",
+      userId.value,
+      TokenHash.fromRawToken("erasure-reset-$tag").value,
+    )
     UserAuthIdentitiesDao
       .create(
         session,

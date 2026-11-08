@@ -57,7 +57,7 @@ class AccountErasureTest {
     private val DELETED_TABLES = setOf("deleted_users", "deleted_students", "deleted_supporters")
 
     /** D10's tables, physically deleted by the walk. */
-    private val PHYSICALLY_DELETED = setOf("sessions", "verification_tokens", "user_auth_identities", "supporter_invites")
+    private val PHYSICALLY_DELETED = setOf("sessions", "verification_tokens", "account_tokens", "user_auth_identities", "supporter_invites")
 
     /**
      * The two tables whose fixture rows carry a key onto the OTHER account as
@@ -380,6 +380,7 @@ class AccountErasureTest {
       mapOf(
         "sessions" to long("SELECT count(*) FROM sessions WHERE user_id = ?", user),
         "verification_tokens" to long("SELECT count(*) FROM verification_tokens WHERE user_id = ?", user),
+        "account_tokens" to long("SELECT count(*) FROM account_tokens WHERE user_id = ?", user),
         "user_auth_identities" to long("SELECT count(*) FROM user_auth_identities WHERE user_id = ?", user),
         "supporter_invites" to long("SELECT count(*) FROM supporter_invites WHERE inviter_user_id = ?", user),
       )

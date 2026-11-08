@@ -5,6 +5,7 @@ import com.typesafe.config.ConfigException
 import com.typesafe.config.ConfigFactory
 import com.typesafe.config.ConfigResolveOptions
 import ed.unicoach.auth.EmailVerificationConfig
+import ed.unicoach.auth.PasswordResetConfig
 import ed.unicoach.coaching.report.CostReportConfig
 import org.junit.jupiter.api.Test
 import kotlin.test.assertEquals
@@ -159,6 +160,14 @@ class ServiceConfTest {
     assertEquals("http://localhost:8082", resolved.getString("publicWeb.urlBase"))
     assertEquals("http://localhost:8082/verify-email", verifyBase(resolved))
     assertEquals("http://localhost:8082/report", shareBase(resolved))
+  }
+
+  @Test
+  fun `the packaged reset link derives from the one origin and lasts one hour`() {
+    val resolved = PasswordResetConfig.from(resolvePackaged(requiredEnvLines)).getOrThrow()
+
+    assertEquals("http://localhost:8082/reset-password", resolved.resetUrlBase)
+    assertEquals(java.time.Duration.ofHours(1), resolved.tokenTtl)
   }
 
   @Test

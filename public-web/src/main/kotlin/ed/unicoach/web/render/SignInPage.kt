@@ -1,5 +1,6 @@
 package ed.unicoach.web.render
 
+import ed.unicoach.web.auth.FORGOT_PASSWORD_PATH
 import ed.unicoach.web.auth.REGISTER_PATH
 import ed.unicoach.web.auth.SIGN_IN_PATH
 import io.ktor.http.HttpStatusCode
@@ -222,6 +223,7 @@ suspend fun ApplicationCall.respondSignInPage(
           autocompleteToken = "username",
         )
         passwordField(name = PASSWORD_FIELD, labelText = "Password", autocompleteToken = "current-password")
+        p { a(href = FORGOT_PASSWORD_PATH) { +FORGOT_PASSWORD_HEADING } }
         button(type = ButtonType.submit) { +"Sign in" }
       }
     }

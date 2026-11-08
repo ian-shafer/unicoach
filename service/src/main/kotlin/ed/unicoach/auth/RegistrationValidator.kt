@@ -36,22 +36,7 @@ class RegistrationValidator : Validator<RegistrationInput> {
       fieldErrors.add(FieldError("name", mapNameError(name.error)))
     }
 
-    if (input.password.codePointCount(0, input.password.length) < 8) {
-      fieldErrors.add(FieldError("password", "Password must be at least 8 characters long"))
-    }
-    if (input.password.codePointCount(0, input.password.length) > 128) {
-      fieldErrors.add(FieldError("password", "Password must be at most 128 characters long"))
-    }
-
-    if (!input.password.any { it in 'A'..'Z' }) {
-      fieldErrors.add(FieldError("password", "Password must contain at least 1 uppercase letter"))
-    }
-    if (!input.password.any { it in 'a'..'z' }) {
-      fieldErrors.add(FieldError("password", "Password must contain at least 1 lowercase letter"))
-    }
-    if (!input.password.any { it in '0'..'9' }) {
-      fieldErrors.add(FieldError("password", "Password must contain at least 1 digit"))
-    }
+    passwordViolations(input.password).forEach { fieldErrors.add(FieldError("password", it.sentence)) }
 
     return ValidationErrors(fieldErrors = fieldErrors)
   }

@@ -158,6 +158,14 @@ class ErasureClassificationTest {
           TOKEN_HASH to listOf("token_hash"),
         ),
         entries(
+          listOf("account_tokens"),
+          KEY to listOf("id", "user_id"),
+          LIFECYCLE to listOf("created_at", "row_created_at", "expires_at", "consumed_at"),
+          VERSION to listOf("user_version"),
+          TOKEN_HASH to listOf("token_hash"),
+          VOCABULARY to listOf("type"),
+        ),
+        entries(
           listOf("email_sends"),
           KEY to listOf("id", "user_id", "deleted_user_id"),
           LIFECYCLE to listOf("created_at", "row_created_at", "deleted_at"),
@@ -416,7 +424,7 @@ class ErasureClassificationTest {
      */
     private val NOT_KEYED: Map<String, String> =
       listOf(
-        listOf("sessions.user_id", "verification_tokens.user_id", "user_auth_identities.user_id")
+        listOf("sessions.user_id", "verification_tokens.user_id", "account_tokens.user_id", "user_auth_identities.user_id")
           .map { it to PHYSICALLY_DELETED },
         listOf("supporter_invites.inviter_user_id", "supporter_invites.student_id", "supporter_invites.supporter_id")
           .map { it to PHYSICALLY_DELETED },

@@ -219,3 +219,4 @@ spend-views-account-indexes.sql
 erasure-walk-leaves-jobs.sql
 schedule-erasure-of-closed-accounts.sql
 add-amount-usd-year-to-program-money-stats.sql
+create-account-tokens.sql

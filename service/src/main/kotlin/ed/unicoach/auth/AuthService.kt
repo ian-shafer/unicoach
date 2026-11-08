@@ -1,6 +1,5 @@
 package ed.unicoach.auth
 
-import com.google.protobuf.ByteString
 import ed.unicoach.common.models.EmailAddress
 import ed.unicoach.common.models.ValidationResult
 import ed.unicoach.db.Database
@@ -25,7 +24,6 @@ import ed.unicoach.db.models.SoftDeleteScope
 import ed.unicoach.db.models.TokenHash
 import ed.unicoach.db.models.User
 import ed.unicoach.db.models.UserId
-import ed.unicoach.db.session.SessionMetadata
 import ed.unicoach.util.Argon2Hasher
 import ed.unicoach.util.Validator
 import org.slf4j.LoggerFactory
@@ -58,6 +56,7 @@ class AuthService(
   private val validator: Validator<RegistrationInput> = RegistrationValidator(),
 ) {
   private val logger = LoggerFactory.getLogger(AuthService::class.java)
+  private val sessionMinter = SessionMinter(tokenGenerator)
 
   suspend fun register(
     email: String,
@@ -128,7 +127,7 @@ class AuthService(
                 newLoginMethod = ed.unicoach.db.models.LoginMethod.PASSWORD,
                 // The row changes hands, so it starts over: the previous
                 // holder's drafts and CSRF token are not the new user's.
-                newMetadata = mintSessionMetadata(),
+                newMetadata = sessionMinter.newMetadata(),
               ).getOrThrow()
             wasReminted = true
           }
@@ -144,7 +143,7 @@ class AuthService(
                   tokenHash = newHash,
                   userAgent = userAgent,
                   initialIp = initialIp,
-                  metadata = mintSessionMetadata(),
+                  metadata = sessionMinter.newMetadata(),
                   expiration = sessionExpiration,
                   loginMethod = ed.unicoach.db.models.LoginMethod.PASSWORD,
                 ),
@@ -317,7 +316,7 @@ class AuthService(
 
       val newToken =
         database.withConnection { session ->
-          mintSession(
+          sessionMinter.mint(
             session = session,
             user = user!!,
             loginMethod = LoginMethod.PASSWORD,
@@ -468,7 +467,7 @@ class AuthService(
 
         is UserResolution.Resolved -> {
           val token =
-            mintSession(
+            sessionMinter.mint(
               session = session,
               user = resolution.user,
               loginMethod = provider.loginMethod,
@@ -499,10 +498,12 @@ class AuthService(
    * a returning login (existing `(provider, subject)` row), a link onto an
    * active email-matched user, or a freshly created user. The link is refused
    * — [UserResolution.LinkBlocked] — only when the matched user both HAS a
-   * password credential and its `emailVerifiedAt` is null: `passwordHash !=
-   * null` is exactly "this account was created via [register]", the only path
-   * that can plant an attacker-chosen, never-verified credential ahead of the
-   * victim's SSO login. This blocks the *unverified* pre-hijacking case only —
+   * password credential and its `emailVerifiedAt` is null: [register] is the
+   * only path that can plant an attacker-chosen, never-verified credential
+   * ahead of the victim's SSO login. `passwordHash != null` alone does not mean
+   * "created via [register]" — a reset can give an SSO account a password (RFC
+   * 276 D-A) — but a reset always leaves the address verified, so the pair of
+   * conditions still singles out what [register] planted. This blocks the *unverified* pre-hijacking case only —
    * once the victim clicks the mail [register] sent them the match verifies,
    * the gate passes, and the attacker's password survives the link; see
    * [SsoLoginResult.LinkBlockedUnverifiedEmail]. A match with no password
@@ -617,61 +618,6 @@ class AuthService(
     }
     return recordEmailVerified(session, candidate.id, afterVerified)
   }
-
-  /**
-   * Revokes a live old-cookie session (mirroring `login`) and mints a fresh
-   * session bound to [user] with the given [loginMethod].
-   */
-  private fun mintSession(
-    session: ed.unicoach.db.dao.SqlSession,
-    user: User,
-    loginMethod: LoginMethod,
-    oldCookieToken: String?,
-    sessionExpiration: Duration,
-    userAgent: String?,
-    initialIp: String?,
-  ): String {
-    if (oldCookieToken != null) {
-      val oldHash = TokenHash.fromRawToken(oldCookieToken)
-      val revoke = SessionsDao.revokeByTokenHash(session, oldHash)
-      val revokeError = revoke.exceptionOrNull()
-      if (revokeError != null && revokeError !is NotFoundException) {
-        throw revokeError
-      }
-    }
-
-    val newToken = tokenGenerator.generateToken()
-    val newHash = TokenHash.fromRawToken(newToken)
-    SessionsDao
-      .create(
-        session,
-        ed.unicoach.db.models.NewSession(
-          userId = user.id,
-          tokenHash = newHash,
-          userAgent = userAgent,
-          initialIp = initialIp,
-          metadata = mintSessionMetadata(),
-          expiration = sessionExpiration,
-          loginMethod = loginMethod,
-        ),
-      ).getOrThrow()
-    return newToken
-  }
-
-  /**
-   * A new session's first metadata: a fresh CSRF synchronizer token and nothing
-   * else (RFC 265 D-F, brief 0013 D22).
-   *
-   * Minted WITH the session, in the same INSERT, so there is no window in which
-   * a live session lacks one and no lazy first write a concurrent request could
-   * race. Every session gets one, including `rest-server`'s, because the row is
-   * one row whichever surface it is later used from.
-   */
-  private fun mintSessionMetadata(): SessionMetadata =
-    SessionMetadata
-      .newBuilder()
-      .setCsrfToken(ByteString.copyFrom(tokenGenerator.generateBytes()))
-      .build()
 
   /** A name candidate and the source it came from, so a rejected one is identifiable in the log. */
   private data class NameCandidate(
