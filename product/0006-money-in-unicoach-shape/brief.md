@@ -565,6 +565,17 @@ protection. Gate: **3,012 tests, 0 failures**, 1,188 shell assertions. **Brief
 intent until 2026-11-04, when brief 0017 (D2) scheduled it — see its slice text
 in `spec.md` for the three refinements that came with the scheduling.
 
+shape/09/exchange-participation LANDED as RFC 277 (main@6944c6a5, 2026-11-08) —
+the Western Undergraduate Exchange in the coach's cost tool and the Family Cost
+Report, as a labelled possibility with how it is decided, its deadline and a
+capped tuition figure computed at read time, never inside a total. Two new
+reference tables, `tuition_exchange_states` and `college_tuition_exchanges`;
+first rows Oregon State and Western Washington; coach prompt v52, parent prompt
+v3. Ian replaced 0017 D10's `award_basis` and `as_published` twin at the
+approval stop; see 0017's Status. The slice's three refinements are met except
+that the school's sentence is no longer stored: it lives in the seed's
+`PROVENANCE.json`, for review only.
+
 ## Gate 1 outcome (2026-09-02)
 
 Ian, verbatim: **"I approve the gate"** — D1-D11 approved as defaulted, no

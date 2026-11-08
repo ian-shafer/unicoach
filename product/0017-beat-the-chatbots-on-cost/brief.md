@@ -24,6 +24,19 @@
   carrying its own academic year. New slice
   `cost/07/the-figures-carry-their-year`, BLOCKED by `cost/01`; `cost/01`
   continues without a schema change.
+- **Post-gate (2026-11-08):** `shape/09` landed as RFC 277 (its ledger line is
+  in brief 0006). **D10's vocabulary is amended by Ian at that run's approval
+  stop, verbatim: "This table is not great. What is award basis? why the
+  \_as_published rows? Can't we make this more unicoach owned. By that I mean,
+  don't just take what the external data give you. Put it in the shape that
+  unicoach needs".** In place of `award_basis` and its `as_published` twin the
+  table holds typed answers: `selection` (`guaranteed`, `selective`,
+  `unstated`), `separate_application` (`required`, `not_required`, `unstated`),
+  `minimum_unweighted_gpa`, `percent_of_eligible_offered`, `apply_by`. Eligible
+  states are one list per exchange in `tuition_exchange_states`, not a column
+  per school. The rest of D10 stands: no stored dollar figure, no row says
+  nothing, WICHE's dataset is never ingested (the member-state list is the
+  compact's own published statement of who may use it).
 - **Research:** 4 reports, 2,192 lines — `research/side-by-side-2026-11-04.md`
   (297 lines; the raw test, written by the coordinator from the browser
   session); `research/what-the-others-give.md` (643 lines, external, competitor
