@@ -5,9 +5,9 @@
 ## Status
 
 - **Phase:** EXECUTE — gates 1 and 2 passed 2026-10-26; five slices in
-  `spec.md`; `glance/01` (RFC 260), `glance/02` and `glance/03` (no RFC, spec 2)
-  LANDED; `glance/04` and `glance/05` are unblocked (D12). /slice appends the
-  ledger below after each land.
+  `spec.md`; `glance/01` (RFC 260), `glance/02`, `glance/03` and `glance/04` (no
+  RFC, spec 2) LANDED; `glance/05` is unblocked and is the last slice (D12).
+  /slice appends the ledger below after each land.
 - **Gate 1 (prioritisation):** **PASSED 2026-10-26 — Ian approved all eight
   defaults, verbatim: "approve all"**, after two questions and one amendment
   recorded under D3 below. D1-D8 stand as written. D8 is `standing` for the
@@ -84,6 +84,33 @@
     is unchanged at 1,241. 36 lenses, 2 should-fix fixed (a CSS override that
     won only by source order; money formatting inlined in the row assembler);
     4,963 tests green; module-source hook passed.
+  - `glance/04/programs-in-rows` LANDED without an RFC (/work
+    `ship-programs-in-rows`, spec 2, `main@b5cb31c8`, 2026-11-08) — each subject
+    a student chose prints as one table per school (Program; Median earnings a
+    year, four years after finishing, according to the U.S. Treasury; Median
+    federal loan debt at finishing, according to the federal student loan
+    system; Median monthly payment on a standard 10-year plan, by the federal
+    student loan system's own estimate), captioned "Biology programs at
+    Lakeshore State University, which your student wants to study". A gap cell
+    holds its sentence verbatim; a program with no published figures, or whose
+    every figure is withheld, is one spanning row. An estimated figure carries
+    an asterisk and one note under the table per publisher. K5 is said once in
+    the kinds section, read only off figures printed with a number, so it never
+    names a cohort the page does not show. The exemption set and its ratchet
+    test are deleted; shape rule (a) now exempts only the Scorecard debt
+    sentence. The coach is untouched. Decided at /work: the caption does not
+    repeat the publishers (the headers name them), and a subject whose every row
+    is a whole-row sentence keeps its `<p>`s, extending the slice's "no figure,
+    no table" to a lone no-figures program. Spec drift: `spokenPublisherOf` and
+    `spokenYearsOf` stayed private rather than becoming page-read helpers,
+    because the page reads finished headers and cells from `ProgramReturnCopy`.
+    Measured on the every-block render, whose one program has one figure: 1,695
+    visible words (539 in tables, 68.2% prose) to 1,727 (625 in tables, 63.8%);
+    the three-school render has no program block and is unchanged at 1,241. The
+    saving is on multi-program subjects, which that fixture does not print. 36
+    lenses, 3 should-fix fixed (a row's cells were a partial map; the estimate
+    marker was a character in a string; an inlined null-assertion); 5,137 tests
+    at the last full count; module-source hook passed.
 
 ## The question
 
