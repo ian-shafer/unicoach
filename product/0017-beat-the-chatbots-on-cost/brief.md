@@ -34,7 +34,13 @@
   `research/what-we-hold-today.md` (749 lines, internal, every claim
   `path:line`).
 - **Ledger:** _(one line per landed slice: ID, RFC, SHA, one-line what —
-  appended by /slice after each land. Empty until the first slice lands.)_
+  appended by /slice after each land.)_
+
+  cost/01/the-latest-release LANDED as RFC 274 (main@3a2c3047, 2026-11-08) — the
+  year on every Scorecard money and program figure is read from the publisher's
+  dictionary as fetched and stamped on the row; `program_money_stats` gains
+  `amount_usd_year`; an ingest refuses a dictionary that drops, re-words or
+  back-dates a served variable.
 
 Opened: 2026-11-04, by Ian, from a side-by-side test he ran: the same cost
 question put to unicoach, Google's AI Overview, ChatGPT and Gemini.
