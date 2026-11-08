@@ -552,6 +552,34 @@ THIS file, so the line lives here and the spec points at it):
   round trip needs real IDs on a deployed domain (Apple refuses localhost); D19
   matrix checked at desktop and 375px only; a blocked popup reads the "couldn't
   load" sentence.
+- `web/12/password-reset` LANDED as RFC 276 (main@a0568212, 2026-11-08) —
+  **Forgot your password?** on Sign in: a request form that gives one answer
+  whether or not the address has an account, a single-use link that lasts an
+  hour, and a form that sets the new password. Using the link ends every other
+  session on the account, the iPhone included, and signs the person in through
+  `SignInCompletion.complete`. It belongs to the account, not to a role. **Ian
+  at approval (2026-11-08): "This should be for users, not supporters or
+  students."; signing straight in over a second sign-in; on repeat requests, "Do
+  not worry about it. This is not a problem we need to solve."; "Why a specific
+  table for password reset tokens? Make it general."; `type`, not `purpose`;
+  "Why email? Just use the users table."; "add the user version"; then "Approve
+  all".** So the new table is the general `account_tokens` (`type` CHECK + the
+  `AccountTokenType` enum), hashed at rest, and `user_version` points at the
+  `users_versions` row holding the address mailed: a link dies if the address
+  moves, however it moved, and a rename does not kill it. `verification_tokens`
+  is unchanged. An Apple-only or Google-only account gets the link and can set a
+  password (D-A); the link marks an unverified address verified (D-F); no timing
+  defence on the request form, because `/register` already answers `409` for a
+  taken address (D-D); no request limit (D-E). The claim locks the owning
+  `users` row so an address change cannot slip between the claim and the
+  verification. DDL presented and approved; no `SessionMetadata` change. Review
+  (36 lenses, 4 tiers) amended the RFC for the lock and fixed swappable URL
+  bases, an unpinned link contract, a hidden four-step function, a lost
+  dead-link cause and password failures flattened to strings. Full gate green at
+  scope `full-gated`, 5226 tests, 0 failed. Browser-checked locally end to end.
+  Open: no real email was sent (the local worker was off, and production mail is
+  under the SES sandbox); D19 matrix run in full for the new-password form, at
+  375px and desktop for the request and dead-link pages.
 
 ## Research
 
