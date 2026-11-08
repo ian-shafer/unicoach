@@ -7027,6 +7027,7 @@ write_full_cloud_env() {
 POSTGRES_DB=unicoach
 APP_DOMAIN=gentest.example.com
 GOOGLE_CLIENT_IDS=abc.apps.googleusercontent.com
+GOOGLE_WEB_CLIENT_ID=web.apps.googleusercontent.com
 APPLE_CLIENT_IDS=com.example.gentest
 SERVER_HOST=0.0.0.0
 PUBLIC_WEB_HOST=0.0.0.0
