@@ -23,7 +23,6 @@ import ed.unicoach.coaching.costs.NetPrice
 import ed.unicoach.coaching.costs.OwedAverage
 import ed.unicoach.coaching.costs.ProgramReturnCollege
 import ed.unicoach.coaching.costs.ProgramReturnCopy
-import ed.unicoach.coaching.costs.ProgramReturnProgram
 import ed.unicoach.coaching.costs.ResidencyBasis
 import ed.unicoach.coaching.costs.SingleSchoolBasis
 import ed.unicoach.coaching.costs.SpokenAssurance
@@ -2516,15 +2515,15 @@ private fun FlowContent.debtBlock(
  * inside it every matched program by its published title, in CIP order.
  *
  * Nobody's favourite: no subject or program is promoted, sorted by value,
- * summarised or dropped. Every sentence is [ProgramReturnCopy]'s, and so is the
- * choice between one mark for the subject and its programs one by one; this
- * only lays out the [ProgramReturnCopy.SubjectLayout] it is handed.
+ * summarised or dropped. Every word is [ProgramReturnCopy]'s, and so is the
+ * choice between one mark for the subject, a sentence per program and a table;
+ * this only lays out the [ProgramReturnCopy.SubjectLayout] it is handed.
  */
 private fun FlowContent.programReturnBlocks(subjects: List<CollegeSubjectReturn>) {
   subjects.forEach { subjectReturnBlock(it) }
 }
 
-/** One subject's block: its lead, then the [ProgramReturnCopy.SubjectLayout] it is handed. */
+/** One subject's block: the [ProgramReturnCopy.SubjectLayout] it is handed, under its lead or its caption. */
 private fun FlowContent.subjectReturnBlock(subject: CollegeSubjectReturn) {
   val lead = ProgramReturnCopy.subjectLeadOf(subject.subjectName)
   div("report-program-return") {
@@ -2533,27 +2532,76 @@ private fun FlowContent.subjectReturnBlock(subject: CollegeSubjectReturn) {
         p("report-program-subject") { +"$lead ${layout.statement}" }
       }
 
-      is ProgramReturnCopy.SubjectLayout.Programs -> {
-        subjectPrograms(lead, layout)
+      is ProgramReturnCopy.SubjectLayout.Statements -> {
+        subjectStatements(lead, layout)
+      }
+
+      is ProgramReturnCopy.SubjectLayout.Table -> {
+        programTable(ProgramReturnCopy.subjectCaptionOf(subject.subjectName, subject.college.name), layout.table)
       }
     }
   }
 }
 
-private fun FlowContent.subjectPrograms(
+private fun FlowContent.subjectStatements(
   lead: String,
-  layout: ProgramReturnCopy.SubjectLayout.Programs,
+  layout: ProgramReturnCopy.SubjectLayout.Statements,
 ) {
   p("report-program-subject") { +lead }
-  layout.programs.forEach { programParagraph(it) }
-}
-
-private fun FlowContent.programParagraph(program: ProgramReturnProgram) {
-  p("report-program") {
-    span("report-program-title") { +ProgramReturnCopy.programLabelOf(program) }
-    +" ${ProgramReturnCopy.programSentencesOf(program).joinToString(" ")}"
+  layout.programs.forEach { program ->
+    p("report-program") {
+      span("report-program-title") { +ProgramReturnCopy.programLabelOf(program) }
+      +" ${program.statement}"
+    }
   }
 }
+
+/**
+ * One subject's programs at one school, one row each (brief 0016 D2). The
+ * publisher is in each money column's header, the cohorts in the kinds section,
+ * and no `tfoot`: earnings and debt are never added together.
+ */
+private fun FlowContent.programTable(
+  subjectCaption: String,
+  programs: ProgramReturnCopy.ProgramTable,
+) {
+  table("$DATA_TABLE_CLASS report-table report-program-table") {
+    caption { +subjectCaption }
+    thead {
+      tr {
+        th(scope = ThScope.col) { +ProgramReturnCopy.PROGRAM_COLUMN_HEADER }
+        programs.columns.forEach { column -> th(scope = ThScope.col) { +column.header } }
+      }
+    }
+    tbody { programs.rows.forEach { programRow(it, programs.columns) } }
+  }
+  programs.imputedNotes.forEach { note -> p("report-program-imputed") { +note } }
+}
+
+private fun TBODY.programRow(
+  row: ProgramReturnCopy.ProgramRow,
+  columns: List<ProgramReturnCopy.ProgramColumn>,
+) {
+  tr {
+    rowHeader(row.title)
+    when (row) {
+      is ProgramReturnCopy.ProgramRow.Cells -> {
+        columns.forEach { column -> textValueCell(column.header, textCellOf(row.cells.getValue(column.measure))) }
+      }
+
+      is ProgramReturnCopy.ProgramRow.WholeRow -> {
+        spanningValueCell(SchoolFigure.Blank(row.statement), columns.size)
+      }
+    }
+  }
+}
+
+private fun textCellOf(cell: ProgramReturnCopy.ProgramCell): TextCell =
+  when (cell) {
+    is ProgramReturnCopy.ProgramCell.Figure -> TextCell.Figure(cell.text)
+    is ProgramReturnCopy.ProgramCell.Estimate -> TextCell.Figure(cell.text)
+    is ProgramReturnCopy.ProgramCell.Gap -> TextCell.Blank(cell.statement)
+  }
 
 /**
  * The median federal debt, said, with what KIND of number it is under it (RFC
@@ -2736,6 +2784,9 @@ private fun FlowContent.tierKindsSection(
     // administrative-record kind sentence for "only students who got federal
     // aid", which every printed program's figures are grouped under above.
     if (kinds.printsAProgram) p("report-kind report-program-coverage") { +ProgramReturnCopy.COVERAGE_SENTENCE }
+    // K5 (glance/04): the cohorts and dollar year every program table's cells
+    // share, said once here rather than as a parenthesis on every figure.
+    kinds.programCohorts?.let { p("report-kind report-program-cohorts") { +it } }
     // K1-K3 (RFC 260): the three hedges the merit and borrowing blocks and the
     // debt paragraph used to repeat at every school, each said once for the
     // page, each only when a block it is about is on the page.
@@ -2770,6 +2821,7 @@ private data class PageKinds(
   val printsAGrid: Boolean,
   val meritRows: List<PrintableMeritRow>,
   val printsAProgram: Boolean,
+  val programCohorts: String?,
   val printsAMeritTable: Boolean,
   val printsABorrowingTable: Boolean,
   val showsADebtFigure: Boolean,
@@ -2781,6 +2833,7 @@ private data class PageKinds(
         !printsAGrid &&
         meritRows.isEmpty() &&
         !printsAProgram &&
+        programCohorts == null &&
         !printsAMeritTable &&
         !printsABorrowingTable &&
         !showsADebtFigure
@@ -2818,6 +2871,7 @@ private fun pageKindsOf(
     // [printableMeritRowOf] -- and the base rate is read off these same rows.
     meritRows = colleges.flatMap { cost -> cost.nationalMerit.mapNotNull { printableMeritRowOf(it) } },
     printsAProgram = printsAProgram,
+    programCohorts = ProgramReturnCopy.cohortsSentenceOf(programSlices.values.flatten().map { it.college }),
     // And K1-K3 (RFC 260): [shownMeritOf], [reportedBorrowingOf] and
     // [shownDebtOf], the decisions the merit table, the borrowing table and
     // the debt paragraph print on.

@@ -19,8 +19,8 @@ import kotlin.test.assertTrue
 
 /**
  * The SHAPE of the Family Cost Report (RFC 260, brief 0016 D3, D9): three rules
- * asserted over every table and every school section, with a shrinking set of
- * named exemptions, and one measurement that is printed and never asserted
+ * asserted over every table and every school section, with one named exemption,
+ * and one measurement that is printed and never asserted
  * (brief 0009 D20).
  *
  * Parsed with jsoup rather than scraped with a regex (D-C): the rules are about
@@ -30,9 +30,7 @@ import kotlin.test.assertTrue
  * Two renders, because the rules have to hold on the page a family sees AND on
  * the page that prints every block the page can print: the three-school verbose
  * fixture, and the same three schools with a published grid, a National Merit
- * row and a program figure added. The second is where the ratchet is checked --
- * an exemption that is no longer needed fails here, which is how each later
- * `glance` slice is made to remove its own entry.
+ * row and a program figure added.
  */
 class CostReportShapeTest {
   /** The report's own tree, with the marker ASSERTED for [reportSectionOf]'s reason: a miss must not widen the rules to the chrome. */
@@ -45,9 +43,8 @@ class CostReportShapeTest {
    * The three verbose schools with EVERY block the page can print: the first
    * school publishes a grid and a National Merit row, and the major answer
    * gives it one program with a shown figure. Composed from the shared fixture
-   * helpers, so the blocks are exactly the ones the page tests render. The grid
-   * and the National Merit rows are converted (glance/03) and stay here so rule
-   * (a) runs on their new markup; the program block is the one still exempted.
+   * helpers, so the blocks are exactly the ones the page tests render, and rule
+   * (a) runs on each one's rows.
    */
   private fun everyBlock(): CollegeCostProfile {
     val id = CollegeId(UUID.randomUUID())
@@ -101,16 +98,13 @@ class CostReportShapeTest {
 
   /**
    * The `p` and `li` elements of [root] that rule (a) reads, after removing
-   * every element whose class is in [exemptClasses], every cell, and the one
-   * span of a school's own quoted words. A clone is pruned so the tree the
-   * other rules read is untouched.
+   * the one exempted sentence, every cell, and the one span of a school's own
+   * quoted words. A clone is pruned so the tree the other rules read is
+   * untouched.
    */
-  private fun proseElementsOf(
-    root: Element,
-    exemptClasses: Set<String>,
-  ): List<Element> {
+  private fun proseElementsOf(root: Element): List<Element> {
     val pruned = root.clone()
-    (exemptClasses.map { ".$it" } + listOf("td", "th", ".report-merit-words")).forEach { pruned.select(it).remove() }
+    listOf(".$FEDERAL_DEBT_SENTENCE", "td", "th", ".report-merit-words").forEach { pruned.select(it).remove() }
     return pruned.select("p, li")
   }
 
@@ -121,7 +115,7 @@ class CostReportShapeTest {
       assertTrue(schools.isNotEmpty(), "[$name] the fixture must render a school, or this rule proves nothing")
       schools.forEach { school ->
         val offending =
-          proseElementsOf(school, UNCONVERTED_BLOCKS + FEDERAL_DEBT_SENTENCE)
+          proseElementsOf(school)
             .filter { currency.containsMatchIn(it.text()) }
             .map { it.outerHtml() }
         assertEquals(emptyList(), offending, "[$name] a figure is said in a sentence rather than in a row (brief 0016 D3)")
@@ -130,22 +124,13 @@ class CostReportShapeTest {
   }
 
   @Test
-  fun `the ratchet is live - every unconverted block is on the page and would fail rule (a) unexempted`() {
-    val report = reportOf(renderedReportOf(everyBlock()))
+  fun `the one exemption from rule (a) is one figure in one sentence`() {
+    val debt = reportOf(renderedReportOf(everyBlock())).select(".$FEDERAL_DEBT_SENTENCE")
 
-    UNCONVERTED_BLOCKS.forEach { blockClass ->
-      val blocks = report.select(".$blockClass")
-      assertTrue(blocks.isNotEmpty(), "[$blockClass] is on no element: the every-block fixture no longer prints it")
-      val figuresInProse = blocks.flatMap { proseElementsOf(it, emptySet()) }.filter { currency.containsMatchIn(it.text()) }
-      assertTrue(
-        figuresInProse.isNotEmpty(),
-        "[$blockClass] no longer says a figure in prose, so it no longer needs its exemption: remove it from UNCONVERTED_BLOCKS",
-      )
-    }
-    // And the permanent one really is one figure in one sentence (D4).
-    val debt = report.select(".$FEDERAL_DEBT_SENTENCE")
     assertTrue(debt.isNotEmpty(), "the every-block fixture must show a federal debt figure")
-    debt.forEach { assertTrue(currency.containsMatchIn(it.text()), "the exempted debt sentence holds no figure: [${it.outerHtml()}]") }
+    debt.forEach {
+      assertEquals(1, currency.findAll(it.text()).count(), "the exempted sentence must hold exactly one figure: [${it.outerHtml()}]")
+    }
   }
 
   /** The words a row header may not carry outside the price table: a row that reads as a sum of the others (RFC 175 D3). */
@@ -204,9 +189,6 @@ class CostReportShapeTest {
   private fun wordsOf(text: String): Int = text.split(Regex("\\s+")).count { it.isNotBlank() }
 
   companion object {
-    /** Blocks not yet converted (brief 0016 D9). Each later slice removes its own entry; the slice that empties this set deletes the mechanism. */
-    val UNCONVERTED_BLOCKS = setOf("report-program-return")
-
     /** The one permanent exemption: the federal median debt is one figure, one sentence (brief 0016 D4). */
     const val FEDERAL_DEBT_SENTENCE = "report-debt-federal"
 
